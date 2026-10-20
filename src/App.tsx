@@ -1,8 +1,8 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import {
   Search,
   X,
-  Film,
   Tv,
   Bookmark,
   Compass,
@@ -17,20 +17,49 @@ import {
   Download,
   Settings,
   LogOut,
+  LogIn,
   Bell,
   PanelLeftClose,
   PanelLeftOpen,
   Menu,
+  ShieldCheck,
+  Plus,
+  Sparkles,
 } from 'lucide-react';
-import { MediaItem, Genre } from './types/media';
-import { SAMPLE_CATALOG, ALL_GENRES } from './data/catalog';
+import { onAuthStateChanged, User } from 'firebase/auth';
+import {
+  collection,
+  query,
+  where,
+  onSnapshot,
+  doc,
+  setDoc,
+  deleteDoc,
+  serverTimestamp,
+} from 'firebase/firestore';
+import {
+  auth,
+  db,
+  ADMIN_EMAIL,
+  isUserAdmin,
+  signInWithGoogle,
+  signOutUser,
+  handleFirestoreError,
+  OperationType,
+} from './firebase';
+import { MediaItem, Genre, VideoAdConfig } from './types/media';
+import { ALL_GENRES } from './data/catalog';
 import { HeroBanner } from './components/HeroBanner';
 import { CarouselRow } from './components/CarouselRow';
 import { MovieCard } from './components/MovieCard';
 import { DetailsView } from './components/DetailsView';
 import { AdBanner } from './components/AdBanner';
 import { InfoModal, InfoModalType } from './components/InfoModal';
-import { ContinueWatchingRow, WatchProgressEntry } from './components/ContinueWatchingRow';
+import {
+  ContinueWatchingRow,
+  WatchProgressEntry,
+} from './components/ContinueWatchingRow';
+import { AdminStudioModal } from './components/AdminStudioModal';
 
 type NavView =
   | 'home'
@@ -46,47 +75,39 @@ type NavView =
   | 'details'
   | 'not_found';
 
-type SortOption = 'featured' | 'year_desc' | 'year_asc' | 'title_asc' | 'title_desc';
+type SortOption =
+  | 'featured'
+  | 'year_desc'
+  | 'year_asc'
+  | 'title_asc'
+  | 'title_desc';
 
-const WATCHLIST_STORAGE_KEY = 'cinewave_watchlist_v1';
-const ADS_STORAGE_KEY = 'cinewave_ads_enabled_v1';
-
-const DEFAULT_PROGRESS: Record<string, WatchProgressEntry> = {
-  'midnight-mischief-squad': {
-    mediaId: 'midnight-mischief-squad',
-    seasonEpisodeLabel: 'S1, Ep-3',
-    remainingLabel: '30min 55sec',
-    progressPercent: 48,
-  },
-  'legends-of-emerald-mist': {
-    mediaId: 'legends-of-emerald-mist',
-    seasonEpisodeLabel: 'S1, Ep-3',
-    remainingLabel: '30min 55sec',
-    progressPercent: 56,
-  },
-  'rise-of-last-guardian': {
-    mediaId: 'rise-of-last-guardian',
-    seasonEpisodeLabel: 'S1, Ep-3',
-    remainingLabel: '30min 55sec',
-    progressPercent: 42,
-  },
-  'tears-of-steel-horizon': {
-    mediaId: 'tears-of-steel-horizon',
-    seasonEpisodeLabel: 'S1, Ep-1',
-    remainingLabel: '12min 14sec',
-    progressPercent: 68,
-  },
-};
+const WATCHLIST_STORAGE_KEY = 'zappy_watchlist_v2';
+const ADS_STORAGE_KEY = 'zappy_ads_enabled_v1';
 
 export default function App() {
-  const [catalog, setCatalog] = useState<MediaItem[]>(SAMPLE_CATALOG);
-  const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(false);
-  const [apiErrorBanner, setApiErrorBanner] = useState<string | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
+
+  const [catalog, setCatalog] = useState<MediaItem[]>([]);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(true);
+  const [videoAdConfig] = useState<VideoAdConfig>({
+    imaEnabled: true,
+    testMode: true,
+    vastTagUrl: '',
+    enablePreRoll: true,
+    enableMidRoll: true,
+  });
 
   const [activeView, setActiveView] = useState<NavView>('home');
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [autoPlayOnOpen, setAutoPlayOnOpen] = useState<boolean>(false);
   const [activeHeroIndex, setActiveHeroIndex] = useState<number>(0);
+
+  // Admin Studio Modal State
+  const [adminStudioOpen, setAdminStudioOpen] = useState<boolean>(false);
+  const [adminPrefillMedia, setAdminPrefillMedia] =
+    useState<MediaItem | null>(null);
 
   // Sidebar collapsed state on desktop + drawer state on mobile
   const [sidebarCollapsed, setSidebarCollapsed] = useState<boolean>(false);
@@ -100,21 +121,17 @@ export default function App() {
   // Search, Filter & Sort State
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedGenre, setSelectedGenre] = useState<string>('All');
-  const [selectedContentType, setSelectedContentType] = useState<'all' | 'movie' | 'series'>('all');
+  const [selectedContentType, setSelectedContentType] = useState<
+    'all' | 'movie' | 'series'
+  >('all');
   const [onlyPlayableDemo, setOnlyPlayableDemo] = useState<boolean>(false);
   const [sortBy, setSortBy] = useState<SortOption>('featured');
 
-  // Watchlist / Favourites State (persisted to localStorage)
+  // Watchlist / Favourites State (synced with Firestore when logged in, localStorage for guests)
   const [watchlistIds, setWatchlistIds] = useState<string[]>(() => {
     try {
       const raw = localStorage.getItem(WATCHLIST_STORAGE_KEY);
-      if (!raw) {
-        return [
-          'dimensional-kids-adventure',
-          'midnight-mischief-squad',
-          'legends-of-emerald-mist',
-        ];
-      }
+      if (!raw) return [];
       const parsed = JSON.parse(raw);
       return Array.isArray(parsed) ? Array.from(new Set(parsed)) : [];
     } catch {
@@ -123,10 +140,11 @@ export default function App() {
   });
 
   // Continue Watching Progress State
-  const [watchProgressMap, setWatchProgressMap] =
-    useState<Record<string, WatchProgressEntry>>(DEFAULT_PROGRESS);
+  const [watchProgressMap, setWatchProgressMap] = useState<
+    Record<string, WatchProgressEntry>
+  >({});
 
-  // Configurable Ad-Supported Placeholder State
+  // Configurable Display Ad-Supported Placeholder State
   const [adsEnabled, setAdsEnabled] = useState<boolean>(() => {
     try {
       const raw = localStorage.getItem(ADS_STORAGE_KEY);
@@ -138,6 +156,139 @@ export default function App() {
 
   const [activeModal, setActiveModal] = useState<InfoModalType>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  const isAdmin = isUserAdmin(currentUser?.email, currentUser?.emailVerified);
+
+  const showToast = (msg: string) => {
+    setSessionToast(msg);
+    setTimeout(() => setSessionToast(null), 3500);
+  };
+
+  // 1. Listen to Firebase Authentication State
+  useEffect(() => {
+    const unsubscribe = onAuthStateChanged(auth, (user) => {
+      setCurrentUser(user);
+      setIsAuthReady(true);
+    });
+    return () => unsubscribe();
+  }, []);
+
+  // 2. Real-time Cloud Firestore Catalog Subscription (/catalog where visibility == 'public')
+  useEffect(() => {
+    setIsLoadingCatalog(true);
+    const catalogQuery = query(
+      collection(db, 'catalog'),
+      where('visibility', '==', 'public')
+    );
+
+    const unsubscribe = onSnapshot(
+      catalogQuery,
+      (snapshot) => {
+        const items: MediaItem[] = snapshot.docs.map((docSnap) => {
+          const data = docSnap.data();
+          const mediaType = data.mediaType === 'tv' ? 'tv' : 'movie';
+          return {
+            id: data.id || docSnap.id,
+            tmdbId: Number(data.tmdbId) || 1,
+            mediaType,
+            title: data.title || 'Untitled',
+            tagline: data.tagline || '',
+            synopsis: data.synopsis || '',
+            contentType:
+              data.contentType === 'series' || mediaType === 'tv'
+                ? 'series'
+                : 'movie',
+            genres:
+              Array.isArray(data.genres) && data.genres.length > 0
+                ? data.genres
+                : ['Drama'],
+            releaseYear: Number(data.releaseYear) || 2024,
+            durationMinutes: Number(data.durationMinutes) || 120,
+            maturityRating: data.maturityRating || 'PG-13',
+            directorOrCreator: data.directorOrCreator || 'Featured Creator',
+            cast: Array.isArray(data.cast) ? data.cast : ['Featured Cast'],
+            posterUrl: data.posterUrl || '',
+            backdropUrl: data.backdropUrl || data.posterUrl || '',
+            cinesrcEmbedUrl:
+              data.cinesrcEmbedUrl ||
+              `https://cinesrc.st/embed/${mediaType}/${data.tmdbId}`,
+            justWatchUrl: data.justWatchUrl || '',
+            visibility: data.visibility || 'public',
+            authorUid: data.authorUid || '',
+            availabilityStatus: 'playable_demo',
+            availabilityNote: `CineSrc.st Stream · TMDB #${data.tmdbId}`,
+            featured: Boolean(data.featured),
+            popularScore: Number(data.popularScore) || 92,
+            recentlyAdded: true,
+            seasonsCount: Number(data.seasonsCount) || 1,
+            episodesCount: Number(data.episodesCount) || 8,
+            visualTheme: {
+              primaryHex: '#1A1625',
+              secondaryHex: '#251E35',
+              accentHex: '#B892FF',
+              motif: 'horizon',
+            },
+          };
+        });
+
+        setCatalog(items);
+        setIsLoadingCatalog(false);
+
+        // Keep selectedMedia in sync if it was edited
+        setSelectedMedia((prev) => {
+          if (!prev) return null;
+          return items.find((i) => i.id === prev.id) || prev;
+        });
+
+        // Handle deep link if present in URL
+        const params = new URLSearchParams(window.location.search);
+        const requestedTitleId = params.get('title');
+        const requestedTmdbId = params.get('tmdbId');
+        if ((requestedTitleId || requestedTmdbId) && items.length > 0) {
+          const match = items.find(
+            (item) =>
+              item.id === requestedTitleId ||
+              (requestedTmdbId && item.tmdbId === Number(requestedTmdbId))
+          );
+          if (match) {
+            setSelectedMedia(match);
+            setActiveView('details');
+          }
+        }
+      },
+      (error) => {
+        setIsLoadingCatalog(false);
+        handleFirestoreError(error, OperationType.LIST, 'catalog');
+      }
+    );
+
+    return () => unsubscribe();
+  }, []);
+
+  // 3. Real-time Cloud Firestore Watchlist Subscription for Authenticated Users
+  useEffect(() => {
+    if (!isAuthReady || !currentUser || !currentUser.emailVerified) return;
+
+    const watchlistQuery = query(
+      collection(db, 'watchlists'),
+      where('ownerId', '==', currentUser.uid)
+    );
+
+    const unsubscribe = onSnapshot(
+      watchlistQuery,
+      (snapshot) => {
+        const ids = snapshot.docs
+          .map((d) => d.data().mediaId as string)
+          .filter(Boolean);
+        setWatchlistIds(Array.from(new Set(ids)));
+      },
+      (error) => {
+        handleFirestoreError(error, OperationType.LIST, 'watchlists');
+      }
+    );
+
+    return () => unsubscribe();
+  }, [isAuthReady, currentUser]);
 
   // Sync Watchlist to localStorage
   useEffect(() => {
@@ -157,86 +308,92 @@ export default function App() {
     }
   }, [adsEnabled]);
 
-  // Fetch server catalog & handle URL query params
-  useEffect(() => {
-    let isMounted = true;
-    const fetchServerCatalog = async () => {
-      setIsLoadingCatalog(true);
-      try {
-        const res = await fetch('/api/catalog');
-        if (!res.ok) {
-          throw new Error(`Server responded with status ${res.status}`);
-        }
-        const data = await res.json();
-        if (isMounted && Array.isArray(data.items) && data.items.length > 0) {
-          setCatalog(data.items);
-          setApiErrorBanner(null);
-        }
-      } catch {
-        if (isMounted) {
-          setCatalog(SAMPLE_CATALOG);
-          setApiErrorBanner(
-            'Live catalog endpoint unreachable — running seamlessly on built-in sample catalog.'
-          );
-        }
-      } finally {
-        if (isMounted) {
-          setIsLoadingCatalog(false);
-        }
-      }
-    };
-
-    fetchServerCatalog();
-
-    const params = new URLSearchParams(window.location.search);
-    const requestedTitleId = params.get('title');
-    if (requestedTitleId) {
-      const match = SAMPLE_CATALOG.find((item) => item.id === requestedTitleId);
-      if (match) {
-        setSelectedMedia(match);
-        setActiveView('details');
-      } else {
-        setActiveView('not_found');
-      }
-    }
-
-    return () => {
-      isMounted = false;
-    };
-  }, []);
-
   // Update document title dynamically
   useEffect(() => {
     if (activeView === 'details' && selectedMedia) {
-      document.title = `Watch ${selectedMedia.title} (${selectedMedia.releaseYear}) — CineWave`;
+      document.title = `Watch ${selectedMedia.title} — ZAPPY`;
     } else if (activeView === 'watchlist') {
-      document.title = `Favourites (${watchlistIds.length}) — CineWave`;
-    } else if (activeView === 'explore' || activeView === 'movies' || activeView === 'series') {
-      document.title = 'Explore Films & Series — CineWave';
+      document.title = `Favourites (${watchlistIds.length}) — ZAPPY`;
+    } else if (
+      activeView === 'explore' ||
+      activeView === 'movies' ||
+      activeView === 'series'
+    ) {
+      document.title = 'Explore Films & Series — ZAPPY';
     } else if (activeView === 'genres') {
-      document.title = `${selectedGenre === 'All' ? 'All Genres' : selectedGenre} — CineWave`;
-    } else if (activeView === 'not_found') {
-      document.title = 'Title Not Found (404) — CineWave';
+      document.title = `${
+        selectedGenre === 'All' ? 'All Genres' : selectedGenre
+      } — ZAPPY`;
     } else {
-      document.title = 'CineWave — Free Ad-Supported Movies & TV Shows';
+      document.title = 'ZAPPY — Free Ad-Supported Movies & TV Discovery';
     }
   }, [activeView, selectedMedia, watchlistIds.length, selectedGenre]);
 
-  const showToast = (msg: string) => {
-    setSessionToast(msg);
-    setTimeout(() => setSessionToast(null), 3000);
+  const handleGoogleLogin = async () => {
+    try {
+      const result = await signInWithGoogle();
+      if (isUserAdmin(result.user.email, result.user.emailVerified)) {
+        showToast(
+          `Welcome Admin (${result.user.email})! Admin Studio unlocked.`
+        );
+      } else {
+        showToast(`Signed in as ${result.user.displayName || result.user.email}`);
+      }
+    } catch {
+      showToast('Google Sign-In was cancelled or blocked.');
+    }
   };
 
-  const handleToggleWatchlist = (item: MediaItem, e?: React.MouseEvent) => {
+  const handleLogout = async () => {
+    try {
+      await signOutUser();
+      setProfileMenuOpen(false);
+      showToast('Signed out of ZAPPY.');
+    } catch {
+      // Ignore
+    }
+  };
+
+  const handleToggleWatchlist = async (
+    item: MediaItem,
+    e?: React.MouseEvent
+  ) => {
     if (e) {
       e.stopPropagation();
     }
-    setWatchlistIds((prev) => {
-      if (prev.includes(item.id)) {
-        return prev.filter((id) => id !== item.id);
+
+    const alreadySaved = watchlistIds.includes(item.id);
+
+    // Optimistic local state update
+    setWatchlistIds((prev) =>
+      alreadySaved
+        ? prev.filter((id) => id !== item.id)
+        : Array.from(new Set([...prev, item.id]))
+    );
+
+    if (currentUser && currentUser.emailVerified) {
+      const docId = `${currentUser.uid}_${item.id}`.replace(
+        /[^a-zA-Z0-9_-]/g,
+        '_'
+      );
+      try {
+        if (alreadySaved) {
+          await deleteDoc(doc(db, 'watchlists', docId));
+        } else {
+          await setDoc(doc(db, 'watchlists', docId), {
+            mediaId: item.id,
+            ownerId: currentUser.uid,
+            createdAt: serverTimestamp(),
+          });
+        }
+      } catch (error) {
+        handleFirestoreError(
+          error,
+          alreadySaved ? OperationType.DELETE : OperationType.CREATE,
+          `watchlists/${docId}`
+        );
       }
-      return Array.from(new Set([...prev, item.id]));
-    });
+    }
   };
 
   const handleSelectMedia = (item: MediaItem, autoPlay = false) => {
@@ -247,14 +404,14 @@ export default function App() {
     setProfileMenuOpen(false);
     setMobileMenuOpen(false);
 
-    // Record item in Continue Watching when opened for playback
-    if (autoPlay && !watchProgressMap[item.id]) {
+    if (!watchProgressMap[item.id]) {
       setWatchProgressMap((prev) => ({
         [item.id]: {
           mediaId: item.id,
-          seasonEpisodeLabel: item.contentType === 'series' ? 'S1, Ep-1' : 'Feature',
-          remainingLabel: `${item.durationMinutes}min 00sec`,
-          progressPercent: 18,
+          seasonEpisodeLabel:
+            item.contentType === 'series' ? 'S1, Ep-1' : 'Feature',
+          remainingLabel: `${item.durationMinutes}min`,
+          progressPercent: 22,
         },
         ...prev,
       }));
@@ -290,16 +447,18 @@ export default function App() {
     setSortBy('featured');
   };
 
-  // Featured items for the Hero Banner (Dimensional Kids on an Adventure first!)
-  const featuredItems = useMemo(
-    () =>
-      catalog
-        .filter((item) => item.featured || item.availabilityStatus === 'playable_demo')
-        .slice(0, 4),
-    [catalog]
-  );
+  const openAdminStudio = (mediaItem: MediaItem | null = null) => {
+    setAdminPrefillMedia(mediaItem);
+    setAdminStudioOpen(true);
+    setMobileMenuOpen(false);
+    setProfileMenuOpen(false);
+  };
 
-  // Continue Watching items matching the reference image order
+  const featuredItems = useMemo(() => {
+    const feat = catalog.filter((item) => item.featured);
+    return (feat.length > 0 ? feat : catalog).slice(0, 5);
+  }, [catalog]);
+
   const continueWatchingItems = useMemo(() => {
     const entries: { item: MediaItem; progress: WatchProgressEntry }[] = [];
     Object.values(watchProgressMap).forEach((progress) => {
@@ -311,33 +470,8 @@ export default function App() {
     return entries;
   }, [catalog, watchProgressMap]);
 
-  // "You Might Like" & Categorized Rows
-  const youMightLikeItems = useMemo(
-    () =>
-      [...catalog]
-        .filter((i) => i.id !== 'dimensional-kids-adventure')
-        .sort((a, b) => (b.popularScore || 0) - (a.popularScore || 0)),
-    [catalog]
-  );
-
-  const trendingItems = useMemo(
-    () =>
-      [...catalog]
-        .filter((i) => i.trendingRank !== undefined)
-        .sort((a, b) => (a.trendingRank || 99) - (b.trendingRank || 99)),
-    [catalog]
-  );
-
   const popularMovies = useMemo(
-    () =>
-      catalog
-        .filter((i) => i.contentType === 'movie')
-        .sort((a, b) => (b.popularScore || 0) - (a.popularScore || 0)),
-    [catalog]
-  );
-
-  const recentlyAdded = useMemo(
-    () => catalog.filter((i) => i.recentlyAdded),
+    () => catalog.filter((i) => i.contentType === 'movie'),
     [catalog]
   );
 
@@ -357,23 +491,14 @@ export default function App() {
   const relatedForSelected = useMemo(() => {
     if (!selectedMedia) return [];
     return catalog
-      .filter(
-        (item) =>
-          item.id !== selectedMedia.id &&
-          item.genres.some((g) => selectedMedia.genres.includes(g))
-      )
+      .filter((item) => item.id !== selectedMedia.id)
       .slice(0, 6);
   }, [catalog, selectedMedia]);
 
-  // Filtered and sorted items for Search & Explore views
   const filteredCatalog = useMemo(() => {
     let result = [...catalog];
 
-    if (activeView === 'recently_added') {
-      result = result.filter((item) => item.recentlyAdded);
-    } else if (activeView === 'downloads') {
-      result = result.filter((item) => item.availabilityStatus === 'playable_demo');
-    } else if (activeView === 'continue_watching') {
+    if (activeView === 'continue_watching') {
       result = result.filter((item) => Boolean(watchProgressMap[item.id]));
     }
 
@@ -389,11 +514,9 @@ export default function App() {
     }
 
     if (selectedGenre !== 'All') {
-      result = result.filter((item) => item.genres.includes(selectedGenre as Genre));
-    }
-
-    if (onlyPlayableDemo) {
-      result = result.filter((item) => item.availabilityStatus === 'playable_demo');
+      result = result.filter((item) =>
+        item.genres.includes(selectedGenre as Genre)
+      );
     }
 
     if (searchQuery.trim() !== '') {
@@ -403,6 +526,7 @@ export default function App() {
           item.title.toLowerCase().includes(q) ||
           item.synopsis.toLowerCase().includes(q) ||
           item.directorOrCreator.toLowerCase().includes(q) ||
+          String(item.tmdbId).includes(q) ||
           item.genres.some((g) => g.toLowerCase().includes(q)) ||
           item.cast.some((actor) => actor.toLowerCase().includes(q)) ||
           String(item.releaseYear).includes(q)
@@ -417,8 +541,6 @@ export default function App() {
       result.sort((a, b) => a.title.localeCompare(b.title));
     } else if (sortBy === 'title_desc') {
       result.sort((a, b) => b.title.localeCompare(a.title));
-    } else {
-      result.sort((a, b) => (b.popularScore || 0) - (a.popularScore || 0));
     }
 
     return result;
@@ -427,7 +549,6 @@ export default function App() {
     activeView,
     selectedContentType,
     selectedGenre,
-    onlyPlayableDemo,
     searchQuery,
     sortBy,
     watchProgressMap,
@@ -449,23 +570,32 @@ export default function App() {
   ];
 
   const secondaryNavItems = [
-    { id: 'continue_watching' as NavView, label: 'Continue Watching', icon: Play },
+    {
+      id: 'continue_watching' as NavView,
+      label: 'Continue Watching',
+      icon: Play,
+    },
     { id: 'recently_added' as NavView, label: 'Recently Added', icon: Clock },
     { id: 'collections' as NavView, label: 'My Collections', icon: Folder },
-    { id: 'downloads' as NavView, label: 'Downloads', icon: Download },
+    { id: 'downloads' as NavView, label: 'All Streams', icon: Download },
   ];
 
   return (
     <div className="min-h-screen w-full bg-[#110E17] text-[#F5F5F7] flex flex-col lg:flex-row p-0 sm:p-3 lg:p-4 gap-0 lg:gap-6 pb-16 lg:pb-4 overflow-x-hidden">
       {/* MOBILE DRAWER OVERLAY */}
-      {mobileMenuOpen && (
-        <div
-          onClick={() => setMobileMenuOpen(false)}
-          className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm lg:hidden"
-        />
-      )}
+      <AnimatePresence>
+        {mobileMenuOpen && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            onClick={() => setMobileMenuOpen(false)}
+            className="fixed inset-0 z-50 bg-black/75 backdrop-blur-sm lg:hidden"
+          />
+        )}
+      </AnimatePresence>
 
-      {/* LEFT SIDEBAR NAVIGATION (Exact Match to Reference Image) */}
+      {/* LEFT SIDEBAR NAVIGATION */}
       <aside
         aria-label="Sidebar Navigation"
         className={`fixed lg:sticky top-0 lg:top-4 bottom-0 left-0 z-50 lg:z-30 flex flex-col justify-between rounded-none lg:rounded-3xl border-r lg:border border-white/[0.08] sidebar-ambient-glow transition-all duration-200 shrink-0 ${
@@ -477,7 +607,7 @@ export default function App() {
         } lg:h-[calc(100vh-2rem)]`}
       >
         <div className="space-y-6 overflow-y-auto no-scrollbar">
-          {/* Brand Logo + Collapse Button */}
+          {/* Brand Logo: ZAPPY */}
           <div className="flex items-center justify-between gap-2 px-1">
             <a
               href="#home"
@@ -487,13 +617,12 @@ export default function App() {
               }}
               className="flex items-center gap-3 min-w-0 group"
             >
-              {/* Lavender TV Play Logo Box matching reference */}
               <div className="w-9 h-9 rounded-xl bg-[#B892FF] text-[#110E17] flex items-center justify-center shrink-0 shadow-md shadow-[#B892FF]/25">
                 <Tv className="w-5 h-5 stroke-[2.4]" />
               </div>
               {!sidebarCollapsed && (
                 <span className="text-xl font-bold tracking-tight text-white font-display truncate">
-                  CineWave
+                  ZAPPY
                 </span>
               )}
             </a>
@@ -508,8 +637,9 @@ export default function App() {
                 }
               }}
               className="min-h-[36px] min-w-[36px] rounded-xl text-zinc-400 hover:text-white hover:bg-white/[0.06] flex items-center justify-center transition-colors cursor-pointer shrink-0"
-              aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-              title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+              aria-label={
+                sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'
+              }
             >
               {sidebarCollapsed ? (
                 <PanelLeftOpen className="w-4 h-4" />
@@ -519,7 +649,7 @@ export default function App() {
             </button>
           </div>
 
-          {/* Primary Navigation Group: Home, Explore, Genres, Favourites */}
+          {/* Primary Navigation */}
           <nav aria-label="Main Menu" className="space-y-1">
             {mainNavItems.map((item) => {
               const Icon = item.icon;
@@ -551,7 +681,7 @@ export default function App() {
 
           <div className="border-t border-white/[0.07]" />
 
-          {/* Secondary Library Group: Continue Watching, Recently Added, My Collections, Downloads */}
+          {/* Secondary Library Group */}
           <nav aria-label="Library Menu" className="space-y-1">
             {secondaryNavItems.map((item) => {
               const Icon = item.icon;
@@ -583,8 +713,24 @@ export default function App() {
 
           <div className="border-t border-white/[0.07]" />
 
-          {/* Settings Item */}
-          <div>
+          {/* Admin Panel Button (Visible & Unlocked for pawarayushai1@gmail.com) */}
+          <div className="space-y-1">
+            {isAdmin && (
+              <motion.button
+                whileHover={{ scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                type="button"
+                onClick={() => openAdminStudio(null)}
+                className="w-full min-h-[44px] px-3 py-2.5 rounded-xl flex items-center gap-3.5 text-sm text-[#110E17] bg-[#B892FF] hover:bg-[#C9ABFF] font-bold transition-colors cursor-pointer shadow-lg shadow-[#B892FF]/25"
+                title={sidebarCollapsed ? 'Admin Panel' : undefined}
+              >
+                <ShieldCheck className="w-4 h-4 shrink-0" />
+                {!sidebarCollapsed && (
+                  <span className="truncate">Admin Panel</span>
+                )}
+              </motion.button>
+            )}
+
             <button
               type="button"
               onClick={() => {
@@ -600,30 +746,39 @@ export default function App() {
           </div>
         </div>
 
-        {/* Bottom Pinned Logout / Reset Session Button */}
+        {/* Bottom Auth Action (Google Sign-In or Logout) */}
         <div className="pt-4 border-t border-white/[0.05]">
-          <button
-            type="button"
-            onClick={() => {
-              resetAllFilters();
-              handleNavigate('home');
-              showToast('Session filters reset — browsing as Guest Profile.');
-            }}
-            className="w-full min-h-[44px] px-3 py-2.5 rounded-xl flex items-center gap-3.5 text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors cursor-pointer"
-            title={sidebarCollapsed ? 'Logout / Reset Session' : undefined}
-          >
-            <LogOut className="w-4 h-4 shrink-0" />
-            {!sidebarCollapsed && <span>Logout</span>}
-          </button>
+          {currentUser ? (
+            <button
+              type="button"
+              onClick={handleLogout}
+              className="w-full min-h-[44px] px-3 py-2.5 rounded-xl flex items-center gap-3.5 text-sm text-zinc-400 hover:text-white hover:bg-white/[0.04] transition-colors cursor-pointer"
+              title={sidebarCollapsed ? 'Sign Out' : undefined}
+            >
+              <LogOut className="w-4 h-4 shrink-0" />
+              {!sidebarCollapsed && <span className="truncate">Sign Out</span>}
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              className="w-full min-h-[44px] px-3 py-2.5 rounded-xl flex items-center gap-3.5 text-sm text-[#B892FF] bg-[#B892FF]/10 hover:bg-[#B892FF]/20 font-semibold transition-colors cursor-pointer"
+              title={sidebarCollapsed ? 'Sign in with Google' : undefined}
+            >
+              <LogIn className="w-4 h-4 shrink-0" />
+              {!sidebarCollapsed && (
+                <span className="truncate">Google Sign-In</span>
+              )}
+            </button>
+          )}
         </div>
       </aside>
 
       {/* RIGHT MAIN WORKSPACE COLUMN */}
       <div className="flex-1 min-w-0 flex flex-col px-4 sm:px-3 lg:px-2">
-        {/* TOP HEADER BAR: Search Input on Left + Notification & Avatar on Right */}
+        {/* TOP HEADER BAR */}
         <header className="sticky top-0 z-30 py-3 sm:py-3.5 bg-[#110E17]/90 backdrop-blur-xl flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 flex-1 max-w-xl">
-            {/* Mobile Hamburger Trigger */}
             <button
               type="button"
               onClick={() => setMobileMenuOpen(true)}
@@ -633,7 +788,6 @@ export default function App() {
               <Menu className="w-5 h-5" />
             </button>
 
-            {/* Rounded Search Input matching reference UI */}
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-zinc-400 absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
@@ -646,8 +800,8 @@ export default function App() {
                     setActiveView('home');
                   }
                 }}
-                placeholder="Search for films, directors, or actors..."
-                aria-label="Search for films, directors, or actors"
+                placeholder="Search movies, TV shows, TMDB IDs, or actors..."
+                aria-label="Search movies, TV shows, TMDB IDs, or actors"
                 className="w-full min-h-[44px] pl-11 pr-9 py-2 rounded-2xl bg-[#1A1625] border border-white/[0.08] text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#B892FF] transition-colors"
               />
               {searchQuery && (
@@ -663,34 +817,34 @@ export default function App() {
             </div>
           </div>
 
-          {/* Right Header Controls: Movies/TV Quick Links + Notification Bell + User Avatar */}
-          <div className="flex items-center gap-2.5 sm:gap-3.5 shrink-0 relative">
-            <div className="hidden xl:flex items-center gap-2 mr-1">
-              <button
+          {/* Right Header Controls */}
+          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0 relative">
+            {isAdmin && (
+              <motion.button
+                whileHover={{ scale: 1.04 }}
+                whileTap={{ scale: 0.96 }}
                 type="button"
-                onClick={() => handleNavigate('movies')}
-                className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                  activeView === 'movies'
-                    ? 'bg-[#B892FF] text-[#110E17]'
-                    : 'bg-[#1A1625] border border-white/[0.08] text-zinc-300 hover:text-white'
-                }`}
+                onClick={() => openAdminStudio(null)}
+                className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#B892FF] text-[#110E17] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-md shadow-[#B892FF]/20"
               >
-                Movies
-              </button>
-              <button
-                type="button"
-                onClick={() => handleNavigate('series')}
-                className={`min-h-[38px] px-3.5 py-1.5 rounded-xl text-xs font-semibold transition-colors cursor-pointer ${
-                  activeView === 'series'
-                    ? 'bg-[#B892FF] text-[#110E17]'
-                    : 'bg-[#1A1625] border border-white/[0.08] text-zinc-300 hover:text-white'
-                }`}
-              >
-                TV Shows
-              </button>
-            </div>
+                <Plus className="w-4 h-4" />
+                <span className="hidden sm:inline">Add Movie / Show</span>
+              </motion.button>
+            )}
 
-            {/* Notification Bell Button */}
+            {!currentUser && (
+              <motion.button
+                whileHover={{ scale: 1.03 }}
+                whileTap={{ scale: 0.97 }}
+                type="button"
+                onClick={handleGoogleLogin}
+                className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#1A1625] border border-[#B892FF]/40 text-xs font-semibold text-[#B892FF] hover:bg-[#B892FF]/15 flex items-center gap-1.5 cursor-pointer"
+              >
+                <LogIn className="w-3.5 h-3.5" />
+                <span>Sign In</span>
+              </motion.button>
+            )}
+
             <button
               type="button"
               onClick={() => {
@@ -698,13 +852,14 @@ export default function App() {
                 setProfileMenuOpen(false);
               }}
               className="relative min-h-[42px] min-w-[42px] rounded-full bg-[#1A1625] hover:bg-[#241E33] border border-white/[0.08] text-zinc-200 flex items-center justify-center transition-colors cursor-pointer"
-              aria-label="View notifications and new releases"
+              aria-label="View notifications"
             >
               <Bell className="w-4 h-4" />
-              <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-[#FF5E5E]" />
+              {catalog.length > 0 && (
+                <span className="absolute top-2.5 right-2.5 w-2 h-2 rounded-full bg-[#FF5E5E]" />
+              )}
             </button>
 
-            {/* User Profile Avatar Button */}
             <button
               type="button"
               onClick={() => {
@@ -714,551 +869,526 @@ export default function App() {
               className="min-h-[42px] min-w-[42px] rounded-full p-0.5 bg-gradient-to-tr from-[#B892FF] to-[#FF8A3D] cursor-pointer"
               aria-label="Open user profile menu"
             >
-              <div className="w-9 h-9 rounded-full bg-[#1A1625] flex items-center justify-center text-xs font-bold text-white font-display">
-                CW
-              </div>
+              {currentUser?.photoURL ? (
+                <img
+                  src={currentUser.photoURL}
+                  alt={currentUser.displayName || 'User'}
+                  referrerPolicy="no-referrer"
+                  className="w-9 h-9 rounded-full object-cover"
+                />
+              ) : (
+                <div className="w-9 h-9 rounded-full bg-[#1A1625] flex items-center justify-center text-xs font-bold text-white font-display">
+                  {currentUser?.email
+                    ? currentUser.email.slice(0, 2).toUpperCase()
+                    : 'ZP'}
+                </div>
+              )}
             </button>
 
             {/* Notifications Dropdown Popover */}
-            {notificationsOpen && (
-              <div className="absolute right-0 top-14 w-80 rounded-2xl bg-[#1A1625] border border-white/15 p-4 shadow-2xl z-50 space-y-3">
-                <div className="flex items-center justify-between">
-                  <span className="text-xs font-bold text-white uppercase tracking-wider">
-                    New Releases & Streams
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => setNotificationsOpen(false)}
-                    className="text-xs text-zinc-400 hover:text-white cursor-pointer"
-                  >
-                    Close
-                  </button>
-                </div>
-                <div className="space-y-2">
-                  {featuredItems.slice(0, 3).map((item) => (
+            <AnimatePresence>
+              {notificationsOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                  transition={{ duration: 0.18 }}
+                  className="absolute right-0 top-14 w-80 rounded-2xl bg-[#1A1625] border border-white/15 p-4 shadow-2xl z-50 space-y-3"
+                >
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-white uppercase tracking-wider">
+                      Latest on ZAPPY
+                    </span>
                     <button
-                      key={item.id}
                       type="button"
-                      onClick={() => handleSelectMedia(item, true)}
-                      className="w-full text-left p-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] transition-colors flex items-center justify-between gap-2 cursor-pointer"
+                      onClick={() => setNotificationsOpen(false)}
+                      className="text-xs text-zinc-400 hover:text-white cursor-pointer"
                     >
-                      <div className="min-w-0">
-                        <p className="text-xs font-bold text-white truncate">
-                          {item.title}
-                        </p>
-                        <p className="text-[11px] text-[#B892FF] truncate">
-                          Authorized HD Stream Ready
-                        </p>
-                      </div>
-                      <Play className="w-3.5 h-3.5 text-[#B892FF] fill-current shrink-0" />
+                      Close
                     </button>
-                  ))}
-                </div>
-              </div>
-            )}
+                  </div>
+                  {featuredItems.length === 0 ? (
+                    <p className="text-xs text-zinc-400">
+                      No movies added yet. Sign in as {ADMIN_EMAIL} to add movies via CineSrc.st & JustWatch!
+                    </p>
+                  ) : (
+                    <div className="space-y-2">
+                      {featuredItems.slice(0, 3).map((item) => (
+                        <button
+                          key={item.id}
+                          type="button"
+                          onClick={() => handleSelectMedia(item, true)}
+                          className="w-full text-left p-2.5 rounded-xl bg-white/[0.04] hover:bg-white/[0.09] transition-colors flex items-center justify-between gap-2 cursor-pointer"
+                        >
+                          <div className="min-w-0">
+                            <p className="text-xs font-bold text-white truncate">
+                              {item.title}
+                            </p>
+                            <p className="text-[11px] text-[#B892FF] truncate font-mono-tabular">
+                              TMDB #{item.tmdbId} · CineSrc.st Ready
+                            </p>
+                          </div>
+                          <Play className="w-3.5 h-3.5 text-[#B892FF] fill-current shrink-0" />
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
 
             {/* Profile Dropdown Popover */}
-            {profileMenuOpen && (
-              <div className="absolute right-0 top-14 w-56 rounded-2xl bg-[#1A1625] border border-white/15 p-3 shadow-2xl z-50 space-y-1">
-                <div className="px-3 py-2 border-b border-white/[0.08]">
-                  <p className="text-xs font-bold text-white">CineWave Viewer</p>
-                  <p className="text-[11px] text-zinc-400">
-                    {watchlistIds.length} Saved in Favourites
-                  </p>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('watchlist')}
-                  className="w-full text-left px-3 py-2 rounded-xl text-xs text-zinc-200 hover:bg-white/[0.07] cursor-pointer"
+            <AnimatePresence>
+              {profileMenuOpen && (
+                <motion.div
+                  initial={{ opacity: 0, y: -8, scale: 0.96 }}
+                  animate={{ opacity: 1, y: 0, scale: 1 }}
+                  exit={{ opacity: 0, y: -8, scale: 0.96 }}
+                  transition={{ duration: 0.18 }}
+                  className="absolute right-0 top-14 w-64 rounded-2xl bg-[#1A1625] border border-white/15 p-3 shadow-2xl z-50 space-y-1"
                 >
-                  My Favourites ({watchlistIds.length})
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('continue_watching')}
-                  className="w-full text-left px-3 py-2 rounded-xl text-xs text-zinc-200 hover:bg-white/[0.07] cursor-pointer"
-                >
-                  Continue Watching
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setProfileMenuOpen(false);
-                    setActiveModal('advertising');
-                  }}
-                  className="w-full text-left px-3 py-2 rounded-xl text-xs text-zinc-200 hover:bg-white/[0.07] cursor-pointer"
-                >
-                  Ad Slot Settings ({adsEnabled ? 'On' : 'Off'})
-                </button>
-              </div>
-            )}
+                  <div className="px-3 py-2 border-b border-white/[0.08]">
+                    <p className="text-xs font-bold text-white truncate">
+                      {currentUser
+                        ? currentUser.displayName || currentUser.email
+                        : 'Guest Viewer'}
+                    </p>
+                    <p className="text-[11px] text-zinc-400 truncate">
+                      {currentUser
+                        ? isAdmin
+                          ? 'Verified ZAPPY Admin'
+                          : currentUser.email
+                        : 'Sign in with Google to sync Favourites'}
+                    </p>
+                  </div>
+
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openAdminStudio(null)}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-bold text-[#B892FF] hover:bg-white/[0.07] cursor-pointer flex items-center gap-2"
+                    >
+                      <ShieldCheck className="w-3.5 h-3.5" />
+                      <span>Open Admin Panel</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('watchlist')}
+                    className="w-full text-left px-3 py-2 rounded-xl text-xs text-zinc-200 hover:bg-white/[0.07] cursor-pointer"
+                  >
+                    My Favourites ({watchlistIds.length})
+                  </button>
+
+                  {currentUser ? (
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs text-red-300 hover:bg-white/[0.07] cursor-pointer"
+                    >
+                      Sign Out
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleGoogleLogin}
+                      className="w-full text-left px-3 py-2 rounded-xl text-xs font-semibold text-[#B892FF] hover:bg-white/[0.07] cursor-pointer"
+                    >
+                      Sign in with Google
+                    </button>
+                  )}
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </header>
 
         {/* Session Feedback Toast */}
-        {sessionToast && (
-          <div className="my-2 px-4 py-2.5 rounded-xl bg-[#221D30] border border-[#B892FF]/40 text-xs text-zinc-100 flex items-center justify-between">
-            <span>{sessionToast}</span>
-            <button
-              type="button"
-              onClick={() => setSessionToast(null)}
-              className="text-zinc-400 hover:text-white cursor-pointer"
+        <AnimatePresence>
+          {sessionToast && (
+            <motion.div
+              initial={{ opacity: 0, y: -10 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              className="my-2 px-4 py-2.5 rounded-xl bg-[#221D30] border border-[#B892FF]/40 text-xs text-zinc-100 flex items-center justify-between"
             >
-              <X className="w-3.5 h-3.5" />
-            </button>
-          </div>
-        )}
+              <span>{sessionToast}</span>
+              <button
+                type="button"
+                onClick={() => setSessionToast(null)}
+                className="text-zinc-400 hover:text-white cursor-pointer"
+              >
+                <X className="w-3.5 h-3.5" />
+              </button>
+            </motion.div>
+          )}
+        </AnimatePresence>
 
-        {/* API Fallback Notice */}
-        {apiErrorBanner && (
-          <div className="my-2 bg-[#1A1625] border border-white/10 rounded-xl px-4 py-2 text-center text-xs text-zinc-300">
-            {apiErrorBanner}
-          </div>
-        )}
-
-        {/* MAIN VIEWPORT CONTENT */}
+        {/* MAIN VIEWPORT CONTENT WITH ANIMATED PAGE TRANSITIONS */}
         <main className="flex-1 space-y-8 pt-2 pb-10">
-          {activeView === 'details' && selectedMedia ? (
-            <DetailsView
-              item={selectedMedia}
-              relatedItems={relatedForSelected}
-              watchlistIds={watchlistIds}
-              inWatchlist={watchlistIds.includes(selectedMedia.id)}
-              autoPlayInitial={autoPlayOnOpen}
-              adsEnabled={adsEnabled}
-              onBack={() => setActiveView('home')}
-              onSelectMedia={handleSelectMedia}
-              onToggleWatchlist={handleToggleWatchlist}
-              onSelectGenre={(genre) => {
-                setSelectedGenre(genre);
-                setActiveView('genres');
-              }}
-              onToggleAds={() => setAdsEnabled((prev) => !prev)}
-              onOpenAdPolicy={() => setActiveModal('advertising')}
-            />
-          ) : activeView === 'not_found' ? (
-            <section className="max-w-2xl mx-auto px-4 py-16 text-center space-y-5">
-              <div className="w-16 h-16 rounded-2xl bg-[#1A1625] border border-white/10 flex items-center justify-center mx-auto text-[#B892FF]">
-                <AlertTriangle className="w-8 h-8" />
-              </div>
-              <p className="text-xs font-mono-tabular uppercase tracking-widest text-[#B892FF]">
-                ERROR 404 · TITLE NOT FOUND
-              </p>
-              <h1 className="text-2xl sm:text-4xl font-bold text-white font-display">
-                This Title Isn&rsquo;t in the CineWave Vault
-              </h1>
-              <p className="text-sm text-zinc-400">
-                The movie or episode you requested could not be found. Return home or explore our full streaming catalog.
-              </p>
-              <div className="pt-2 flex justify-center gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('home')}
-                  className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] text-[#110E17] font-bold text-sm hover:bg-[#C9ABFF] transition-colors cursor-pointer"
-                >
-                  Back to Home
-                </button>
-              </div>
-            </section>
-          ) : activeView === 'watchlist' ? (
-            /* FAVOURITES / MY LIST VIEW */
-            <section className="space-y-6">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.07] pb-5">
-                <div>
-                  <h1 className="text-2xl sm:text-3xl font-bold text-white font-display">
-                    Favourites & My List
-                  </h1>
-                  <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-                    Saved locally in your browser so your personal list persists after refreshing.
-                  </p>
-                </div>
-
-                {watchlistItems.length > 0 && (
-                  <button
-                    type="button"
-                    onClick={() => setWatchlistIds([])}
-                    className="min-h-[40px] px-4 py-2 rounded-xl bg-[#1A1625] border border-white/10 text-xs font-medium text-zinc-300 hover:text-white transition-colors flex items-center gap-1.5 self-start cursor-pointer"
-                  >
-                    <Trash2 className="w-3.5 h-3.5 text-[#B892FF]" />
-                    <span>Clear Favourites</span>
-                  </button>
-                )}
-              </div>
-
-              {watchlistItems.length === 0 ? (
-                <div className="rounded-3xl bg-[#1A1625] border border-white/[0.08] p-10 text-center max-w-lg mx-auto my-6 space-y-4">
-                  <div className="w-12 h-12 rounded-2xl bg-[#241E33] flex items-center justify-center mx-auto text-[#B892FF]">
-                    <Bookmark className="w-6 h-6" />
-                  </div>
-                  <h2 className="text-xl font-bold text-white font-display">
-                    Your Favourites List Is Empty
-                  </h2>
-                  <p className="text-sm text-zinc-400">
-                    Add movies or TV shows to your Favourites from any card or banner to access them quickly here.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('home')}
-                    className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] text-[#110E17] font-bold text-sm hover:bg-[#C9ABFF] transition-colors cursor-pointer"
-                  >
-                    Discover Movies & Series
-                  </button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-5">
-                  {watchlistItems.map((item) => (
-                    <MovieCard
-                      key={item.id}
-                      item={item}
-                      inWatchlist={watchlistIds.includes(item.id)}
-                      onSelect={handleSelectMedia}
-                      onToggleWatchlist={handleToggleWatchlist}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          ) : activeView === 'collections' ? (
-            /* MY COLLECTIONS VIEW */
-            <section className="space-y-8">
-              <div className="border-b border-white/[0.07] pb-4">
-                <h1 className="text-2xl sm:text-3xl font-bold text-white font-display">
-                  My Collections
-                </h1>
-                <p className="text-xs sm:text-sm text-zinc-400 mt-1">
-                  Curated thematic anthologies and open-movie festival selections
-                </p>
-              </div>
-
-              <CarouselRow
-                title="Blender Open Movie Anthology (Playable HD)"
-                subtitle="Verified Creative Commons short films with full HTML5 streaming"
-                items={catalog.filter((i) => i.availabilityStatus === 'playable_demo')}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-              />
-
-              <CarouselRow
-                title="Magical Worlds & Family Quests"
-                subtitle="Dimensional portals, clockwork sprites, and animated adventures"
-                items={getItemsByGenre('Family')}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-              />
-            </section>
-          ) : activeView === 'home' && !isSearchingOrFilteringOnHome ? (
-            /* HOME DASHBOARD (Exact Match to Reference UI: Hero Card -> Continue Watching -> You Might Like -> Genre Carousels) */
-            <div className="space-y-8">
-              <HeroBanner
-                featuredItems={featuredItems}
-                activeHeroIndex={activeHeroIndex}
-                onSelectHeroIndex={setActiveHeroIndex}
-                watchlistIds={watchlistIds}
-                onPlayMedia={(item) => handleSelectMedia(item, true)}
-                onOpenDetails={(item) => handleSelectMedia(item, false)}
-                onToggleWatchlist={handleToggleWatchlist}
-              />
-
-              {/* Continue Watching Landscape Row (Matching Reference Image) */}
-              <ContinueWatchingRow
-                items={continueWatchingItems}
-                onSelectMedia={handleSelectMedia}
-                onSeeAll={() => handleNavigate('continue_watching')}
-              />
-
-              {/* You Might Like Row (Matching Reference Image) */}
-              <CarouselRow
-                title="You Might Like"
-                items={youMightLikeItems}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => handleNavigate('explore')}
-              />
-
-              <CarouselRow
-                title="Trending Now"
-                items={trendingItems}
-                showRankNumbers
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => handleNavigate('explore')}
-              />
-
-              {/* Configurable Ad-Supported Banner Placeholder */}
-              <AdBanner
-                enabled={adsEnabled}
-                slotId="CW-HOME-MID-LEADERBOARD-01"
-                placementLabel="Homepage Mid-Feed Sponsor Slot"
-                onToggleAds={() => setAdsEnabled((prev) => !prev)}
-                onOpenAdPolicy={() => setActiveModal('advertising')}
-              />
-
-              <CarouselRow
-                title="Popular Movies"
-                items={popularMovies}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => handleNavigate('movies')}
-              />
-
-              <CarouselRow
-                title="Recently Added"
-                items={recentlyAdded}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => handleNavigate('recently_added')}
-              />
-
-              <CarouselRow
-                title="TV Shows & Series"
-                items={tvSeriesItems}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => handleNavigate('series')}
-              />
-
-              <CarouselRow
-                title="Action"
-                items={getItemsByGenre('Action')}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => {
-                  setSelectedGenre('Action');
-                  setActiveView('genres');
-                }}
-              />
-
-              <CarouselRow
-                title="Comedy"
-                items={getItemsByGenre('Comedy')}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => {
-                  setSelectedGenre('Comedy');
-                  setActiveView('genres');
-                }}
-              />
-
-              <CarouselRow
-                title="Drama"
-                items={getItemsByGenre('Drama')}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => {
-                  setSelectedGenre('Drama');
-                  setActiveView('genres');
-                }}
-              />
-
-              <CarouselRow
-                title="Thriller"
-                items={getItemsByGenre('Thriller')}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => {
-                  setSelectedGenre('Thriller');
-                  setActiveView('genres');
-                }}
-              />
-
-              <CarouselRow
-                title="Family"
-                items={getItemsByGenre('Family')}
-                watchlistIds={watchlistIds}
-                onSelectMedia={handleSelectMedia}
-                onToggleWatchlist={handleToggleWatchlist}
-                onExploreAll={() => {
-                  setSelectedGenre('Family');
-                  setActiveView('genres');
-                }}
-              />
-            </div>
-          ) : (
-            /* EXPLORE / SEARCH / GENRES / DOWNLOADS / CONTINUE WATCHING GRID VIEW */
-            <section className="space-y-6">
-              {/* Filter & Sort Controls Bar */}
-              <div className="rounded-2xl bg-[#1A1625] border border-white/[0.08] p-4 space-y-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
+          <AnimatePresence mode="wait">
+            {activeView === 'details' && selectedMedia ? (
+              <motion.div
+                key={`details-${selectedMedia.id}`}
+                initial={{ opacity: 0, y: 16 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -12 }}
+                transition={{ duration: 0.28 }}
+              >
+                <DetailsView
+                  item={selectedMedia}
+                  relatedItems={relatedForSelected}
+                  watchlistIds={watchlistIds}
+                  inWatchlist={watchlistIds.includes(selectedMedia.id)}
+                  autoPlayInitial={autoPlayOnOpen}
+                  adsEnabled={adsEnabled}
+                  isAdmin={isAdmin}
+                  onBack={() => setActiveView('home')}
+                  onSelectMedia={handleSelectMedia}
+                  onToggleWatchlist={handleToggleWatchlist}
+                  onSelectGenre={(genre) => {
+                    setSelectedGenre(genre);
+                    setActiveView('genres');
+                  }}
+                  onToggleAds={() => setAdsEnabled((prev) => !prev)}
+                  onOpenAdPolicy={() => setActiveModal('advertising')}
+                  onOpenAdminStudio={(mediaItem) => openAdminStudio(mediaItem)}
+                />
+              </motion.div>
+            ) : activeView === 'watchlist' ? (
+              <motion.section
+                key="watchlist-view"
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-6"
+              >
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 border-b border-white/[0.07] pb-5">
                   <div>
-                    <h1 className="text-xl sm:text-2xl font-bold text-white font-display">
-                      {activeView === 'movies'
-                        ? 'Movies'
-                        : activeView === 'series'
-                        ? 'TV Shows & Series'
-                        : activeView === 'genres'
-                        ? `${selectedGenre === 'All' ? 'All Genres' : selectedGenre}`
-                        : activeView === 'continue_watching'
-                        ? 'Continue Watching'
-                        : activeView === 'recently_added'
-                        ? 'Recently Added'
-                        : activeView === 'downloads'
-                        ? 'Playable Open Streams (Downloads)'
-                        : 'Explore Catalog'}
+                    <h1 className="text-2xl sm:text-3xl font-bold text-white font-display">
+                      Favourites & My List
                     </h1>
-                    <p className="text-xs text-zinc-400 mt-0.5 font-mono-tabular">
-                      Showing {filteredCatalog.length}{' '}
-                      {filteredCatalog.length === 1 ? 'title' : 'titles'}
-                      {searchQuery ? ` matching "${searchQuery}"` : ''}
+                    <p className="text-xs sm:text-sm text-zinc-400 mt-1">
+                      {currentUser
+                        ? `Synced with Cloud Firestore for ${currentUser.email}`
+                        : 'Saved in your browser — sign in with Google to sync across devices.'}
                     </p>
                   </div>
+                </div>
 
-                  <div className="flex flex-wrap items-center gap-2">
-                    {/* Content Type Segmented Controls */}
-                    <div
-                      role="group"
-                      aria-label="Filter by content type"
-                      className="flex items-center bg-[#120F1A] p-1 rounded-xl border border-white/[0.08]"
-                    >
-                      {(
-                        [
-                          { value: 'all', label: 'All' },
-                          { value: 'movie', label: 'Movies' },
-                          { value: 'series', label: 'TV Shows' },
-                        ] as const
-                      ).map((typeOpt) => (
-                        <button
-                          key={typeOpt.value}
-                          type="button"
-                          onClick={() => setSelectedContentType(typeOpt.value)}
-                          className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                            selectedContentType === typeOpt.value
-                              ? 'bg-[#B892FF] text-[#110E17] font-bold'
-                              : 'text-zinc-400 hover:text-white'
-                          }`}
-                        >
-                          {typeOpt.label}
-                        </button>
-                      ))}
+                {watchlistItems.length === 0 ? (
+                  <div className="rounded-3xl bg-[#1A1625] border border-white/[0.08] p-10 text-center max-w-lg mx-auto my-6 space-y-4">
+                    <div className="w-12 h-12 rounded-2xl bg-[#241E33] flex items-center justify-center mx-auto text-[#B892FF]">
+                      <Bookmark className="w-6 h-6" />
                     </div>
-
-                    {/* Playable Demo Toggle */}
+                    <h2 className="text-xl font-bold text-white font-display">
+                      Your Favourites List Is Empty
+                    </h2>
+                    <p className="text-sm text-zinc-400">
+                      Add movies or TV shows to your Favourites to access them quickly here.
+                    </p>
                     <button
                       type="button"
-                      onClick={() => setOnlyPlayableDemo((prev) => !prev)}
-                      className={`min-h-[40px] px-3.5 py-1.5 rounded-xl border text-xs font-semibold transition-colors flex items-center gap-1.5 cursor-pointer ${
-                        onlyPlayableDemo
-                          ? 'bg-[#B892FF]/20 border-[#B892FF] text-[#B892FF]'
-                          : 'bg-[#120F1A] border-white/[0.08] text-zinc-300 hover:text-white'
-                      }`}
+                      onClick={() => handleNavigate('home')}
+                      className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] text-[#110E17] font-bold text-sm hover:bg-[#C9ABFF] transition-colors cursor-pointer"
                     >
-                      <Play className="w-3.5 h-3.5 fill-current" />
-                      <span>Playable Only</span>
+                      Back to Home
                     </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-5">
+                    {watchlistItems.map((item) => (
+                      <MovieCard
+                        key={item.id}
+                        item={item}
+                        inWatchlist={watchlistIds.includes(item.id)}
+                        onSelect={handleSelectMedia}
+                        onToggleWatchlist={handleToggleWatchlist}
+                      />
+                    ))}
+                  </div>
+                )}
+              </motion.section>
+            ) : catalog.length === 0 && !isLoadingCatalog ? (
+              /* EMPTY FIRESTORE CATALOG STATE (All Demo Movies/Shows Removed) */
+              <motion.section
+                key="empty-catalog-stage"
+                initial={{ opacity: 0, scale: 0.97, y: 16 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0 }}
+                transition={{ duration: 0.35 }}
+                className="rounded-3xl bg-gradient-to-br from-[#1E172E] via-[#161222] to-[#110E17] border border-white/10 p-8 sm:p-14 text-center max-w-3xl mx-auto my-8 space-y-6 shadow-2xl"
+              >
+                <div className="w-16 h-16 rounded-2xl bg-[#B892FF]/20 border border-[#B892FF]/40 flex items-center justify-center mx-auto text-[#B892FF]">
+                  <Sparkles className="w-8 h-8" />
+                </div>
 
-                    {/* Sort Select */}
-                    <div className="flex items-center gap-2 bg-[#120F1A] border border-white/[0.08] rounded-xl px-3 min-h-[40px]">
-                      <SlidersHorizontal className="w-3.5 h-3.5 text-[#B892FF] shrink-0" />
-                      <select
-                        aria-label="Sort titles"
-                        value={sortBy}
-                        onChange={(e) => setSortBy(e.target.value as SortOption)}
-                        className="bg-transparent text-xs font-semibold text-white focus:outline-none py-1.5 cursor-pointer"
-                      >
-                        <option value="featured" className="bg-[#1A1625]">
-                          Sort: Popular
-                        </option>
-                        <option value="year_desc" className="bg-[#1A1625]">
-                          Year (Newest)
-                        </option>
-                        <option value="year_asc" className="bg-[#1A1625]">
-                          Year (Oldest)
-                        </option>
-                        <option value="title_asc" className="bg-[#1A1625]">
-                          Title (A–Z)
-                        </option>
-                        <option value="title_desc" className="bg-[#1A1625]">
-                          Title (Z–A)
-                        </option>
-                      </select>
+                <div className="space-y-2">
+                  <span className="px-3 py-1 rounded-full bg-white/[0.06] border border-white/10 text-xs font-mono-tabular text-[#B892FF]">
+                    DEMO MOVIES & SHOWS REMOVED · CLOUD FIRESTORE READY
+                  </span>
+                  <h1 className="text-2xl sm:text-4xl font-bold text-white font-display pt-2">
+                    Welcome to Your Clean ZAPPY Streaming Vault
+                  </h1>
+                  <p className="text-xs sm:text-base text-zinc-300 max-w-xl mx-auto leading-relaxed">
+                    All sample demo movies and TV shows have been removed. Sign in with <strong className="text-[#B892FF]">{ADMIN_EMAIL}</strong> to open the Admin Panel, paste any <strong>JustWatch</strong> link for automatic banner/backdrop artwork, and connect <strong>CineSrc.st</strong> (<code className="text-[#B892FF]">cinesrc.st/embed/movie/TMDB_ID</code>) streams!
+                  </p>
+                </div>
+
+                <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
+                  {isAdmin ? (
+                    <motion.button
+                      whileHover={{ scale: 1.04 }}
+                      whileTap={{ scale: 0.96 }}
+                      type="button"
+                      onClick={() => openAdminStudio(null)}
+                      className="min-h-[48px] px-7 py-3 rounded-2xl bg-[#B892FF] text-[#110E17] font-bold text-sm hover:bg-[#C9ABFF] transition-all flex items-center gap-2 cursor-pointer shadow-xl shadow-[#B892FF]/25"
+                    >
+                      <Plus className="w-5 h-5" />
+                      <span>Open Admin Panel to Add Movies & Shows</span>
+                    </motion.button>
+                  ) : (
+                    <motion.button
+                      whileHover={{ scale: 1.04 }}
+                      whileTap={{ scale: 0.96 }}
+                      type="button"
+                      onClick={handleGoogleLogin}
+                      className="min-h-[48px] px-7 py-3 rounded-2xl bg-[#B892FF] text-[#110E17] font-bold text-sm hover:bg-[#C9ABFF] transition-all flex items-center gap-2 cursor-pointer shadow-xl shadow-[#B892FF]/25"
+                    >
+                      <LogIn className="w-5 h-5" />
+                      <span>Sign in with Google ({ADMIN_EMAIL})</span>
+                    </motion.button>
+                  )}
+                </div>
+              </motion.section>
+            ) : activeView === 'home' && !isSearchingOrFilteringOnHome ? (
+              <motion.div
+                key="home-dashboard"
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.3 }}
+                className="space-y-8"
+              >
+                <HeroBanner
+                  featuredItems={featuredItems}
+                  activeHeroIndex={activeHeroIndex}
+                  onSelectHeroIndex={setActiveHeroIndex}
+                  watchlistIds={watchlistIds}
+                  onPlayMedia={(item) => handleSelectMedia(item, true)}
+                  onOpenDetails={(item) => handleSelectMedia(item, false)}
+                  onToggleWatchlist={handleToggleWatchlist}
+                />
+
+                {continueWatchingItems.length > 0 && (
+                  <ContinueWatchingRow
+                    items={continueWatchingItems}
+                    onSelectMedia={handleSelectMedia}
+                    onSeeAll={() => handleNavigate('continue_watching')}
+                  />
+                )}
+
+                <CarouselRow
+                  title="Recently Added on ZAPPY"
+                  items={catalog}
+                  watchlistIds={watchlistIds}
+                  onSelectMedia={handleSelectMedia}
+                  onToggleWatchlist={handleToggleWatchlist}
+                  onExploreAll={() => handleNavigate('explore')}
+                />
+
+                {popularMovies.length > 0 && (
+                  <CarouselRow
+                    title="Movies"
+                    items={popularMovies}
+                    watchlistIds={watchlistIds}
+                    onSelectMedia={handleSelectMedia}
+                    onToggleWatchlist={handleToggleWatchlist}
+                    onExploreAll={() => handleNavigate('movies')}
+                  />
+                )}
+
+                {tvSeriesItems.length > 0 && (
+                  <CarouselRow
+                    title="TV Shows & Series"
+                    items={tvSeriesItems}
+                    watchlistIds={watchlistIds}
+                    onSelectMedia={handleSelectMedia}
+                    onToggleWatchlist={handleToggleWatchlist}
+                    onExploreAll={() => handleNavigate('series')}
+                  />
+                )}
+
+                {ALL_GENRES.map((genre) => {
+                  const genreItems = getItemsByGenre(genre);
+                  if (genreItems.length === 0) return null;
+                  return (
+                    <CarouselRow
+                      key={genre}
+                      title={genre}
+                      items={genreItems}
+                      watchlistIds={watchlistIds}
+                      onSelectMedia={handleSelectMedia}
+                      onToggleWatchlist={handleToggleWatchlist}
+                      onExploreAll={() => {
+                        setSelectedGenre(genre);
+                        setActiveView('genres');
+                      }}
+                    />
+                  );
+                })}
+              </motion.div>
+            ) : (
+              <motion.section
+                key={`grid-${activeView}`}
+                initial={{ opacity: 0, y: 14 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -10 }}
+                transition={{ duration: 0.25 }}
+                className="space-y-6"
+              >
+                <div className="rounded-2xl bg-[#1A1625] border border-white/[0.08] p-4 space-y-4">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <h1 className="text-xl sm:text-2xl font-bold text-white font-display">
+                        {activeView === 'movies'
+                          ? 'Movies'
+                          : activeView === 'series'
+                          ? 'TV Shows & Series'
+                          : activeView === 'genres'
+                          ? `${
+                              selectedGenre === 'All'
+                                ? 'All Genres'
+                                : selectedGenre
+                            }`
+                          : 'Explore ZAPPY Catalog'}
+                      </h1>
+                      <p className="text-xs text-zinc-400 mt-0.5 font-mono-tabular">
+                        Showing {filteredCatalog.length}{' '}
+                        {filteredCatalog.length === 1 ? 'title' : 'titles'}
+                        {searchQuery ? ` matching "${searchQuery}"` : ''}
+                      </p>
                     </div>
 
-                    {(searchQuery ||
-                      selectedGenre !== 'All' ||
-                      selectedContentType !== 'all' ||
-                      onlyPlayableDemo ||
-                      sortBy !== 'featured') && (
-                      <button
-                        type="button"
-                        onClick={resetAllFilters}
-                        className="min-h-[40px] px-3.5 py-1.5 rounded-xl bg-[#241E33] text-xs font-semibold text-zinc-200 hover:text-white cursor-pointer"
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div
+                        role="group"
+                        aria-label="Filter by content type"
+                        className="flex items-center bg-[#120F1A] p-1 rounded-xl border border-white/[0.08]"
                       >
-                        Reset
-                      </button>
-                    )}
+                        {(
+                          [
+                            { value: 'all', label: 'All' },
+                            { value: 'movie', label: 'Movies' },
+                            { value: 'series', label: 'TV Shows' },
+                          ] as const
+                        ).map((typeOpt) => (
+                          <button
+                            key={typeOpt.value}
+                            type="button"
+                            onClick={() =>
+                              setSelectedContentType(typeOpt.value)
+                            }
+                            className={`min-h-[34px] px-3 py-1 rounded-lg text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                              selectedContentType === typeOpt.value
+                                ? 'bg-[#B892FF] text-[#110E17] font-bold'
+                                : 'text-zinc-400 hover:text-white'
+                            }`}
+                          >
+                            {typeOpt.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center gap-2 bg-[#120F1A] border border-white/[0.08] rounded-xl px-3 min-h-[40px]">
+                        <SlidersHorizontal className="w-3.5 h-3.5 text-[#B892FF] shrink-0" />
+                        <select
+                          aria-label="Sort titles"
+                          value={sortBy}
+                          onChange={(e) =>
+                            setSortBy(e.target.value as SortOption)
+                          }
+                          className="bg-transparent text-xs font-semibold text-white focus:outline-none py-1.5 cursor-pointer"
+                        >
+                          <option value="featured" className="bg-[#1A1625]">
+                            Sort: Featured
+                          </option>
+                          <option value="year_desc" className="bg-[#1A1625]">
+                            Year (Newest)
+                          </option>
+                          <option value="year_asc" className="bg-[#1A1625]">
+                            Year (Oldest)
+                          </option>
+                          <option value="title_asc" className="bg-[#1A1625]">
+                            Title (A–Z)
+                          </option>
+                          <option value="title_desc" className="bg-[#1A1625]">
+                            Title (Z–A)
+                          </option>
+                        </select>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
+                    {['All', ...ALL_GENRES].map((genre) => {
+                      const active = selectedGenre === genre;
+                      return (
+                        <button
+                          key={genre}
+                          type="button"
+                          onClick={() => setSelectedGenre(genre)}
+                          className={`min-h-[36px] px-3.5 py-1 rounded-xl text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
+                            active
+                              ? 'bg-[#B892FF] text-[#110E17] font-bold'
+                              : 'bg-[#120F1A] border border-white/[0.08] text-zinc-300 hover:text-white'
+                          }`}
+                        >
+                          {genre}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
-                {/* Genre Filter Pills */}
-                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
-                  {['All', ...ALL_GENRES].map((genre) => {
-                    const active = selectedGenre === genre;
-                    return (
-                      <button
-                        key={genre}
-                        type="button"
-                        onClick={() => setSelectedGenre(genre)}
-                        className={`min-h-[36px] px-3.5 py-1 rounded-xl text-xs font-medium transition-colors whitespace-nowrap shrink-0 cursor-pointer ${
-                          active
-                            ? 'bg-[#B892FF] text-[#110E17] font-bold'
-                            : 'bg-[#120F1A] border border-white/[0.08] text-zinc-300 hover:text-white'
-                        }`}
-                      >
-                        {genre}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              {isLoadingCatalog ? (
-                <div className="py-16 text-center text-sm text-zinc-400">
-                  Loading catalog...
-                </div>
-              ) : filteredCatalog.length === 0 ? (
-                <div className="rounded-3xl bg-[#1A1625] border border-white/[0.08] p-10 text-center max-w-lg mx-auto my-6 space-y-4">
-                  <div className="w-12 h-12 rounded-2xl bg-[#241E33] flex items-center justify-center mx-auto text-[#B892FF]">
-                    <Search className="w-6 h-6" />
+                {isLoadingCatalog ? (
+                  <div className="py-16 text-center text-sm text-zinc-400">
+                    Loading ZAPPY Firestore catalog...
                   </div>
-                  <h2 className="text-xl font-bold text-white font-display">
-                    No Matching Titles Found
-                  </h2>
-                  <p className="text-sm text-zinc-400">
-                    No films or series matched your active filters. Reset your filters to browse the full catalog.
-                  </p>
-                  <button
-                    type="button"
-                    onClick={resetAllFilters}
-                    className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] text-[#110E17] font-bold text-sm hover:bg-[#C9ABFF] transition-colors cursor-pointer"
-                  >
-                    Clear Filters
-                  </button>
-                </div>
-              ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-5">
-                  {filteredCatalog.map((item) => (
-                    <MovieCard
-                      key={item.id}
-                      item={item}
-                      inWatchlist={watchlistIds.includes(item.id)}
-                      onSelect={handleSelectMedia}
-                      onToggleWatchlist={handleToggleWatchlist}
-                    />
-                  ))}
-                </div>
-              )}
-            </section>
-          )}
+                ) : filteredCatalog.length === 0 ? (
+                  <div className="rounded-3xl bg-[#1A1625] border border-white/[0.08] p-10 text-center max-w-lg mx-auto my-6 space-y-4">
+                    <div className="w-12 h-12 rounded-2xl bg-[#241E33] flex items-center justify-center mx-auto text-[#B892FF]">
+                      <Search className="w-6 h-6" />
+                    </div>
+                    <h2 className="text-xl font-bold text-white font-display">
+                      No Matching Titles Found
+                    </h2>
+                    <button
+                      type="button"
+                      onClick={resetAllFilters}
+                      className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] text-[#110E17] font-bold text-sm hover:bg-[#C9ABFF] transition-colors cursor-pointer"
+                    >
+                      Clear Filters
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 gap-4 sm:gap-5">
+                    {filteredCatalog.map((item) => (
+                      <MovieCard
+                        key={item.id}
+                        item={item}
+                        inWatchlist={watchlistIds.includes(item.id)}
+                        onSelect={handleSelectMedia}
+                        onToggleWatchlist={handleToggleWatchlist}
+                      />
+                    ))}
+                  </div>
+                )}
+              </motion.section>
+            )}
+          </AnimatePresence>
         </main>
 
         {/* Responsive Footer */}
@@ -1269,13 +1399,22 @@ export default function App() {
                 <Tv className="w-3.5 h-3.5" />
               </div>
               <span className="text-sm font-bold text-white font-display">
-                CineWave
+                ZAPPY
               </span>
               <span>·</span>
-              <span>Free Ad-Supported Streaming Concept</span>
+              <span>Powered by Firebase, CineSrc.st & JustWatch</span>
             </div>
 
             <div className="flex flex-wrap items-center gap-x-5 gap-y-2 text-zinc-300 font-medium">
+              {isAdmin && (
+                <button
+                  type="button"
+                  onClick={() => openAdminStudio(null)}
+                  className="text-[#B892FF] hover:underline cursor-pointer"
+                >
+                  Admin Panel
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => setActiveModal('about')}
@@ -1304,13 +1443,6 @@ export default function App() {
               >
                 Terms
               </button>
-              <button
-                type="button"
-                onClick={() => setActiveModal('advertising')}
-                className="hover:text-[#B892FF] transition-colors cursor-pointer"
-              >
-                Advertising
-              </button>
             </div>
           </div>
         </footer>
@@ -1327,7 +1459,11 @@ export default function App() {
             { id: 'explore' as NavView, label: 'Explore', icon: Compass },
             { id: 'genres' as NavView, label: 'Genres', icon: Layers },
             { id: 'watchlist' as NavView, label: 'Favourites', icon: Bookmark },
-            { id: 'continue_watching' as NavView, label: 'Continue', icon: Play },
+            {
+              id: 'continue_watching' as NavView,
+              label: 'Continue',
+              icon: Play,
+            },
           ] as const
         ).map((item) => {
           const IconComponent = item.icon;
@@ -1352,6 +1488,17 @@ export default function App() {
           );
         })}
       </nav>
+
+      {/* Admin Studio Modal */}
+      <AdminStudioModal
+        isOpen={adminStudioOpen}
+        currentUser={currentUser}
+        prefillMedia={adminPrefillMedia}
+        catalog={catalog}
+        videoAdConfig={videoAdConfig}
+        onClose={() => setAdminStudioOpen(false)}
+        onSelectMediaToWatch={(item) => handleSelectMedia(item, true)}
+      />
 
       {/* Footer & Settings Info Modal */}
       <InfoModal

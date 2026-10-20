@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { X } from 'lucide-react';
 
 export type InfoModalType =
@@ -22,121 +23,135 @@ export const InfoModal: React.FC<InfoModalProps> = ({
   onToggleAds,
   onClose,
 }) => {
-  if (!modalType) return null;
-
   const contentMap: Record<
     Exclude<InfoModalType, null>,
     { title: string; subtitle: string; paragraphs: string[] }
   > = {
     about: {
-      title: 'About CineWave',
-      subtitle: 'Free, ad-supported cinema and television discovery.',
+      title: 'About ZAPPY',
+      subtitle: 'Firebase-powered streaming platform with CineSrc.st & JustWatch integration.',
       paragraphs: [
-        'CineWave is a modern, full-stack movie and TV streaming web application designed for Android mobile devices, tablets, laptops, and desktop browsers.',
-        'Our catalog architecture strictly separates movie metadata from playable video stream records. Only verified open-licensed films (such as Blender Foundation Creative Commons open movies and public demo streams) are marked as playable in this environment, while additional catalog entries clearly display their metadata preview status without fabricating unauthorized streams.',
+        'ZAPPY is a full-stack movie and TV streaming web application powered by Firebase Authentication (Google Sign-In) and Cloud Firestore.',
+        'Admins can publish movies and TV shows directly from the Admin Panel using CineSrc.st embed links and JustWatch URLs to automatically extract posters, banners, and widescreen backdrops.',
       ],
     },
     contact: {
-      title: 'Contact & Technical Support',
-      subtitle: 'Get in touch with the CineWave editorial and engineering team.',
+      title: 'Contact & Admin Access',
+      subtitle: 'Get in touch with ZAPPY administration.',
       paragraphs: [
-        'For catalog licensing inquiries, open-movie submissions, or playback diagnostics across Android and desktop browsers, reach our team via our support desk.',
-        'Editorial & Licensing Desk: licensing@cinewave.example.com · Technical Operations: support@cinewave.example.com',
+        'Sign in with Google using the authorized administrator account (pawarayushai1@gmail.com) to unlock the ZAPPY Admin Panel and publish new movies or series.',
+        'Admin Contact: pawarayushai1@gmail.com',
       ],
     },
     privacy: {
-      title: 'Privacy Policy',
-      subtitle: 'How CineWave handles local preferences and watchlist storage.',
+      title: 'Privacy & Firebase Security',
+      subtitle: 'How ZAPPY protects user accounts and Cloud Firestore data.',
       paragraphs: [
-        'CineWave stores your "My List" watchlist and ad-placeholder visibility preferences locally in your browser using HTML5 localStorage under the key "cinewave_watchlist_v1".',
-        'No personal viewing history or account credentials are transmitted to third-party trackers. When an external movie metadata API is configured on the server, requests are proxied server-side so browser clients never expose API secrets.',
+        'ZAPPY uses Firebase Authentication with Google Sign-In and enforces strict Cloud Firestore Security Rules so only verified administrators can create, update, or remove catalog entries.',
+        'Signed-in users have private Cloud Firestore watchlists scoped strictly to their authenticated UID.',
       ],
     },
     terms: {
-      title: 'Terms of Use & Content Licensing',
-      subtitle: 'Transparent rules on authorized playback and catalog metadata.',
+      title: 'Terms of Use',
+      subtitle: 'Streaming embeds and metadata artwork.',
       paragraphs: [
-        'Playable demo streams featured on CineWave are distributed under Creative Commons Attribution licenses (CC-BY 2.5 / CC-BY 3.0) from the Blender Foundation or authorized public sample repositories.',
-        'Titles marked "Catalog Preview Only" are provided strictly for search, filtering, and watchlist testing; CineWave never claims unauthorized copyrighted movies are available for streaming.',
+        'Titles added via the ZAPPY Admin Studio use CineSrc.st embed links (https://cinesrc.st/embed/movie/:tmdbId or /tv/:tmdbId) and artwork fetched via JustWatch metadata.',
+        'All demo placeholder movies and shows have been removed so your catalog contains exclusively the titles published by the administrator.',
       ],
     },
     advertising: {
-      title: 'Free, Ad-Supported Streaming Architecture',
-      subtitle: 'Transparent ad placeholder slots with zero fake claims or video interruptions.',
+      title: 'Display Banner Placeholders',
+      subtitle: 'Configurable display banner slots.',
       paragraphs: [
-        'CineWave is architected for a free, ad-supported streaming model (FAST / AVOD). In this environment, designated banner slots are clearly labeled as architectural placeholders.',
-        'We do not display fabricated commercial advertisements, misleading buttons, or unverified advertiser claims, and we never interrupt demo video playback with fake ad breaks. No ad revenue is active until a legitimate ad provider approves and configures the site.',
+        'ZAPPY includes optional display banner slots that can be toggled on or off at any time.',
+        'You can enable or disable page banner slots below.',
       ],
     },
   };
 
-  const activeContent = contentMap[modalType];
+  const activeContent = modalType ? contentMap[modalType] : null;
 
   return (
-    <div
-      className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
-      role="dialog"
-      aria-modal="true"
-      aria-labelledby="modal-title"
-    >
-      <div className="w-full max-w-lg rounded-2xl bg-[#131318] border border-zinc-800 p-6 space-y-4 shadow-2xl">
-        <div className="flex items-start justify-between gap-4">
-          <div>
-            <h2
-              id="modal-title"
-              className="text-xl font-bold text-white font-display"
-            >
-              {activeContent.title}
-            </h2>
-            <p className="text-xs text-[#FF6B00] mt-0.5">
-              {activeContent.subtitle}
-            </p>
-          </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-[40px] min-w-[40px] rounded-lg bg-zinc-900 border border-zinc-800 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer"
-            aria-label="Close dialog"
+    <AnimatePresence>
+      {modalType && activeContent && (
+        <motion.div
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.2 }}
+          className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4"
+          role="dialog"
+          aria-modal="true"
+          aria-labelledby="modal-title"
+          onClick={onClose}
+        >
+          <motion.div
+            initial={{ opacity: 0, scale: 0.94, y: 16 }}
+            animate={{ opacity: 1, scale: 1, y: 0 }}
+            exit={{ opacity: 0, scale: 0.94, y: 16 }}
+            transition={{ duration: 0.25, ease: 'easeOut' }}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg rounded-2xl bg-[#161220] border border-white/15 p-6 space-y-4 shadow-2xl"
           >
-            <X className="w-4 h-4" />
-          </button>
-        </div>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h2
+                  id="modal-title"
+                  className="text-xl font-bold text-white font-display"
+                >
+                  {activeContent.title}
+                </h2>
+                <p className="text-xs text-[#B892FF] mt-0.5">
+                  {activeContent.subtitle}
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={onClose}
+                className="min-h-[40px] min-w-[40px] rounded-lg bg-[#1E192B] border border-white/10 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer"
+                aria-label="Close dialog"
+              >
+                <X className="w-4 h-4" />
+              </button>
+            </div>
 
-        <div className="space-y-3 text-sm text-zinc-300 leading-relaxed">
-          {activeContent.paragraphs.map((p, idx) => (
-            <p key={idx}>{p}</p>
-          ))}
-        </div>
+            <div className="space-y-3 text-sm text-zinc-300 leading-relaxed">
+              {activeContent.paragraphs.map((p, idx) => (
+                <p key={idx}>{p}</p>
+              ))}
+            </div>
 
-        {modalType === 'advertising' && (
-          <div className="pt-3 border-t border-zinc-800 flex items-center justify-between gap-4">
-            <span className="text-xs text-zinc-300">
-              Ad Slot Placeholders Visibility:
-            </span>
-            <button
-              type="button"
-              onClick={onToggleAds}
-              className={`min-h-[38px] px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
-                adsEnabled
-                  ? 'bg-[#FF6B00] text-black'
-                  : 'bg-zinc-800 text-zinc-300 hover:text-white'
-              }`}
-            >
-              {adsEnabled ? 'Enabled (Showing Slots)' : 'Disabled (Hidden)'}
-            </button>
-          </div>
-        )}
+            {modalType === 'advertising' && (
+              <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-4">
+                <span className="text-xs text-zinc-300">
+                  Page Display Banner Placeholders:
+                </span>
+                <button
+                  type="button"
+                  onClick={onToggleAds}
+                  className={`min-h-[38px] px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
+                    adsEnabled
+                      ? 'bg-[#B892FF] text-[#110E17] font-bold'
+                      : 'bg-[#1E192B] text-zinc-300 hover:text-white'
+                  }`}
+                >
+                  {adsEnabled ? 'Enabled (Showing Slots)' : 'Disabled (Hidden)'}
+                </button>
+              </div>
+            )}
 
-        <div className="pt-2 flex justify-end">
-          <button
-            type="button"
-            onClick={onClose}
-            className="min-h-[40px] px-5 py-2 rounded-xl bg-zinc-800 text-xs font-semibold text-white hover:bg-zinc-700 transition-colors cursor-pointer"
-          >
-            Close
-          </button>
-        </div>
-      </div>
-    </div>
+            <div className="pt-2 flex justify-end">
+              <button
+                type="button"
+                onClick={onClose}
+                className="min-h-[40px] px-5 py-2 rounded-xl bg-[#1E192B] text-xs font-semibold text-white hover:bg-[#282238] transition-colors cursor-pointer"
+              >
+                Close
+              </button>
+            </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 };

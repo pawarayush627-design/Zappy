@@ -1,4 +1,5 @@
 import React from 'react';
+import { motion } from 'motion/react';
 import { Play, Plus, Check, Film, Star } from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
@@ -22,9 +23,15 @@ export const MovieCard: React.FC<MovieCardProps> = ({
   const ratingScore = ((item.popularScore || 86) / 10).toFixed(1);
 
   return (
-    <article className="group relative flex flex-col select-none min-w-0">
+    <motion.article
+      initial={{ opacity: 0, y: 14 }}
+      animate={{ opacity: 1, y: 0 }}
+      whileHover={{ y: -6 }}
+      transition={{ duration: 0.28, ease: 'easeOut' }}
+      className="group relative flex flex-col select-none min-w-0"
+    >
       {/* Poster Container */}
-      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-2xl bg-[#181424] ring-1 ring-white/10 cinema-card-shadow transition-all duration-200 ease-out group-hover:-translate-y-1 group-hover:ring-[#B892FF]">
+      <div className="relative aspect-[3/4] w-full overflow-hidden rounded-2xl bg-[#181424] ring-1 ring-white/10 cinema-card-shadow transition-all duration-200 ease-out group-hover:ring-[#B892FF]">
         <button
           type="button"
           onClick={() => onSelect(item, isPlayable)}
@@ -61,7 +68,9 @@ export const MovieCard: React.FC<MovieCardProps> = ({
             </span>
           ) : (
             <span className="text-[10px] sm:text-[11px] font-bold tracking-wider uppercase text-zinc-200 drop-shadow-[0_1px_4px_rgba(0,0,0,0.95)] font-mono-tabular truncate">
-              {item.contentType === 'series' ? `EPS ${item.episodesCount || 8}` : item.maturityRating}
+              {item.contentType === 'series'
+                ? `EPS ${item.episodesCount || 8}`
+                : item.maturityRating}
             </span>
           )}
 
@@ -70,7 +79,7 @@ export const MovieCard: React.FC<MovieCardProps> = ({
               isPlayable ? 'text-[#B892FF]' : 'text-zinc-300'
             }`}
           >
-            {isPlayable ? 'HD · FREE' : 'PREVIEW'}
+            {isPlayable ? 'HD · STREAM' : 'PREVIEW'}
           </span>
         </div>
 
@@ -84,7 +93,9 @@ export const MovieCard: React.FC<MovieCardProps> = ({
                 ? 'bg-[#B892FF] text-[#110E17] hover:bg-[#C9ABFF]'
                 : 'bg-[#191524]/90 text-zinc-200 border border-white/15 hover:bg-[#241E33]'
             }`}
-            aria-label={isPlayable ? `Play ${item.title}` : `Open details for ${item.title}`}
+            aria-label={
+              isPlayable ? `Play ${item.title}` : `Open details for ${item.title}`
+            }
           >
             {isPlayable ? (
               <>
@@ -114,7 +125,11 @@ export const MovieCard: React.FC<MovieCardProps> = ({
             }
             title={inWatchlist ? 'In Favourites' : 'Add to Favourites'}
           >
-            {inWatchlist ? <Check className="w-4 h-4" /> : <Plus className="w-4 h-4" />}
+            {inWatchlist ? (
+              <Check className="w-4 h-4" />
+            ) : (
+              <Plus className="w-4 h-4" />
+            )}
           </button>
         </div>
       </div>
@@ -134,9 +149,15 @@ export const MovieCard: React.FC<MovieCardProps> = ({
         <div className="flex items-center justify-between gap-1 text-[11px] sm:text-xs text-zinc-400 font-mono-tabular min-w-0">
           <div className="flex items-center gap-1 sm:gap-1.5 truncate min-w-0">
             <span>{item.releaseYear}</span>
-            <span aria-hidden="true" className="text-zinc-600">·</span>
-            <span className="font-sans text-zinc-300 truncate">{item.genres[0]}</span>
-            <span aria-hidden="true" className="text-zinc-600">·</span>
+            <span aria-hidden="true" className="text-zinc-600">
+              ·
+            </span>
+            <span className="font-sans text-zinc-300 truncate">
+              {item.genres[0]}
+            </span>
+            <span aria-hidden="true" className="text-zinc-600">
+              ·
+            </span>
             <span>
               {item.contentType === 'series'
                 ? `S${item.seasonsCount || 1}`
@@ -150,6 +171,6 @@ export const MovieCard: React.FC<MovieCardProps> = ({
           </span>
         </div>
       </div>
-    </article>
+    </motion.article>
   );
 };

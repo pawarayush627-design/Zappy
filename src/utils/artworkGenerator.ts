@@ -244,7 +244,7 @@ export function createPosterDataUri(item: {
     <rect width="600" height="800" fill="url(#scrim)" />
 
     <!-- Top Festival / Studio Header -->
-    <text x="300" y="54" text-anchor="middle" fill="#D4D4D8" font-family="sans-serif" font-size="11" font-weight="600" letter-spacing="5" opacity="0.8">CINEWAVE PREMIERE COLLECTION</text>
+    <text x="300" y="54" text-anchor="middle" fill="#D4D4D8" font-family="sans-serif" font-size="11" font-weight="600" letter-spacing="5" opacity="0.8">ZAPPY PREMIERE COLLECTION</text>
     <line x1="210" y1="68" x2="390" y2="68" stroke="${accentHex}" stroke-width="1.5" stroke-opacity="0.55" />
 
     <!-- Inner Specular Frame -->

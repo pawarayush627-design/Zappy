@@ -1,4 +1,5 @@
 export type ContentType = 'movie' | 'series';
+export type TMDBMediaType = 'movie' | 'tv';
 
 export type Genre =
   | 'Action'
@@ -12,6 +13,8 @@ export type Genre =
   | 'Documentary';
 
 export type AvailabilityStatus = 'playable_demo' | 'catalog_preview';
+export type RightsStatus = 'verified' | 'pending' | 'expired' | 'revoked';
+export type StreamFormat = 'mp4' | 'hls' | 'dash' | 'cinesrc';
 
 export interface EpisodeInfo {
   seasonNumber: number;
@@ -19,11 +22,21 @@ export interface EpisodeInfo {
   title: string;
   durationMinutes: number;
   synopsis: string;
+  stillUrl?: string;
   playableSourceId?: string;
+}
+
+export interface SeasonSummary {
+  seasonNumber: number;
+  name: string;
+  episodeCount: number;
+  airDate?: string;
 }
 
 export interface MediaItem {
   id: string;
+  tmdbId: number;
+  mediaType: TMDBMediaType;
   title: string;
   tagline: string;
   synopsis: string;
@@ -36,28 +49,84 @@ export interface MediaItem {
   cast: string[];
   posterUrl: string;
   backdropUrl: string;
+  cinesrcEmbedUrl?: string;
+  justWatchUrl?: string;
+  visibility?: 'public' | 'hidden';
+  authorUid?: string;
   availabilityStatus: AvailabilityStatus;
   availabilityNote: string;
-  /**
-   * Reference ID to VIDEO_SOURCES map in videoSources.ts.
-   * Kept separate from general metadata so unauthorized streams are never fabricated.
-   */
   videoSourceId?: string;
   featured?: boolean;
   trendingRank?: number;
   popularScore?: number;
   recentlyAdded?: boolean;
-  // TV Show specific metadata
   seasonsCount?: number;
   episodesCount?: number;
+  seasons?: SeasonSummary[];
   episodes?: EpisodeInfo[];
-  // Artwork theme parameters for resilient fallback / SVG poster generation
   visualTheme: {
     primaryHex: string;
     secondaryHex: string;
     accentHex: string;
-    motif: 'horizon' | 'velocity' | 'noir' | 'valley' | 'orbit' | 'bastion' | 'harbor' | 'clockwork' | 'canyon' | 'symphony';
+    motif:
+      | 'horizon'
+      | 'velocity'
+      | 'noir'
+      | 'valley'
+      | 'orbit'
+      | 'bastion'
+      | 'harbor'
+      | 'clockwork'
+      | 'canyon'
+      | 'symphony';
   };
+}
+
+export interface AuthorizedVideoAsset {
+  assetId: string;
+  tmdbId: number;
+  mediaType: TMDBMediaType;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  title: string;
+  streamFormat: StreamFormat;
+  manifestOrFileUrl: string;
+  backupStreamUrl?: string;
+  rightsStatus: RightsStatus;
+  allowedTerritories: string[];
+  validFrom: string;
+  validUntil: string;
+  durationSeconds: number;
+  resolutionLabel: string;
+  licenseNotice: string;
+  attribution: string;
+  midRollCueSeconds?: number[];
+}
+
+export interface VideoAdConfig {
+  imaEnabled: boolean;
+  testMode: boolean;
+  vastTagUrl: string;
+  enablePreRoll: boolean;
+  enableMidRoll: boolean;
+}
+
+export interface PlaybackResolutionResponse {
+  authorized: boolean;
+  tmdbId: number;
+  mediaType: TMDBMediaType;
+  seasonNumber?: number;
+  episodeNumber?: number;
+  territory: string;
+  reasonCode:
+    | 'authorized'
+    | 'no_asset_registered'
+    | 'rights_unverified'
+    | 'territory_restricted'
+    | 'date_window_expired';
+  message: string;
+  asset: AuthorizedVideoAsset | null;
+  videoAdConfig: VideoAdConfig;
 }
 
 export interface VideoSourceRecord {

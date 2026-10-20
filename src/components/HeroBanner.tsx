@@ -1,4 +1,5 @@
 import React, { useEffect } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
 import { Play, Download, Check, MoreHorizontal, Flame } from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
@@ -24,7 +25,6 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
 }) => {
   const heroItem = featuredItems[activeHeroIndex] || featuredItems[0];
 
-  // Auto-advance spotlight every 8 seconds
   useEffect(() => {
     if (featuredItems.length <= 1) return;
     const timer = setInterval(() => {
@@ -38,22 +38,36 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   const inWatchlist = watchlistIds.includes(heroItem.id);
 
   return (
-    <section aria-label="Featured Movie Spotlight" className="w-full">
-      {/* Rounded-3xl Hero Card matching reference UI */}
+    <motion.section
+      initial={{ opacity: 0, y: 18 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ duration: 0.4, ease: 'easeOut' }}
+      aria-label="Featured Movie Spotlight"
+      className="w-full"
+    >
       <div className="relative w-full min-h-[360px] sm:min-h-[410px] lg:min-h-[440px] rounded-3xl overflow-hidden border border-white/[0.08] bg-[#171324] flex flex-col justify-between p-6 sm:p-8 lg:p-10 shadow-2xl">
-        {/* Background Widescreen Artwork + Atmospheric Scrims */}
-        <div className="absolute inset-0 select-none pointer-events-none">
-          <MediaArtwork
-            src={heroItem.backdropUrl}
-            alt={`${heroItem.title} backdrop`}
-            item={heroItem}
-            aspectRatio="backdrop"
-            priority
-            className="w-full h-full object-cover object-center transition-all duration-500"
-          />
-          <div className="absolute inset-0 bg-gradient-to-r from-[#120F1D]/95 via-[#120F1D]/70 to-transparent" />
-          <div className="absolute inset-0 bg-gradient-to-t from-[#120F1D]/90 via-transparent to-[#120F1D]/30" />
-        </div>
+        {/* Animated Background Widescreen Artwork */}
+        <AnimatePresence mode="wait">
+          <motion.div
+            key={heroItem.id}
+            initial={{ opacity: 0, scale: 1.04 }}
+            animate={{ opacity: 1, scale: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.55, ease: 'easeOut' }}
+            className="absolute inset-0 select-none pointer-events-none"
+          >
+            <MediaArtwork
+              src={heroItem.backdropUrl}
+              alt={`${heroItem.title} backdrop`}
+              item={heroItem}
+              aspectRatio="backdrop"
+              priority
+              className="w-full h-full object-cover object-center"
+            />
+            <div className="absolute inset-0 bg-gradient-to-r from-[#120F1D]/95 via-[#120F1D]/70 to-transparent" />
+            <div className="absolute inset-0 bg-gradient-to-t from-[#120F1D]/90 via-transparent to-[#120F1D]/30" />
+          </motion.div>
+        </AnimatePresence>
 
         {/* Top-Left "Now Trending" Status Tag */}
         <div className="relative z-10 flex items-center justify-between">
@@ -65,80 +79,90 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
 
         {/* Middle & Bottom Content Lockup */}
         <div className="relative z-10 mt-8 sm:mt-12 flex flex-col sm:flex-row sm:items-end justify-between gap-6">
-          <div className="max-w-xl space-y-3.5">
-            {/* Genre Filter Buttons (Matching Drama / Fantasy tags in reference) */}
-            <div className="flex flex-wrap items-center gap-2">
-              {heroItem.genres.slice(0, 3).map((genre) => (
-                <button
-                  key={genre}
+          <AnimatePresence mode="wait">
+            <motion.div
+              key={heroItem.id}
+              initial={{ opacity: 0, y: 14 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -10 }}
+              transition={{ duration: 0.35, ease: 'easeOut' }}
+              className="max-w-xl space-y-3.5"
+            >
+              <div className="flex flex-wrap items-center gap-2">
+                {heroItem.genres.slice(0, 3).map((genre) => (
+                  <button
+                    key={genre}
+                    type="button"
+                    onClick={() => onOpenDetails(heroItem)}
+                    className="px-3.5 py-1 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/15 text-xs font-medium text-zinc-100 transition-colors cursor-pointer"
+                  >
+                    {genre}
+                  </button>
+                ))}
+              </div>
+
+              <h1
+                className="font-bold text-white tracking-tight font-display leading-[1.1]"
+                style={{ fontSize: 'clamp(1.75rem, 3.2vw, 2.85rem)' }}
+              >
+                {heroItem.title}
+              </h1>
+
+              <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed line-clamp-2 max-w-lg">
+                {heroItem.synopsis}
+              </p>
+
+              <div className="pt-2 flex items-center gap-3">
+                <motion.button
+                  whileHover={{ scale: 1.04 }}
+                  whileTap={{ scale: 0.96 }}
+                  type="button"
+                  onClick={() => onPlayMedia(heroItem)}
+                  className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] hover:bg-[#C9ABFF] text-[#110E17] font-bold text-xs sm:text-sm transition-colors flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer shadow-lg shadow-[#B892FF]/25"
+                >
+                  <Play className="w-4 h-4 fill-current shrink-0" />
+                  <span>Watch Now</span>
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
+                  type="button"
+                  onClick={(e) => onToggleWatchlist(heroItem, e)}
+                  className={`min-h-[44px] min-w-[44px] rounded-xl border backdrop-blur-md flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
+                    inWatchlist
+                      ? 'bg-[#B892FF]/25 border-[#B892FF] text-[#B892FF]'
+                      : 'bg-white/10 hover:bg-white/20 border-white/15 text-white'
+                  }`}
+                  aria-label={
+                    inWatchlist
+                      ? `Remove ${heroItem.title} from Favourites`
+                      : `Save ${heroItem.title} to Favourites`
+                  }
+                  title={inWatchlist ? 'Saved in Favourites' : 'Save to Favourites'}
+                >
+                  {inWatchlist ? (
+                    <Check className="w-4 h-4" />
+                  ) : (
+                    <Download className="w-4 h-4" />
+                  )}
+                </motion.button>
+
+                <motion.button
+                  whileHover={{ scale: 1.05 }}
+                  whileTap={{ scale: 0.95 }}
                   type="button"
                   onClick={() => onOpenDetails(heroItem)}
-                  className="px-3.5 py-1 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/15 text-xs font-medium text-zinc-100 transition-colors cursor-pointer"
+                  className="min-h-[44px] min-w-[44px] rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 backdrop-blur-md text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
+                  aria-label={`More details for ${heroItem.title}`}
+                  title="More Details"
                 >
-                  {genre}
-                </button>
-              ))}
-            </div>
+                  <MoreHorizontal className="w-4 h-4" />
+                </motion.button>
+              </div>
+            </motion.div>
+          </AnimatePresence>
 
-            {/* Expressive Display Headline */}
-            <h1
-              className="font-bold text-white tracking-tight font-display leading-[1.1]"
-              style={{ fontSize: 'clamp(1.75rem, 3.2vw, 2.85rem)' }}
-            >
-              {heroItem.title}
-            </h1>
-
-            {/* 2-Line Synopsis */}
-            <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed line-clamp-2 max-w-lg">
-              {heroItem.synopsis}
-            </p>
-
-            {/* Bottom-Left Action Row: Lavender "Watch Now" + Save/Download Button + "..." More Button */}
-            <div className="pt-2 flex items-center gap-3">
-              <button
-                type="button"
-                onClick={() => onPlayMedia(heroItem)}
-                className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] hover:bg-[#C9ABFF] text-[#110E17] font-bold text-xs sm:text-sm transition-all flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer shadow-lg shadow-[#B892FF]/25"
-              >
-                <Play className="w-4 h-4 fill-current shrink-0" />
-                <span>Watch Now</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={(e) => onToggleWatchlist(heroItem, e)}
-                className={`min-h-[44px] min-w-[44px] rounded-xl border backdrop-blur-md flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
-                  inWatchlist
-                    ? 'bg-[#B892FF]/25 border-[#B892FF] text-[#B892FF]'
-                    : 'bg-white/10 hover:bg-white/20 border-white/15 text-white'
-                }`}
-                aria-label={
-                  inWatchlist
-                    ? `Remove ${heroItem.title} from Favourites`
-                    : `Save ${heroItem.title} to Favourites`
-                }
-                title={inWatchlist ? 'Saved in Favourites' : 'Save to Favourites'}
-              >
-                {inWatchlist ? (
-                  <Check className="w-4 h-4" />
-                ) : (
-                  <Download className="w-4 h-4" />
-                )}
-              </button>
-
-              <button
-                type="button"
-                onClick={() => onOpenDetails(heroItem)}
-                className="min-h-[44px] min-w-[44px] rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 backdrop-blur-md text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
-                aria-label={`More details for ${heroItem.title}`}
-                title="More Details"
-              >
-                <MoreHorizontal className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-
-          {/* Bottom-Right Pagination Pill (Matching reference image) */}
           {featuredItems.length > 1 && (
             <div
               role="tablist"
@@ -167,6 +191,6 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
           )}
         </div>
       </div>
-    </section>
+    </motion.section>
   );
 };

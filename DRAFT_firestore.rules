@@ -1,0 +1,145 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 1. Global Safety Net — Default Deny Catch-All
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // 2. Hardened Global Primitives
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
+
+    function isAdmin() {
+      return isVerifiedUser() && (
+        request.auth.token.email == 'pawarayushai1@gmail.com' ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // 3. Entity Validation Blueprints
+    function isValidCatalogMedia(data) {
+      return data.keys().hasAll([
+          'id', 'tmdbId', 'mediaType', 'contentType', 'title', 'tagline',
+          'synopsis', 'genres', 'releaseYear', 'durationMinutes', 'maturityRating',
+          'directorOrCreator', 'cast', 'posterUrl', 'backdropUrl', 'cinesrcEmbedUrl',
+          'justWatchUrl', 'featured', 'popularScore', 'seasonsCount', 'episodesCount',
+          'visibility', 'authorUid', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'tmdbId', 'mediaType', 'contentType', 'title', 'tagline',
+          'synopsis', 'genres', 'releaseYear', 'durationMinutes', 'maturityRating',
+          'directorOrCreator', 'cast', 'posterUrl', 'backdropUrl', 'cinesrcEmbedUrl',
+          'justWatchUrl', 'featured', 'popularScore', 'seasonsCount', 'episodesCount',
+          'visibility', 'authorUid', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.tmdbId is int && data.tmdbId > 0 &&
+        data.mediaType is string && data.mediaType in ['movie', 'tv'] &&
+        data.contentType is string && data.contentType in ['movie', 'series'] &&
+        data.title is string && data.title.size() >= 1 && data.title.size() <= 200 &&
+        data.tagline is string && data.tagline.size() >= 1 && data.tagline.size() <= 300 &&
+        data.synopsis is string && data.synopsis.size() >= 1 && data.synopsis.size() <= 2000 &&
+        data.genres is list && data.genres.size() >= 1 && data.genres.size() <= 6 && data.genres[0] is string && data.genres[0].size() <= 40 &&
+        data.releaseYear is int && data.releaseYear >= 1900 && data.releaseYear <= 2100 &&
+        data.durationMinutes is int && data.durationMinutes >= 1 && data.durationMinutes <= 1000 &&
+        data.maturityRating is string && data.maturityRating in ['G', 'PG', 'PG-13', 'TV-PG', 'TV-14'] &&
+        data.directorOrCreator is string && data.directorOrCreator.size() >= 1 && data.directorOrCreator.size() <= 160 &&
+        data.cast is list && data.cast.size() >= 1 && data.cast.size() <= 10 && data.cast[0] is string && data.cast[0].size() <= 100 &&
+        data.posterUrl is string && data.posterUrl.size() >= 1 && data.posterUrl.size() <= 2048 &&
+        data.backdropUrl is string && data.backdropUrl.size() >= 1 && data.backdropUrl.size() <= 2048 &&
+        data.cinesrcEmbedUrl is string && data.cinesrcEmbedUrl.size() >= 1 && data.cinesrcEmbedUrl.size() <= 1024 &&
+        data.justWatchUrl is string && data.justWatchUrl.size() <= 1024 &&
+        data.featured is bool &&
+        data.popularScore is int && data.popularScore >= 1 && data.popularScore <= 100 &&
+        data.seasonsCount is int && data.seasonsCount >= 0 && data.seasonsCount <= 100 &&
+        data.episodesCount is int && data.episodesCount >= 0 && data.episodesCount <= 5000 &&
+        data.visibility is string && data.visibility in ['public', 'hidden'] &&
+        isValidId(data.authorUid) && data.authorUid == request.auth.uid &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidWatchlistItem(data) {
+      return data.keys().hasAll(['mediaId', 'ownerId', 'createdAt']) &&
+        data.keys().hasOnly(['mediaId', 'ownerId', 'createdAt']) &&
+        isValidId(data.mediaId) &&
+        isValidId(data.ownerId) &&
+        data.ownerId == request.auth.uid &&
+        data.createdAt is timestamp;
+    }
+
+    // 4. Collection Rules: /catalog/{mediaId}
+    match /catalog/{mediaId} {
+      allow get: if isValidId(mediaId) && (existing().visibility == 'public' || isAdmin());
+      allow list: if existing().visibility == 'public' || (isVerifiedUser() && request.auth.token.email == 'pawarayushai1@gmail.com');
+
+      allow create: if isVerifiedUser() &&
+        isValidId(mediaId) &&
+        isValidCatalogMedia(incoming()) &&
+        incoming().id == mediaId &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(mediaId) &&
+        isValidCatalogMedia(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().authorUid == existing().authorUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'tmdbId', 'mediaType', 'contentType', 'title', 'tagline',
+          'synopsis', 'genres', 'releaseYear', 'durationMinutes', 'maturityRating',
+          'directorOrCreator', 'cast', 'posterUrl', 'backdropUrl', 'cinesrcEmbedUrl',
+          'justWatchUrl', 'featured', 'popularScore', 'seasonsCount', 'episodesCount',
+          'visibility', 'updatedAt'
+        ]) &&
+        isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(mediaId) && isAdmin();
+    }
+
+    // 5. Collection Rules: /watchlists/{watchlistDocId}
+    match /watchlists/{watchlistDocId} {
+      allow get: if isVerifiedUser() && isValidId(watchlistDocId) && existing().ownerId == request.auth.uid;
+      allow list: if isVerifiedUser() && existing().ownerId == request.auth.uid;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(watchlistDocId) &&
+        isValidWatchlistItem(incoming()) &&
+        incoming().createdAt == request.time &&
+        exists(/databases/$(database)/documents/catalog/$(incoming().mediaId));
+
+      allow update: if false;
+
+      allow delete: if isVerifiedUser() && isValidId(watchlistDocId) && existing().ownerId == request.auth.uid;
+    }
+
+    // 6. Collection Rules: /admins/{adminUid}
+    match /admins/{adminUid} {
+      allow get: if isVerifiedUser() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
+      allow list: if false;
+      allow create, update, delete: if false;
+    }
+  }
+}

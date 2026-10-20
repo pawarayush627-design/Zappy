@@ -1,0 +1,229 @@
+{
+  "entities": {
+    "CatalogMedia": {
+      "title": "CatalogMedia",
+      "description": "A movie or TV series entry in the ZAPPY streaming catalog, linked to a TMDB ID, CineSrc.st embed stream, and JustWatch artwork.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Unique document slug or identifier.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "tmdbId": {
+          "type": "integer",
+          "description": "Numeric TMDB ID used for CineSrc.st embed resolution."
+        },
+        "mediaType": {
+          "type": "string",
+          "description": "TMDB media type: movie or tv.",
+          "enum": ["movie", "tv"]
+        },
+        "contentType": {
+          "type": "string",
+          "description": "Display content category: movie or series.",
+          "enum": ["movie", "series"]
+        },
+        "title": {
+          "type": "string",
+          "description": "Display title of the movie or TV show.",
+          "minLength": 1,
+          "maxLength": 200
+        },
+        "tagline": {
+          "type": "string",
+          "description": "Short promotional tagline.",
+          "minLength": 1,
+          "maxLength": 300
+        },
+        "synopsis": {
+          "type": "string",
+          "description": "Full plot overview or description.",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "genres": {
+          "type": "array",
+          "description": "List of genre labels (up to 6).",
+          "maxLength": 6
+        },
+        "releaseYear": {
+          "type": "integer",
+          "description": "4-digit release year."
+        },
+        "durationMinutes": {
+          "type": "integer",
+          "description": "Runtime in minutes."
+        },
+        "maturityRating": {
+          "type": "string",
+          "description": "Content maturity rating.",
+          "enum": ["G", "PG", "PG-13", "TV-PG", "TV-14"]
+        },
+        "directorOrCreator": {
+          "type": "string",
+          "description": "Director or series creator name.",
+          "minLength": 1,
+          "maxLength": 160
+        },
+        "cast": {
+          "type": "array",
+          "description": "Top billed cast names (up to 10).",
+          "maxLength": 10
+        },
+        "posterUrl": {
+          "type": "string",
+          "description": "Poster image URL (extracted from JustWatch or TMDB).",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "backdropUrl": {
+          "type": "string",
+          "description": "Banner/backdrop image URL (extracted from JustWatch or TMDB).",
+          "minLength": 1,
+          "maxLength": 2048
+        },
+        "cinesrcEmbedUrl": {
+          "type": "string",
+          "description": "CineSrc.st embed URL (e.g., https://cinesrc.st/embed/movie/12345).",
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "justWatchUrl": {
+          "type": "string",
+          "description": "Source JustWatch page URL used for banner/backdrop extraction.",
+          "minLength": 0,
+          "maxLength": 1024
+        },
+        "featured": {
+          "type": "boolean",
+          "description": "Whether this title is spotlighted in the Hero Banner."
+        },
+        "popularScore": {
+          "type": "integer",
+          "description": "Popularity score from 1 to 100."
+        },
+        "seasonsCount": {
+          "type": "integer",
+          "description": "Number of seasons for TV series."
+        },
+        "episodesCount": {
+          "type": "integer",
+          "description": "Number of episodes for TV series."
+        },
+        "visibility": {
+          "type": "string",
+          "description": "Catalog visibility status.",
+          "enum": ["public", "hidden"]
+        },
+        "authorUid": {
+          "type": "string",
+          "description": "UID of the admin who created the record.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server creation timestamp."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server update timestamp."
+        }
+      },
+      "required": [
+        "id",
+        "tmdbId",
+        "mediaType",
+        "contentType",
+        "title",
+        "tagline",
+        "synopsis",
+        "genres",
+        "releaseYear",
+        "durationMinutes",
+        "maturityRating",
+        "directorOrCreator",
+        "cast",
+        "posterUrl",
+        "backdropUrl",
+        "cinesrcEmbedUrl",
+        "justWatchUrl",
+        "featured",
+        "popularScore",
+        "seasonsCount",
+        "episodesCount",
+        "visibility",
+        "authorUid",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "WatchlistItem": {
+      "title": "WatchlistItem",
+      "description": "A user's saved favourite movie or TV show in Cloud Firestore.",
+      "type": "object",
+      "properties": {
+        "mediaId": {
+          "type": "string",
+          "description": "Referenced catalog media ID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "ownerId": {
+          "type": "string",
+          "description": "UID of the authenticated user who owns this watchlist item.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when added to Favourites."
+        }
+      },
+      "required": ["mediaId", "ownerId", "createdAt"]
+    },
+    "AdminRecord": {
+      "title": "AdminRecord",
+      "description": "Trusted admin registry document keyed by Firebase Auth UID.",
+      "type": "object",
+      "properties": {
+        "uid": {
+          "type": "string",
+          "description": "Admin user UID.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp."
+        }
+      },
+      "required": ["uid", "createdAt"]
+    }
+  },
+  "firestore": {
+    "/catalog/{mediaId}": {
+      "schema": { "$ref": "#/entities/CatalogMedia" },
+      "description": "Publicly browsable streaming catalog managed exclusively by verified ZAPPY admins."
+    },
+    "/watchlists/{watchlistDocId}": {
+      "schema": { "$ref": "#/entities/WatchlistItem" },
+      "description": "Per-user saved Favourites items restricted strictly to the document ownerId."
+    },
+    "/admins/{adminUid}": {
+      "schema": { "$ref": "#/entities/AdminRecord" },
+      "description": "Trusted admin role lookup collection."
+    }
+  }
+}
