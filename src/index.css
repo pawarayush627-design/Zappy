@@ -1,0 +1,58 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'JetBrains Mono', monospace;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    background-color: #110E17;
+    color-scheme: dark;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: #110E17;
+    color: #F5F5F7;
+    overflow-x: hidden;
+    letter-spacing: 0.01em;
+  }
+
+  h1, h2, h3, h4, .font-display {
+    font-family: var(--font-display);
+    text-wrap: balance;
+  }
+
+  .font-mono-tabular {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Hide scrollbars on horizontal carousels while keeping smooth touch/wheel scrolling */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Subtle cinema surface glow */
+.cinema-card-shadow {
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.75);
+}
+
+/* Sidebar ambient bottom-left sheen matching reference image */
+.sidebar-ambient-glow {
+  background: radial-gradient(
+      circle at 15% 82%,
+      rgba(184, 146, 255, 0.16) 0%,
+      rgba(120, 95, 180, 0.06) 38%,
+      transparent 70%
+    ),
+    #1A1625;
+}

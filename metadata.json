@@ -1,0 +1,6 @@
+{
+  "name": "CineWave",
+  "description": "Free, ad-supported movie and TV streaming web application featuring authorized demo playback, curated genre rows, instant search, and persistent watchlist.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

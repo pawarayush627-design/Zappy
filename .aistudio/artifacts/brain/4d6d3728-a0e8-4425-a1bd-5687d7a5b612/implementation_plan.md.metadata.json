@@ -1,0 +1,6 @@
+{
+  "summary": "Implementation plan to rebrand the streaming platform to ZAPPY and upgrade it with server-side TMDB metadata discovery, an authorized video-source resolver (/api/playback/:mediaType/:tmdbId) with an Admin Asset Manager UI, an HLS/DASH/MP4 player, and Google IMA HTML5 video advertising with test/VAST support.",
+  "updatedAt": "2026-10-20T10:25:02.403581499Z",
+  "requestFeedback": true,
+  "userFacing": true
+}
