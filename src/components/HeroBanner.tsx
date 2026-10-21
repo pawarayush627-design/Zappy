@@ -1,6 +1,9 @@
 import React, { useEffect } from 'react';
-import { motion, AnimatePresence } from 'motion/react';
-import { Play, Download, Check, MoreHorizontal, Flame } from 'lucide-react';
+import {
+  Play,
+  ArrowLeft,
+  ArrowRight,
+} from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
 
@@ -18,179 +21,151 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   featuredItems,
   activeHeroIndex,
   onSelectHeroIndex,
-  watchlistIds,
   onPlayMedia,
   onOpenDetails,
-  onToggleWatchlist,
 }) => {
-  const heroItem = featuredItems[activeHeroIndex] || featuredItems[0];
+  const safeIndex =
+    featuredItems.length > 0 ? activeHeroIndex % featuredItems.length : 0;
+  const heroItem = featuredItems[safeIndex] || featuredItems[0];
 
   useEffect(() => {
     if (featuredItems.length <= 1) return;
-    const timer = setInterval(() => {
-      onSelectHeroIndex((activeHeroIndex + 1) % featuredItems.length);
-    }, 8000);
-    return () => clearInterval(timer);
-  }, [activeHeroIndex, featuredItems.length, onSelectHeroIndex]);
+    const timer = window.setInterval(() => {
+      onSelectHeroIndex((safeIndex + 1) % featuredItems.length);
+    }, 9000);
+    return () => window.clearInterval(timer);
+  }, [safeIndex, featuredItems.length, onSelectHeroIndex]);
 
   if (!heroItem) return null;
 
-  const inWatchlist = watchlistIds.includes(heroItem.id);
+  const isSeries =
+    heroItem.mediaType === 'tv' || heroItem.contentType === 'series';
 
   return (
-    <motion.section
-      initial={{ opacity: 0, y: 18 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.4, ease: 'easeOut' }}
-      aria-label="Featured Movie Spotlight"
-      className="w-full"
+    <section
+      aria-label="Featured Spotlight Banner"
+      className="relative w-full h-[calc(100dvh-5.25rem)] min-h-[380px] max-h-[650px] overflow-hidden rounded-2xl bg-[#141414] border border-[#262626] select-none flex flex-col justify-end"
     >
-      <div className="relative w-full min-h-[360px] sm:min-h-[410px] lg:min-h-[440px] rounded-3xl overflow-hidden border border-white/[0.08] bg-[#171324] flex flex-col justify-between p-6 sm:p-8 lg:p-10 shadow-2xl">
-        {/* Animated Background Widescreen Artwork */}
-        <AnimatePresence mode="wait">
-          <motion.div
-            key={heroItem.id}
-            initial={{ opacity: 0, scale: 1.04 }}
-            animate={{ opacity: 1, scale: 1 }}
-            exit={{ opacity: 0 }}
-            transition={{ duration: 0.55, ease: 'easeOut' }}
-            className="absolute inset-0 select-none pointer-events-none"
-          >
-            <MediaArtwork
-              src={heroItem.backdropUrl}
-              alt={`${heroItem.title} backdrop`}
-              item={heroItem}
-              aspectRatio="backdrop"
-              priority
-              className="w-full h-full object-cover object-center"
-            />
-            <div className="absolute inset-0 bg-gradient-to-r from-[#120F1D]/95 via-[#120F1D]/70 to-transparent" />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#120F1D]/90 via-transparent to-[#120F1D]/30" />
-          </motion.div>
-        </AnimatePresence>
+      {/* Widescreen Backdrop with Measured Contrast Scrim */}
+      <div className="absolute inset-0 pointer-events-none">
+        <MediaArtwork
+          src={heroItem.backdropUrl || heroItem.posterUrl}
+          alt={heroItem.title}
+          item={heroItem}
+          aspectRatio="backdrop"
+          priority
+          className="w-full h-full object-cover object-center transition-opacity duration-300"
+        />
+        <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/75 to-black/25" />
+        <div className="absolute inset-0 bg-gradient-to-r from-[#141414]/85 via-[#141414]/35 to-transparent" />
+      </div>
 
-        {/* Top-Left "Now Trending" Status Tag */}
-        <div className="relative z-10 flex items-center justify-between">
-          <div className="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full bg-black/45 backdrop-blur-md border border-white/10 text-xs font-semibold text-white">
-            <Flame className="w-3.5 h-3.5 text-[#FF8A3D] fill-current" />
-            <span>Now Trending</span>
+      {/* Content & Always-Visible Action Bar (Fits 100% Inside Viewport Without Scrolling) */}
+      <div className="relative z-10 w-full p-5 sm:p-8 lg:p-10 flex flex-col gap-5">
+        <div className="max-w-3xl space-y-2.5">
+          {/* Real Metadata Line (Unboxed Text) */}
+          <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm font-medium text-zinc-300">
+            <span className="text-[#E50000] font-bold">
+              {isSeries ? 'Series' : 'Movie'}
+            </span>
+            <span aria-hidden="true">·</span>
+            <span className="tabular-nums">{heroItem.releaseYear}</span>
+            <span aria-hidden="true">·</span>
+            <span>{heroItem.maturityRating}</span>
+            <span aria-hidden="true">·</span>
+            <span className="tabular-nums">
+              {isSeries
+                ? `${heroItem.seasonsCount || 1} Season${
+                    (heroItem.seasonsCount || 1) > 1 ? 's' : ''
+                  }`
+                : `${heroItem.durationMinutes} min`}
+            </span>
+            {heroItem.genres.length > 0 && (
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="text-zinc-200">
+                  {heroItem.genres.slice(0, 3).join(' / ')}
+                </span>
+              </>
+            )}
           </div>
+
+          <h1
+            onClick={() => onOpenDetails(heroItem)}
+            className="text-2xl sm:text-4xl lg:text-5xl font-bold text-white font-display tracking-tight cursor-pointer hover:text-zinc-200 transition-colors"
+            style={{ textWrap: 'balance' }}
+          >
+            {heroItem.title}
+          </h1>
+
+          <p className="text-xs sm:text-sm lg:text-base text-zinc-300 leading-relaxed line-clamp-2 max-w-2xl">
+            {heroItem.synopsis}
+          </p>
         </div>
 
-        {/* Middle & Bottom Content Lockup */}
-        <div className="relative z-10 mt-8 sm:mt-12 flex flex-col sm:flex-row sm:items-end justify-between gap-6">
-          <AnimatePresence mode="wait">
-            <motion.div
-              key={heroItem.id}
-              initial={{ opacity: 0, y: 14 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -10 }}
-              transition={{ duration: 0.35, ease: 'easeOut' }}
-              className="max-w-xl space-y-3.5"
+        {/* Bottom Row: Primary Play CTA + Slide Controls */}
+        <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={() => onPlayMedia(heroItem)}
+              className="min-h-[46px] px-6 py-2.5 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white font-semibold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-lg transition-colors whitespace-nowrap shrink-0"
             >
-              <div className="flex flex-wrap items-center gap-2">
-                {heroItem.genres.slice(0, 3).map((genre) => (
-                  <button
-                    key={genre}
-                    type="button"
-                    onClick={() => onOpenDetails(heroItem)}
-                    className="px-3.5 py-1 rounded-full bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/15 text-xs font-medium text-zinc-100 transition-colors cursor-pointer"
-                  >
-                    {genre}
-                  </button>
-                ))}
-              </div>
+              <Play className="w-4 h-4 fill-current" />
+              <span>Play Now</span>
+            </button>
+          </div>
 
-              <h1
-                className="font-bold text-white tracking-tight font-display leading-[1.1]"
-                style={{ fontSize: 'clamp(1.75rem, 3.2vw, 2.85rem)' }}
-              >
-                {heroItem.title}
-              </h1>
-
-              <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed line-clamp-2 max-w-lg">
-                {heroItem.synopsis}
-              </p>
-
-              <div className="pt-2 flex items-center gap-3">
-                <motion.button
-                  whileHover={{ scale: 1.04 }}
-                  whileTap={{ scale: 0.96 }}
-                  type="button"
-                  onClick={() => onPlayMedia(heroItem)}
-                  className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#B892FF] hover:bg-[#C9ABFF] text-[#110E17] font-bold text-xs sm:text-sm transition-colors flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer shadow-lg shadow-[#B892FF]/25"
-                >
-                  <Play className="w-4 h-4 fill-current shrink-0" />
-                  <span>Watch Now</span>
-                </motion.button>
-
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  type="button"
-                  onClick={(e) => onToggleWatchlist(heroItem, e)}
-                  className={`min-h-[44px] min-w-[44px] rounded-xl border backdrop-blur-md flex items-center justify-center transition-colors cursor-pointer shrink-0 ${
-                    inWatchlist
-                      ? 'bg-[#B892FF]/25 border-[#B892FF] text-[#B892FF]'
-                      : 'bg-white/10 hover:bg-white/20 border-white/15 text-white'
-                  }`}
-                  aria-label={
-                    inWatchlist
-                      ? `Remove ${heroItem.title} from Favourites`
-                      : `Save ${heroItem.title} to Favourites`
-                  }
-                  title={inWatchlist ? 'Saved in Favourites' : 'Save to Favourites'}
-                >
-                  {inWatchlist ? (
-                    <Check className="w-4 h-4" />
-                  ) : (
-                    <Download className="w-4 h-4" />
-                  )}
-                </motion.button>
-
-                <motion.button
-                  whileHover={{ scale: 1.05 }}
-                  whileTap={{ scale: 0.95 }}
-                  type="button"
-                  onClick={() => onOpenDetails(heroItem)}
-                  className="min-h-[44px] min-w-[44px] rounded-xl bg-white/10 hover:bg-white/20 border border-white/15 backdrop-blur-md text-white flex items-center justify-center transition-colors cursor-pointer shrink-0"
-                  aria-label={`More details for ${heroItem.title}`}
-                  title="More Details"
-                >
-                  <MoreHorizontal className="w-4 h-4" />
-                </motion.button>
-              </div>
-            </motion.div>
-          </AnimatePresence>
-
+          {/* Slide Navigation Controls */}
           {featuredItems.length > 1 && (
-            <div
-              role="tablist"
-              aria-label="Featured spotlight slides"
-              className="self-end inline-flex items-center gap-1.5 px-3 py-2 rounded-full bg-black/40 backdrop-blur-md border border-white/10"
-            >
-              {featuredItems.map((item, idx) => {
-                const isActive = idx === activeHeroIndex;
-                return (
-                  <button
-                    key={item.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={isActive}
-                    aria-label={`Slide ${idx + 1}: ${item.title}`}
-                    onClick={() => onSelectHeroIndex(idx)}
-                    className={`h-1.5 rounded-full transition-all cursor-pointer ${
-                      isActive
-                        ? 'w-6 bg-white'
-                        : 'w-2 bg-white/40 hover:bg-white/70'
-                    }`}
-                  />
-                );
-              })}
+            <div className="flex items-center gap-3 bg-[#0F0F0F]/90 border border-white/15 rounded-xl p-1.5">
+              <button
+                type="button"
+                onClick={() =>
+                  onSelectHeroIndex(
+                    (safeIndex - 1 + featuredItems.length) %
+                      featuredItems.length
+                  )
+                }
+                className="w-9 h-9 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                aria-label="Previous slide"
+              >
+                <ArrowLeft className="w-4 h-4" />
+              </button>
+
+              <div className="flex items-center gap-1.5 px-1">
+                {featuredItems.map((item, idx) => {
+                  const isActive = idx === safeIndex;
+                  return (
+                    <button
+                      key={item.id}
+                      type="button"
+                      onClick={() => onSelectHeroIndex(idx)}
+                      aria-label={`Slide ${idx + 1}: ${item.title}`}
+                      className={`h-1.5 rounded-full transition-all cursor-pointer ${
+                        isActive
+                          ? 'w-6 bg-[#E50000]'
+                          : 'w-3 bg-white/30 hover:bg-white/50'
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+
+              <button
+                type="button"
+                onClick={() =>
+                  onSelectHeroIndex((safeIndex + 1) % featuredItems.length)
+                }
+                className="w-9 h-9 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
+                aria-label="Next slide"
+              >
+                <ArrowRight className="w-4 h-4" />
+              </button>
             </div>
           )}
         </div>
       </div>
-    </motion.section>
+    </section>
   );
 };

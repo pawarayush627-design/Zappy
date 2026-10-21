@@ -2,23 +2,22 @@
 
 @layer base {
   :root {
-    --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-sans: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-display: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
   }
 
   html {
     scroll-behavior: smooth;
-    background-color: #110E17;
+    background-color: #141414;
     color-scheme: dark;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #110E17;
-    color: #F5F5F7;
+    background-color: #141414;
+    color: #FFFFFF;
     overflow-x: hidden;
-    letter-spacing: 0.01em;
   }
 
   h1, h2, h3, h4, .font-display {
@@ -41,18 +40,38 @@
   scrollbar-width: none;
 }
 
-/* Subtle cinema surface glow */
-.cinema-card-shadow {
-  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.75);
+/* Figma StreamVibe Primary Red CTA Button (#E50000) */
+.jio-gradient-btn,
+.sv-red-btn {
+  background-color: #E50000;
+  color: #FFFFFF;
+}
+.jio-gradient-btn:hover,
+.sv-red-btn:hover {
+  background-color: #FF1A1A;
 }
 
-/* Sidebar ambient bottom-left sheen matching reference image */
-.sidebar-ambient-glow {
-  background: radial-gradient(
-      circle at 15% 82%,
-      rgba(184, 146, 255, 0.16) 0%,
-      rgba(120, 95, 180, 0.06) 38%,
-      transparent 70%
+/* Figma Device Card Top-Right Red Ambient Glow */
+.sv-device-card {
+  background: linear-gradient(
+      222deg,
+      rgba(229, 0, 0, 0.14) 0%,
+      rgba(229, 0, 0, 0.0) 42%
     ),
-    #1A1625;
+    #0F0F0F;
+}
+
+/* Figma Red Line Divider for FAQ items */
+.sv-faq-divider {
+  background: linear-gradient(
+    90deg,
+    rgba(229, 0, 0, 0) 0%,
+    #E50000 17%,
+    rgba(229, 0, 0, 0) 100%
+  );
+}
+
+/* Subtle cinema surface shadow */
+.cinema-card-shadow {
+  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.85);
 }

@@ -28,43 +28,43 @@ export const InfoModal: React.FC<InfoModalProps> = ({
     { title: string; subtitle: string; paragraphs: string[] }
   > = {
     about: {
-      title: 'About ZAPPY',
-      subtitle: 'Firebase-powered streaming platform with CineSrc.st & JustWatch integration.',
+      title: 'About Zappy',
+      subtitle: 'Next-generation 4K UHD streaming platform.',
       paragraphs: [
-        'ZAPPY is a full-stack movie and TV streaming web application powered by Firebase Authentication (Google Sign-In) and Cloud Firestore.',
-        'Admins can publish movies and TV shows directly from the Admin Panel using CineSrc.st embed links and JustWatch URLs to automatically extract posters, banners, and widescreen backdrops.',
+        'Zappy is a full-stack movie and TV series streaming platform powered by Firebase Authentication and Cloud Firestore.',
+        'Enjoy instant high-speed playback and authentic JustWatch metadata, cast & director profiles, and synchronized watchlists.',
       ],
     },
     contact: {
-      title: 'Contact & Admin Access',
-      subtitle: 'Get in touch with ZAPPY administration.',
+      title: 'Help & Support',
+      subtitle: 'Get in touch with administration.',
       paragraphs: [
-        'Sign in with Google using the authorized administrator account (pawarayushai1@gmail.com) to unlock the ZAPPY Admin Panel and publish new movies or series.',
-        'Admin Contact: pawarayushai1@gmail.com',
+        'Use our Support page to send a direct message to the Zappy administration team. All submitted messages appear directly in the Admin Studio inbox.',
+        'Support Contact: pawarayushai1@gmail.com',
       ],
     },
     privacy: {
-      title: 'Privacy & Firebase Security',
-      subtitle: 'How ZAPPY protects user accounts and Cloud Firestore data.',
+      title: 'Privacy Policy',
+      subtitle: 'How we protect user accounts and Cloud Firestore data.',
       paragraphs: [
-        'ZAPPY uses Firebase Authentication with Google Sign-In and enforces strict Cloud Firestore Security Rules so only verified administrators can create, update, or remove catalog entries.',
-        'Signed-in users have private Cloud Firestore watchlists scoped strictly to their authenticated UID.',
+        'We use Firebase Authentication with Google Sign-In and enforce strict Cloud Firestore Security Rules so only verified administrators can create, update, or remove catalog entries.',
+        'Signed-in users have private Cloud Firestore watchlists scoped strictly to their authenticated account.',
       ],
     },
     terms: {
       title: 'Terms of Use',
-      subtitle: 'Streaming embeds and metadata artwork.',
+      subtitle: 'Streaming and catalog guidelines.',
       paragraphs: [
-        'Titles added via the ZAPPY Admin Studio use CineSrc.st embed links (https://cinesrc.st/embed/movie/:tmdbId or /tv/:tmdbId) and artwork fetched via JustWatch metadata.',
-        'All demo placeholder movies and shows have been removed so your catalog contains exclusively the titles published by the administrator.',
+        'Titles published via the Admin Studio include high-definition widescreen posters, backdrops, cast portraits, and instant playback.',
+        'Your personal watchlist and playback progress are synced automatically across sessions, and completed titles are automatically cleared from your watchlist.',
       ],
     },
     advertising: {
-      title: 'Display Banner Placeholders',
+      title: 'Display & Playback Preferences',
       subtitle: 'Configurable display banner slots.',
       paragraphs: [
-        'ZAPPY includes optional display banner slots that can be toggled on or off at any time.',
-        'You can enable or disable page banner slots below.',
+        'Optional companion display slots can be toggled on or off at any time.',
+        'You can enable or disable companion display slots below.',
       ],
     },
   };
@@ -91,7 +91,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
             exit={{ opacity: 0, scale: 0.94, y: 16 }}
             transition={{ duration: 0.25, ease: 'easeOut' }}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-lg rounded-2xl bg-[#161220] border border-white/15 p-6 space-y-4 shadow-2xl"
+            className="w-full max-w-lg rounded-2xl bg-[#16181F] border border-white/15 p-6 space-y-4 shadow-2xl"
           >
             <div className="flex items-start justify-between gap-4">
               <div>
@@ -101,14 +101,14 @@ export const InfoModal: React.FC<InfoModalProps> = ({
                 >
                   {activeContent.title}
                 </h2>
-                <p className="text-xs text-[#B892FF] mt-0.5">
+                <p className="text-xs text-[#E50000] mt-0.5">
                   {activeContent.subtitle}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={onClose}
-                className="min-h-[40px] min-w-[40px] rounded-lg bg-[#1E192B] border border-white/10 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer"
+                className="min-h-[40px] min-w-[40px] rounded-lg bg-[#0F1014] border border-white/10 text-zinc-400 hover:text-white flex items-center justify-center cursor-pointer"
                 aria-label="Close dialog"
               >
                 <X className="w-4 h-4" />
@@ -124,15 +124,15 @@ export const InfoModal: React.FC<InfoModalProps> = ({
             {modalType === 'advertising' && (
               <div className="pt-3 border-t border-white/10 flex items-center justify-between gap-4">
                 <span className="text-xs text-zinc-300">
-                  Page Display Banner Placeholders:
+                  Companion Display Banner Slots:
                 </span>
                 <button
                   type="button"
                   onClick={onToggleAds}
                   className={`min-h-[38px] px-4 py-1.5 rounded-lg text-xs font-semibold transition-colors cursor-pointer ${
                     adsEnabled
-                      ? 'bg-[#B892FF] text-[#110E17] font-bold'
-                      : 'bg-[#1E192B] text-zinc-300 hover:text-white'
+                      ? 'bg-[#E50000] text-white font-bold'
+                      : 'bg-[#0F1014] text-zinc-300 hover:text-white border border-white/10'
                   }`}
                 >
                   {adsEnabled ? 'Enabled (Showing Slots)' : 'Disabled (Hidden)'}
@@ -144,7 +144,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="min-h-[40px] px-5 py-2 rounded-xl bg-[#1E192B] text-xs font-semibold text-white hover:bg-[#282238] transition-colors cursor-pointer"
+                className="min-h-[40px] px-5 py-2 rounded-xl bg-[#0F1014] border border-white/10 text-xs font-semibold text-white hover:bg-white/10 transition-colors cursor-pointer"
               >
                 Close
               </button>

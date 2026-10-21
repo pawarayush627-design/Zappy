@@ -40,16 +40,18 @@ service cloud.firestore {
       return data.keys().hasAll([
           'id', 'tmdbId', 'mediaType', 'contentType', 'title', 'tagline',
           'synopsis', 'genres', 'releaseYear', 'durationMinutes', 'maturityRating',
-          'directorOrCreator', 'cast', 'posterUrl', 'backdropUrl', 'cinesrcEmbedUrl',
-          'justWatchUrl', 'featured', 'popularScore', 'seasonsCount', 'episodesCount',
-          'visibility', 'authorUid', 'createdAt', 'updatedAt'
+          'directorOrCreator', 'cast', 'creditsJson', 'posterUrl', 'backdropUrl',
+          'cinesrcEmbedUrl', 'justWatchUrl', 'featured', 'popularScore',
+          'seasonsCount', 'episodesCount', 'visibility', 'authorUid',
+          'createdAt', 'updatedAt'
         ]) &&
         data.keys().hasOnly([
           'id', 'tmdbId', 'mediaType', 'contentType', 'title', 'tagline',
           'synopsis', 'genres', 'releaseYear', 'durationMinutes', 'maturityRating',
-          'directorOrCreator', 'cast', 'posterUrl', 'backdropUrl', 'cinesrcEmbedUrl',
-          'justWatchUrl', 'featured', 'popularScore', 'seasonsCount', 'episodesCount',
-          'visibility', 'authorUid', 'createdAt', 'updatedAt'
+          'directorOrCreator', 'cast', 'creditsJson', 'posterUrl', 'backdropUrl',
+          'cinesrcEmbedUrl', 'justWatchUrl', 'featured', 'popularScore',
+          'seasonsCount', 'episodesCount', 'visibility', 'authorUid',
+          'createdAt', 'updatedAt'
         ]) &&
         isValidId(data.id) &&
         data.tmdbId is int && data.tmdbId > 0 &&
@@ -64,6 +66,7 @@ service cloud.firestore {
         data.maturityRating is string && data.maturityRating in ['G', 'PG', 'PG-13', 'TV-PG', 'TV-14'] &&
         data.directorOrCreator is string && data.directorOrCreator.size() >= 1 && data.directorOrCreator.size() <= 160 &&
         data.cast is list && data.cast.size() >= 1 && data.cast.size() <= 10 && data.cast[0] is string && data.cast[0].size() <= 100 &&
+        data.creditsJson is string && data.creditsJson.size() <= 15000 &&
         data.posterUrl is string && data.posterUrl.size() >= 1 && data.posterUrl.size() <= 2048 &&
         data.backdropUrl is string && data.backdropUrl.size() >= 1 && data.backdropUrl.size() <= 2048 &&
         data.cinesrcEmbedUrl is string && data.cinesrcEmbedUrl.size() >= 1 && data.cinesrcEmbedUrl.size() <= 1024 &&
@@ -85,6 +88,37 @@ service cloud.firestore {
         isValidId(data.ownerId) &&
         data.ownerId == request.auth.uid &&
         data.createdAt is timestamp;
+    }
+
+    function isValidSupportMessage(data) {
+      return data.keys().hasAll([
+          'id', 'firstName', 'lastName', 'email', 'phone',
+          'message', 'senderUid', 'status', 'createdAtMs', 'createdAt', 'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'id', 'firstName', 'lastName', 'email', 'phone',
+          'message', 'senderUid', 'status', 'createdAtMs', 'createdAt', 'updatedAt'
+        ]) &&
+        isValidId(data.id) &&
+        data.firstName is string && data.firstName.size() >= 1 && data.firstName.size() <= 80 &&
+        data.lastName is string && data.lastName.size() >= 1 && data.lastName.size() <= 80 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.phone is string && data.phone.size() <= 40 &&
+        data.message is string && data.message.size() >= 1 && data.message.size() <= 2000 &&
+        isValidId(data.senderUid) &&
+        data.status is string && data.status in ['open', 'unread', 'resolved'] &&
+        data.createdAtMs is int && data.createdAtMs > 0 &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp;
+    }
+
+    function isValidUiConfig(data) {
+      return data.keys().hasAll(['id', 'overridesJson', 'authorUid', 'updatedAt']) &&
+        data.keys().hasOnly(['id', 'overridesJson', 'authorUid', 'updatedAt']) &&
+        isValidId(data.id) &&
+        data.overridesJson is string && data.overridesJson.size() <= 50000 &&
+        isValidId(data.authorUid) && data.authorUid == request.auth.uid &&
+        data.updatedAt is timestamp;
     }
 
     // 4. Collection Rules: /catalog/{mediaId}
@@ -110,9 +144,9 @@ service cloud.firestore {
         incoming().diff(existing()).affectedKeys().hasOnly([
           'tmdbId', 'mediaType', 'contentType', 'title', 'tagline',
           'synopsis', 'genres', 'releaseYear', 'durationMinutes', 'maturityRating',
-          'directorOrCreator', 'cast', 'posterUrl', 'backdropUrl', 'cinesrcEmbedUrl',
-          'justWatchUrl', 'featured', 'popularScore', 'seasonsCount', 'episodesCount',
-          'visibility', 'updatedAt'
+          'directorOrCreator', 'cast', 'creditsJson', 'posterUrl', 'backdropUrl',
+          'cinesrcEmbedUrl', 'justWatchUrl', 'featured', 'popularScore',
+          'seasonsCount', 'episodesCount', 'visibility', 'updatedAt'
         ]) &&
         isAdmin();
 
@@ -135,7 +169,57 @@ service cloud.firestore {
       allow delete: if isVerifiedUser() && isValidId(watchlistDocId) && existing().ownerId == request.auth.uid;
     }
 
-    // 6. Collection Rules: /admins/{adminUid}
+    // 6. Collection Rules: /support_messages/{messageId}
+    match /support_messages/{messageId} {
+      allow get: if isVerifiedUser() && isValidId(messageId) && (existing().senderUid == request.auth.uid || isAdmin());
+      allow list: if isVerifiedUser() && (existing().senderUid == request.auth.uid || request.auth.token.email == 'pawarayushai1@gmail.com');
+
+      allow create: if isVerifiedUser() &&
+        isValidId(messageId) &&
+        isValidSupportMessage(incoming()) &&
+        incoming().id == messageId &&
+        incoming().senderUid == request.auth.uid &&
+        incoming().status in ['open', 'unread'] &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if isVerifiedUser() &&
+        isValidId(messageId) &&
+        isValidSupportMessage(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().senderUid == existing().senderUid &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['status', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(messageId) && isAdmin();
+    }
+
+    // 7. Collection Rules: /ui_config/{configId}
+    match /ui_config/{configId} {
+      allow get: if isValidId(configId);
+      allow list: if false;
+
+      allow create: if isVerifiedUser() &&
+        isValidId(configId) &&
+        isValidUiConfig(incoming()) &&
+        incoming().id == configId &&
+        incoming().updatedAt == request.time &&
+        isAdmin();
+
+      allow update: if isVerifiedUser() &&
+        isValidId(configId) &&
+        isValidUiConfig(incoming()) &&
+        incoming().id == existing().id &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly(['overridesJson', 'authorUid', 'updatedAt']) &&
+        isAdmin();
+
+      allow delete: if isVerifiedUser() && isValidId(configId) && isAdmin();
+    }
+
+    // 8. Collection Rules: /admins/{adminUid}
     match /admins/{adminUid} {
       allow get: if isVerifiedUser() && isValidId(adminUid) && (request.auth.uid == adminUid || isAdmin());
       allow list: if false;
