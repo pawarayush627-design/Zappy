@@ -1,9 +1,6 @@
-import React, { useEffect } from 'react';
-import {
-  Play,
-  ArrowLeft,
-  ArrowRight,
-} from 'lucide-react';
+import React, { useEffect, useRef, useState } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Play } from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
 
@@ -24,144 +21,198 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   onPlayMedia,
   onOpenDetails,
 }) => {
+  const heroPool = featuredItems.slice(0, 8);
   const safeIndex =
-    featuredItems.length > 0 ? activeHeroIndex % featuredItems.length : 0;
-  const heroItem = featuredItems[safeIndex] || featuredItems[0];
+    heroPool.length > 0 ? activeHeroIndex % heroPool.length : 0;
+  const hero = heroPool[safeIndex];
 
+  const [swipeDirection, setSwipeDirection] = useState<number>(1);
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const touchCurrentXRef = useRef<number | null>(null);
+  const pointerStartXRef = useRef<number | null>(null);
+  const didSwipeRef = useRef<boolean>(false);
+
+  // Automatic 7-second rotation through the active hero spotlight items
   useEffect(() => {
-    if (featuredItems.length <= 1) return;
-    const timer = window.setInterval(() => {
-      onSelectHeroIndex((safeIndex + 1) % featuredItems.length);
-    }, 9000);
-    return () => window.clearInterval(timer);
-  }, [safeIndex, featuredItems.length, onSelectHeroIndex]);
+    if (heroPool.length <= 1) return;
+    const interval = window.setInterval(() => {
+      setSwipeDirection(1);
+      onSelectHeroIndex((safeIndex + 1) % heroPool.length);
+    }, 7000);
+    return () => window.clearInterval(interval);
+  }, [heroPool.length, safeIndex, onSelectHeroIndex]);
 
-  if (!heroItem) return null;
+  if (!hero) return null;
 
-  const isSeries =
-    heroItem.mediaType === 'tv' || heroItem.contentType === 'series';
+  const goToPrevious = () => {
+    if (heroPool.length <= 1) return;
+    setSwipeDirection(-1);
+    onSelectHeroIndex((safeIndex - 1 + heroPool.length) % heroPool.length);
+  };
+
+  const goToNext = () => {
+    if (heroPool.length <= 1) return;
+    setSwipeDirection(1);
+    onSelectHeroIndex((safeIndex + 1) % heroPool.length);
+  };
+
+  const handleTouchStart = (e: React.TouchEvent<HTMLElement>) => {
+    if (e.touches.length !== 1) return;
+    touchStartXRef.current = e.touches[0].clientX;
+    touchStartYRef.current = e.touches[0].clientY;
+    touchCurrentXRef.current = e.touches[0].clientX;
+    didSwipeRef.current = false;
+  };
+
+  const handleTouchMove = (e: React.TouchEvent<HTMLElement>) => {
+    if (touchStartXRef.current === null || e.touches.length !== 1) return;
+    touchCurrentXRef.current = e.touches[0].clientX;
+  };
+
+  const handleTouchEnd = () => {
+    if (
+      touchStartXRef.current !== null &&
+      touchCurrentXRef.current !== null
+    ) {
+      const deltaX = touchCurrentXRef.current - touchStartXRef.current;
+      if (Math.abs(deltaX) >= 40) {
+        didSwipeRef.current = true;
+        if (deltaX < 0) {
+          goToNext();
+        } else {
+          goToPrevious();
+        }
+      }
+    }
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+    touchCurrentXRef.current = null;
+  };
+
+  const handlePointerDown = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'touch') return;
+    pointerStartXRef.current = e.clientX;
+    didSwipeRef.current = false;
+  };
+
+  const handlePointerUp = (e: React.PointerEvent<HTMLElement>) => {
+    if (e.pointerType === 'touch' || pointerStartXRef.current === null) return;
+    const deltaX = e.clientX - pointerStartXRef.current;
+    if (Math.abs(deltaX) >= 50) {
+      didSwipeRef.current = true;
+      if (deltaX < 0) {
+        goToNext();
+      } else {
+        goToPrevious();
+      }
+    }
+    pointerStartXRef.current = null;
+  };
 
   return (
     <section
-      aria-label="Featured Spotlight Banner"
-      className="relative w-full h-[calc(100dvh-5.25rem)] min-h-[380px] max-h-[650px] overflow-hidden rounded-2xl bg-[#141414] border border-[#262626] select-none flex flex-col justify-end"
+      aria-label="Featured Spotlight"
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onPointerDown={handlePointerDown}
+      onPointerUp={handlePointerUp}
+      className="relative w-full min-h-[290px] sm:min-h-[380px] lg:min-h-[450px] rounded-2xl overflow-hidden bg-[#08090D] border border-[#292C35] flex flex-col justify-end select-none touch-pan-y shadow-2xl"
     >
-      {/* Widescreen Backdrop with Measured Contrast Scrim */}
-      <div className="absolute inset-0 pointer-events-none">
-        <MediaArtwork
-          src={heroItem.backdropUrl || heroItem.posterUrl}
-          alt={heroItem.title}
-          item={heroItem}
-          aspectRatio="backdrop"
-          priority
-          className="w-full h-full object-cover object-center transition-opacity duration-300"
-        />
-        <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/75 to-black/25" />
-        <div className="absolute inset-0 bg-gradient-to-r from-[#141414]/85 via-[#141414]/35 to-transparent" />
-      </div>
+      {/* Background Backdrop Image with Smooth Directional Swipe Animation */}
+      <AnimatePresence mode="wait" custom={swipeDirection}>
+        <motion.div
+          key={hero.id}
+          custom={swipeDirection}
+          initial={{ opacity: 0, x: swipeDirection * 36, scale: 1.02 }}
+          animate={{ opacity: 1, x: 0, scale: 1 }}
+          exit={{ opacity: 0, x: swipeDirection * -36, scale: 0.99 }}
+          transition={{ duration: 0.35, ease: 'easeOut' }}
+          onClick={() => {
+            if (!didSwipeRef.current) {
+              onOpenDetails(hero);
+            }
+          }}
+          className="absolute inset-0 cursor-pointer"
+        >
+          <MediaArtwork
+            src={hero.backdropUrl || hero.posterUrl}
+            alt={hero.title}
+            item={hero}
+            aspectRatio="backdrop"
+            priority
+            className="w-full h-full object-cover object-center"
+          />
+          <div className="absolute inset-0 sv-hero-vignette pointer-events-none" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#08090D] via-[#08090D]/45 to-transparent pointer-events-none" />
+        </motion.div>
+      </AnimatePresence>
 
-      {/* Content & Always-Visible Action Bar (Fits 100% Inside Viewport Without Scrolling) */}
-      <div className="relative z-10 w-full p-5 sm:p-8 lg:p-10 flex flex-col gap-5">
-        <div className="max-w-3xl space-y-2.5">
-          {/* Real Metadata Line (Unboxed Text) */}
-          <div className="flex flex-wrap items-center gap-2 text-xs sm:text-sm font-medium text-zinc-300">
-            <span className="text-[#E50000] font-bold">
-              {isSeries ? 'Series' : 'Movie'}
-            </span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">{heroItem.releaseYear}</span>
-            <span aria-hidden="true">·</span>
-            <span>{heroItem.maturityRating}</span>
-            <span aria-hidden="true">·</span>
-            <span className="tabular-nums">
-              {isSeries
-                ? `${heroItem.seasonsCount || 1} Season${
-                    (heroItem.seasonsCount || 1) > 1 ? 's' : ''
-                  }`
-                : `${heroItem.durationMinutes} min`}
-            </span>
-            {heroItem.genres.length > 0 && (
-              <>
-                <span aria-hidden="true">·</span>
-                <span className="text-zinc-200">
-                  {heroItem.genres.slice(0, 3).join(' / ')}
-                </span>
-              </>
-            )}
-          </div>
-
-          <h1
-            onClick={() => onOpenDetails(heroItem)}
-            className="text-2xl sm:text-4xl lg:text-5xl font-bold text-white font-display tracking-tight cursor-pointer hover:text-zinc-200 transition-colors"
+      {/* Bottom Content Overlay */}
+      <div className="relative z-10 w-full px-4 sm:px-8 lg:px-10 pb-4 sm:pb-7 pt-16 flex flex-col gap-3 sm:gap-4 pointer-events-none">
+        <div className="max-w-2xl space-y-2 pointer-events-auto">
+          {/* Title */}
+          <motion.h1
+            key={`title-${hero.id}`}
+            initial={{ opacity: 0, y: 10 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.28 }}
+            onClick={() => onOpenDetails(hero)}
+            className="text-2xl sm:text-4xl lg:text-5xl font-black text-white font-display tracking-tight leading-tight cursor-pointer hover:text-[#FFC400] transition-colors"
             style={{ textWrap: 'balance' }}
           >
-            {heroItem.title}
-          </h1>
+            {hero.title}
+          </motion.h1>
 
-          <p className="text-xs sm:text-sm lg:text-base text-zinc-300 leading-relaxed line-clamp-2 max-w-2xl">
-            {heroItem.synopsis}
-          </p>
+          {/* Concise Synopsis */}
+          {hero.synopsis && (
+            <p className="text-xs sm:text-sm text-[#D4D6DF] max-w-xl leading-relaxed line-clamp-2">
+              {hero.synopsis}
+            </p>
+          )}
         </div>
 
-        {/* Bottom Row: Primary Play CTA + Slide Controls */}
-        <div className="flex flex-wrap items-center justify-between gap-4 pt-1">
-          <div className="flex flex-wrap items-center gap-3">
-            <button
+        {/* Bottom Bar: Primary Play CTA + Swipe Indicator Dots */}
+        <div className="flex flex-wrap items-center justify-between gap-3 pt-1 pointer-events-auto">
+          <div className="flex items-center gap-2.5">
+            <motion.button
+              whileHover={{ scale: 1.03 }}
+              whileTap={{ scale: 0.96 }}
               type="button"
-              onClick={() => onPlayMedia(heroItem)}
-              className="min-h-[46px] px-6 py-2.5 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white font-semibold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-lg transition-colors whitespace-nowrap shrink-0"
+              onClick={() => onPlayMedia(hero)}
+              className="min-h-[42px] sm:min-h-[46px] px-5 sm:px-6 py-2 sm:py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm transition-colors flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/25"
             >
-              <Play className="w-4 h-4 fill-current" />
+              <Play className="w-4 h-4 fill-current shrink-0" />
               <span>Play Now</span>
-            </button>
+            </motion.button>
           </div>
 
-          {/* Slide Navigation Controls */}
-          {featuredItems.length > 1 && (
-            <div className="flex items-center gap-3 bg-[#0F0F0F]/90 border border-white/15 rounded-xl p-1.5">
-              <button
-                type="button"
-                onClick={() =>
-                  onSelectHeroIndex(
-                    (safeIndex - 1 + featuredItems.length) %
-                      featuredItems.length
-                  )
-                }
-                className="w-9 h-9 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
-                aria-label="Previous slide"
-              >
-                <ArrowLeft className="w-4 h-4" />
-              </button>
-
-              <div className="flex items-center gap-1.5 px-1">
-                {featuredItems.map((item, idx) => {
-                  const isActive = idx === safeIndex;
-                  return (
-                    <button
-                      key={item.id}
-                      type="button"
-                      onClick={() => onSelectHeroIndex(idx)}
-                      aria-label={`Slide ${idx + 1}: ${item.title}`}
-                      className={`h-1.5 rounded-full transition-all cursor-pointer ${
+          {heroPool.length > 1 && (
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#08090D]/75 backdrop-blur-md border border-[#292C35]">
+              {heroPool.map((item, idx) => {
+                const isActive = idx === safeIndex;
+                return (
+                  <button
+                    key={item.id}
+                    type="button"
+                    onClick={() => {
+                      setSwipeDirection(idx > safeIndex ? 1 : -1);
+                      onSelectHeroIndex(idx);
+                    }}
+                    className="py-1 px-0.5 cursor-pointer flex items-center"
+                    aria-label={`Slide ${idx + 1}: ${item.title}`}
+                  >
+                    <span
+                      className={`h-1.5 rounded-full transition-all duration-300 ${
                         isActive
-                          ? 'w-6 bg-[#E50000]'
-                          : 'w-3 bg-white/30 hover:bg-white/50'
+                          ? 'w-5 bg-[#FFC400]'
+                          : 'w-1.5 bg-[#292C35] hover:bg-[#747784]'
                       }`}
                     />
-                  );
-                })}
-              </div>
-
-              <button
-                type="button"
-                onClick={() =>
-                  onSelectHeroIndex((safeIndex + 1) % featuredItems.length)
-                }
-                className="w-9 h-9 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-white/15 text-white flex items-center justify-center transition-colors cursor-pointer"
-                aria-label="Next slide"
-              >
-                <ArrowRight className="w-4 h-4" />
-              </button>
+                  </button>
+                );
+              })}
             </div>
           )}
         </div>

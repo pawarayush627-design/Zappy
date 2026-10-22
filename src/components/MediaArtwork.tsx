@@ -52,9 +52,10 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
       alt={alt}
       referrerPolicy="no-referrer"
       loading={priority ? 'eager' : 'lazy'}
+      decoding={priority ? 'sync' : 'async'}
       onError={() => setHasError(true)}
       className={`object-cover ${
-        aspectRatio === 'poster' ? 'aspect-[3/4]' : 'aspect-video'
+        aspectRatio === 'poster' ? 'aspect-[2/3]' : 'aspect-video'
       } ${className}`}
     />
   );

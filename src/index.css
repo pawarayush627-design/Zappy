@@ -5,17 +5,29 @@
     --font-display: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
+
+    /* ZappyFun Brand System */
+    --color-bg-primary: #08090D;
+    --color-bg-secondary: #0F1117;
+    --color-surface-card: #14161D;
+    --color-surface-elevated: #252832;
+    --color-accent: #FFC400;
+    --color-accent-hover: #FFD54A;
+    --color-text-primary: #FFFFFF;
+    --color-text-secondary: #A7A9B4;
+    --color-text-muted: #747784;
+    --color-border: #292C35;
   }
 
   html {
     scroll-behavior: smooth;
-    background-color: #141414;
+    background-color: #08090D;
     color-scheme: dark;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #141414;
+    background-color: #08090D;
     color: #FFFFFF;
     overflow-x: hidden;
   }
@@ -40,38 +52,66 @@
   scrollbar-width: none;
 }
 
-/* Figma StreamVibe Primary Red CTA Button (#E50000) */
-.jio-gradient-btn,
-.sv-red-btn {
-  background-color: #E50000;
-  color: #FFFFFF;
+/* ZappyFun Golden-Yellow Primary CTA Button */
+.zf-gold-btn {
+  background-color: #FFC400;
+  color: #08090D;
+  font-weight: 700;
+  transition: all 0.2s ease;
 }
-.jio-gradient-btn:hover,
-.sv-red-btn:hover {
-  background-color: #FF1A1A;
+.zf-gold-btn:hover {
+  background-color: #FFD54A;
 }
 
-/* Figma Device Card Top-Right Red Ambient Glow */
-.sv-device-card {
+/* ZappyFun Ambient Gold Glow Card */
+.zf-glow-card {
   background: linear-gradient(
       222deg,
-      rgba(229, 0, 0, 0.14) 0%,
-      rgba(229, 0, 0, 0.0) 42%
+      rgba(255, 196, 0, 0.08) 0%,
+      rgba(255, 196, 0, 0.0) 42%
     ),
-    #0F0F0F;
+    #14161D;
 }
 
-/* Figma Red Line Divider for FAQ items */
-.sv-faq-divider {
+/* ZappyFun Gold Divider */
+.zf-gold-divider {
   background: linear-gradient(
     90deg,
-    rgba(229, 0, 0, 0) 0%,
-    #E50000 17%,
-    rgba(229, 0, 0, 0) 100%
+    rgba(255, 196, 0, 0) 0%,
+    #FFC400 17%,
+    rgba(255, 196, 0, 0) 100%
   );
 }
 
-/* Subtle cinema surface shadow */
+/* Cinema surface shadow */
 .cinema-card-shadow {
   box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.85);
 }
+
+/* Visible Keyboard Focus Indicator */
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+select:focus-visible,
+textarea:focus-visible {
+  outline: 2px solid #FFC400;
+  outline-offset: 2px;
+}
+
+/* Safe area padding for mobile bottom navigation */
+.safe-bottom-nav {
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+/* Respect Reduced Motion Preferences */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+

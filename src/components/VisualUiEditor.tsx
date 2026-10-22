@@ -82,7 +82,7 @@ export function getStableElementSelector(el: HTMLElement): string {
     current &&
     current !== document.body &&
     current.id !== 'root' &&
-    depth < 7
+    depth < 20
   ) {
     const tag = current.tagName.toLowerCase();
     const ariaLabel = current.getAttribute('aria-label');
@@ -100,7 +100,8 @@ export function getStableElementSelector(el: HTMLElement): string {
     const siblings = Array.from(parent.children).filter(
       (child) =>
         child.tagName === current!.tagName &&
-        !child.hasAttribute('data-zappy-editor')
+        !child.hasAttribute('data-zappy-editor') &&
+        !child.hasAttribute('data-admin-studio')
     );
 
     if (siblings.length <= 1) {
@@ -114,6 +115,9 @@ export function getStableElementSelector(el: HTMLElement): string {
     depth++;
   }
 
+  if (current && current.id === 'root') {
+    return `#root > ${parts.join(' > ')}`;
+  }
   return `#root ${parts.join(' > ')}`;
 }
 
@@ -130,6 +134,7 @@ export function getElementReadableLabel(el: HTMLElement): string {
 
 /**
  * Builds the global <style> sheet for all active ElementUiOverrides
+ * Strictly excludes [data-admin-studio="true"] and [data-zappy-editor="true"] so Admin Studio buttons are never displaced.
  */
 function buildOverridesCss(overrides: UiOverridesMap): string {
   const rules: string[] = [];
@@ -200,7 +205,8 @@ function buildOverridesCss(overrides: UiOverridesMap): string {
     }
 
     if (decls.length > 0) {
-      rules.push(`${item.selector} { ${decls.join(' ')} }`);
+      const safeSelector = `${item.selector}:not([data-admin-studio="true"] *):not([data-zappy-editor="true"] *)`;
+      rules.push(`${safeSelector} { ${decls.join(' ')} }`);
     }
   }
 
@@ -216,7 +222,13 @@ function applyDomTextOverrides(overrides: UiOverridesMap) {
     try {
       const nodes = document.querySelectorAll<HTMLElement>(item.selector);
       nodes.forEach((node) => {
-        if (node.hasAttribute('data-zappy-editor')) return;
+        if (
+          node.hasAttribute('data-zappy-editor') ||
+          node.closest('[data-zappy-editor="true"]') ||
+          node.closest('[data-admin-studio="true"]')
+        ) {
+          return;
+        }
         const textSpan = node.querySelector('span');
         if (textSpan && textSpan.children.length === 0) {
           if (textSpan.textContent !== item.customText) {
@@ -427,7 +439,10 @@ export const VisualUiEditor: React.FC<VisualUiEditorProps> = ({
 
     const isInsideEditorUi = (target: EventTarget | null): boolean => {
       if (!(target instanceof HTMLElement)) return true;
-      return Boolean(target.closest('[data-zappy-editor="true"]'));
+      return Boolean(
+        target.closest('[data-zappy-editor="true"]') ||
+          target.closest('[data-admin-studio="true"]')
+      );
     };
 
     const handleMouseMove = (e: MouseEvent) => {
@@ -617,7 +632,9 @@ export const VisualUiEditor: React.FC<VisualUiEditorProps> = ({
       setSaveBanner('Saved to Cloud Firestore!');
       setTimeout(() => setSaveBanner(null), 3500);
     } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'ui_config/global');
+      console.error('Failed to save UI config to Firestore:', error);
+      setSaveBanner('Failed to save: ' + (error instanceof Error ? error.message : String(error)));
+      setTimeout(() => setSaveBanner(null), 4000);
     } finally {
       setIsSavingCloud(false);
     }

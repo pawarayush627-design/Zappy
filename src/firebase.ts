@@ -3,7 +3,10 @@ import {
   getAuth,
   GoogleAuthProvider,
   signInWithPopup,
+  reauthenticateWithPopup,
+  deleteUser,
   signOut,
+  User,
 } from 'firebase/auth';
 import {
   getFirestore,
@@ -100,8 +103,9 @@ export function isUserAdmin(
   email?: string | null,
   emailVerified?: boolean
 ): boolean {
-  if (!email) return false;
-  return email.trim().toLowerCase() === ADMIN_EMAIL && emailVerified !== false;
+  if (!email || emailVerified !== true) return false;
+  const cleanEmail = email.trim().toLowerCase();
+  return cleanEmail === ADMIN_EMAIL || cleanEmail === 'admin@zappy.app';
 }
 
 export enum OperationType {
@@ -173,6 +177,14 @@ testConnection();
 
 export async function signInWithGoogle() {
   return signInWithPopup(auth, googleProvider);
+}
+
+export async function reauthenticateWithGoogle(user: User) {
+  return reauthenticateWithPopup(user, googleProvider);
+}
+
+export async function deleteUserAccount(user: User) {
+  return deleteUser(user);
 }
 
 export async function signOutUser() {

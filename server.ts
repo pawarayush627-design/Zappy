@@ -20,6 +20,7 @@ import {
   createPosterDataUri,
   createBackdropDataUri,
 } from './src/utils/artworkGenerator.ts';
+import { verifyAdminRequest } from './src/utils/adminAuthServer.ts';
 
 dotenv.config();
 
@@ -382,11 +383,11 @@ function mapTmdbRecordToMediaItem(
     releaseYear,
     durationMinutes: Number(raw.runtime) || (mediaType === 'tv' ? 42 : 110),
     maturityRating: mediaType === 'tv' ? 'TV-14' : 'PG-13',
-    directorOrCreator: 'TMDB Catalog Verified',
+    directorOrCreator: 'TMDB Catalog Metadata',
     cast: ['TMDB Cast Ensemble'],
     availabilityStatus: isPlayable ? 'playable_demo' : 'catalog_preview',
     availabilityNote: isPlayable
-      ? `Verified Authorized Stream · TMDB ${mediaType.toUpperCase()} #${tmdbId}`
+      ? `Third-Party Embed Stream (Unverified Licensing) · TMDB ${mediaType.toUpperCase()} #${tmdbId}`
       : `TMDB Metadata Only (#${tmdbId}) · Not available to stream yet`,
     popularScore: Math.min(
       99,
@@ -423,7 +424,7 @@ function getHydratedFallbackCatalog(): MediaItem[] {
       ...item,
       availabilityStatus: playable ? 'playable_demo' : 'catalog_preview',
       availabilityNote: playable
-        ? `Verified Authorized Stream · TMDB ${item.mediaType.toUpperCase()} #${item.tmdbId}`
+        ? `Third-Party Embed Stream (Unverified Licensing) · TMDB ${item.mediaType.toUpperCase()} #${item.tmdbId}`
         : `TMDB Metadata Only (#${item.tmdbId}) · Not available to stream yet`,
     };
   });
@@ -1389,7 +1390,8 @@ async function startServer() {
 
       res.json({
         items: items.map((item) => {
-          const streamToken = item.imdbId || item.tmdbId || 157336;
+          const tmdbNumericId =
+            item.tmdbId && item.tmdbId > 0 ? item.tmdbId : 157336;
           return {
             title: item.title,
             releaseYear: item.releaseYear,
@@ -1414,8 +1416,8 @@ async function startServer() {
             justWatchUrl: item.justWatchUrl,
             cinesrcEmbedUrl:
               item.mediaType === 'tv'
-                ? `https://embedmaster.link/tv/${streamToken}/1/1`
-                : `https://embedmaster.link/movie/${streamToken}`,
+                ? `https://vidly.pro/tv/${tmdbNumericId}/1/1`
+                : `https://vidly.pro/movie/${tmdbNumericId}`,
           };
         }),
       });
@@ -1686,16 +1688,17 @@ async function startServer() {
         }
       }
 
-      const streamToken =
-        extractedImdbId ||
-        (extractedTmdbId && extractedTmdbId > 0
-          ? String(extractedTmdbId)
-          : String(finalTmdbId));
+      const streamTmdbId =
+        finalTmdbId > 0
+          ? finalTmdbId
+          : extractedTmdbId && extractedTmdbId > 0
+          ? extractedTmdbId
+          : 157336;
 
       const cinesrcEmbedUrl =
         extractedMediaType === 'tv'
-          ? `https://embedmaster.link/tv/${streamToken}/1/1`
-          : `https://embedmaster.link/movie/${streamToken}`;
+          ? `https://vidly.pro/tv/${streamTmdbId}/1/1`
+          : `https://vidly.pro/movie/${streamTmdbId}`;
 
       res.json({
         title: extractedTitle,
@@ -1814,8 +1817,8 @@ async function startServer() {
 
     const embedUrl =
       mediaTypeParam === 'tv'
-        ? `https://embedmaster.link/tv/${tmdbIdNum}/${seasonNum}/${episodeNum}?skin=onyx&welcome_page=off&autoplay=on`
-        : `https://embedmaster.link/movie/${tmdbIdNum}?skin=onyx&welcome_page=off&autoplay=on`;
+        ? `https://vidly.pro/tv/${tmdbIdNum}/${seasonNum}/${episodeNum}`
+        : `https://vidly.pro/movie/${tmdbIdNum}`;
 
     const cinesrcAsset: AuthorizedVideoAsset = {
       assetId: `stream-${mediaTypeParam}-${tmdbIdNum}`,
@@ -1823,42 +1826,53 @@ async function startServer() {
       mediaType: mediaTypeParam,
       seasonNumber: seasonNum,
       episodeNumber: episodeNum,
-      title: `4K UHD Stream (${mediaTypeParam.toUpperCase()} #${tmdbIdNum})`,
+      title: `Third-Party Embed Stream (${mediaTypeParam.toUpperCase()} #${tmdbIdNum})`,
       streamFormat: 'cinesrc',
       manifestOrFileUrl: embedUrl,
-      rightsStatus: 'verified',
+      rightsStatus: 'pending',
       allowedTerritories: ['ALL'],
       validFrom: '2020-01-01',
       validUntil: '2035-12-31',
       durationSeconds: 7200,
-      resolutionLabel: '4K UHD · Multi-Server Stream',
-      licenseNotice: 'Authorized Stream',
-      attribution: 'Zappy Player',
+      resolutionLabel: 'Third-Party Embed · Vidly.pro',
+      licenseNotice: 'Third-Party Embed Stream (Licensing Unverified)',
+      attribution: 'Vidly.pro Third-Party Embed Player',
     };
 
     const response: PlaybackResolutionResponse = {
-      authorized: true,
+      authorized: false,
       tmdbId: tmdbIdNum,
       mediaType: mediaTypeParam,
       seasonNumber: seasonNum,
       episodeNumber: episodeNum,
       territory,
-      reasonCode: 'authorized',
-      message: 'Stream ready.',
+      reasonCode: 'rights_unverified',
+      message:
+        'Third-party embed stream URL resolved; content licensing is not verified by ZappyFun.',
       asset: cinesrcAsset,
       videoAdConfig: serverVideoAdConfig,
     };
     res.json(response);
   });
 
-  app.get('/api/admin/assets', (_req, res) => {
+  app.get('/api/admin/assets', async (req, res) => {
+    const authResult = await verifyAdminRequest(req);
+    if (!authResult.authorized) {
+      res.status(authResult.statusCode).json({ error: authResult.error });
+      return;
+    }
     res.json({
       assets: authorizedAssetsRegistry,
       videoAdConfig: serverVideoAdConfig,
     });
   });
 
-  app.post('/api/admin/ima-config', (req, res) => {
+  app.post('/api/admin/ima-config', async (req, res) => {
+    const authResult = await verifyAdminRequest(req);
+    if (!authResult.authorized) {
+      res.status(authResult.statusCode).json({ error: authResult.error });
+      return;
+    }
     const body = req.body || {};
     serverVideoAdConfig = {
       imaEnabled:
@@ -1885,7 +1899,14 @@ async function startServer() {
     res.json({ videoAdConfig: serverVideoAdConfig });
   });
 
-  app.get('/api/support', (_req, res) => {
+  app.get('/api/support', async (req, res) => {
+    const authResult = await verifyAdminRequest(req);
+    if (!authResult.authorized) {
+      res
+        .status(authResult.statusCode)
+        .json({ error: authResult.error, messages: [] });
+      return;
+    }
     res.json({
       messages: supportTicketsRegistry.sort(
         (a, b) => b.createdAtMs - a.createdAtMs
@@ -1933,7 +1954,12 @@ async function startServer() {
     res.json({ ticket });
   });
 
-  app.patch('/api/support/:id', (req, res) => {
+  app.patch('/api/support/:id', async (req, res) => {
+    const authResult = await verifyAdminRequest(req);
+    if (!authResult.authorized) {
+      res.status(authResult.statusCode).json({ error: authResult.error });
+      return;
+    }
     const id = req.params.id;
     const nextStatus =
       req.body?.status === 'resolved' ? 'resolved' : 'open';
@@ -1943,7 +1969,12 @@ async function startServer() {
     res.json({ ok: true });
   });
 
-  app.delete('/api/support/:id', (req, res) => {
+  app.delete('/api/support/:id', async (req, res) => {
+    const authResult = await verifyAdminRequest(req);
+    if (!authResult.authorized) {
+      res.status(authResult.statusCode).json({ error: authResult.error });
+      return;
+    }
     const id = req.params.id;
     supportTicketsRegistry = supportTicketsRegistry.filter((t) => t.id !== id);
     res.json({ ok: true });

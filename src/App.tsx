@@ -22,6 +22,20 @@ import {
   Gamepad2,
   Glasses,
   MessageSquare,
+  Home,
+  Film,
+  Compass,
+  Layers,
+  User as UserIcon,
+  SlidersHorizontal,
+  Palette,
+  Trash2,
+  Mail,
+  FileText,
+  AlertTriangle,
+  CheckCircle2,
+  Loader2,
+  RefreshCw,
 } from 'lucide-react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import {
@@ -48,6 +62,8 @@ import {
   isUserAdmin,
   signInWithGoogle,
   signOutUser,
+  reauthenticateWithGoogle,
+  deleteUserAccount,
   handleFirestoreError,
   OperationType,
 } from './firebase';
@@ -62,7 +78,14 @@ import { HeroBanner } from './components/HeroBanner';
 import { CarouselRow } from './components/CarouselRow';
 import { MovieCard } from './components/MovieCard';
 import { DetailsView } from './components/DetailsView';
-import { InfoModal, InfoModalType } from './components/InfoModal';
+import {
+  InfoModal,
+  InfoModalType,
+  LegalPagesConfig,
+  DEFAULT_LEGAL_PAGES,
+  OFFICIAL_CONTACT_EMAIL,
+  normalizeLegalPagesConfig,
+} from './components/InfoModal';
 import {
   ContinueWatchingRow,
   WatchProgressEntry,
@@ -74,8 +97,11 @@ import { MediaArtwork } from './components/MediaArtwork';
 type NavView =
   | 'home'
   | 'movies_shows'
+  | 'movies'
+  | 'tv'
+  | 'categories'
+  | 'myspace'
   | 'support'
-  | 'subscriptions'
   | 'search'
   | 'watchlist'
   | 'details';
@@ -83,6 +109,8 @@ type NavView =
 const WATCHLIST_STORAGE_KEY = 'zappy_watchlist_v2';
 const COMPLETED_STORAGE_KEY = 'zappy_completed_v1';
 const ADS_STORAGE_KEY = 'zappy_ads_enabled_v1';
+const WATCH_PROGRESS_STORAGE_KEY = 'zappy_watch_progress_v2';
+const LEGAL_PAGES_STORAGE_KEY = 'zappy_legal_pages_v1';
 const HERO_CYCLE_STORAGE_KEY = 'zappy_hero_8movie_cycle_v1';
 const HERO_DAILY_BATCH_SIZE = 8;
 const HERO_BATCH_CYCLE_MS = 24 * 60 * 60 * 1000; // 24-hour daily 8-movie batch rotation
@@ -130,141 +158,39 @@ const ZAPPY_DEVICES = [
 const ZAPPY_FAQS = [
   {
     num: '01',
-    question: 'What is Zappy?',
+    question: 'What is ZappyFun?',
     answer:
-      'Zappy is an on-demand streaming platform that allows you to watch movies and TV shows in 4K UHD.',
+      'ZappyFun is an on-demand streaming platform that allows you to watch movies and TV shows in 4K UHD.',
   },
   {
     num: '02',
-    question: 'How much does Zappy cost?',
-    answer:
-      'Plans start at $9.99/month for Basic, $12.99/month for Standard, and $14.99/month for Premium 4K UHD.',
-  },
-  {
-    num: '03',
-    question: 'What content is available on Zappy?',
+    question: 'What content is available on ZappyFun?',
     answer:
       'Enjoy blockbuster movies, original series, trending TV shows, documentaries, and curated titles across every genre.',
   },
   {
-    num: '04',
-    question: 'How can I watch Zappy?',
+    num: '03',
+    question: 'How can I watch ZappyFun?',
     answer:
-      'You can watch directly on the web or across smartphones, tablets, Smart TVs, laptops, gaming consoles, and VR headsets.',
+      'You can watch directly on the web across smartphones, tablets, Smart TVs, laptops, gaming consoles, and VR headsets.',
   },
   {
-    num: '05',
-    question: 'How do I sign up for Zappy?',
+    num: '04',
+    question: 'How do I sign in to ZappyFun?',
     answer:
       'Click Sign In to authenticate with Google in one click and sync your personal watchlist across all devices.',
   },
   {
-    num: '06',
+    num: '05',
     question: 'What happens when I finish watching a title in my Watchlist?',
     answer:
-      'Once you watch a movie or show fully on Zappy, it is automatically removed from your Watchlist so your list stays fresh.',
+      'Once you watch a movie or show fully on ZappyFun, it is automatically removed from your Watchlist so your list stays fresh.',
   },
   {
-    num: '07',
-    question: 'How do I contact Zappy customer support?',
+    num: '06',
+    question: 'How do I contact ZappyFun customer support?',
     answer:
-      'Visit our Support page at any time to send a direct message directly to the Zappy Admin inbox.',
-  },
-  {
-    num: '08',
-    question: 'What are the Zappy payment methods?',
-    answer:
-      'We accept all major credit/debit cards, UPI, NetBanking, PayPal, and digital wallets.',
-  },
-];
-
-const ZAPPY_PLANS = [
-  {
-    name: 'Basic Plan',
-    description:
-      'Enjoy an extensive library of movies and shows, featuring a range of content, including recently released titles.',
-    monthlyPrice: '$9.99',
-    yearlyPrice: '$95.99',
-  },
-  {
-    name: 'Standard Plan',
-    description:
-      'Access to a wider selection of movies and shows, including most new releases and exclusive content in Full HD.',
-    monthlyPrice: '$12.99',
-    yearlyPrice: '$124.99',
-    popular: true,
-  },
-  {
-    name: 'Premium Plan',
-    description:
-      'Access to the widest selection of movies and shows, including all new releases, 4K Ultra HD & Offline Viewing.',
-    monthlyPrice: '$14.99',
-    yearlyPrice: '$143.99',
-  },
-];
-
-const PLAN_COMPARISON_ROWS = [
-  {
-    feature: 'Price',
-    basic: '$9.99/Month',
-    standard: '$12.99/Month',
-    premium: '$14.99/Month',
-  },
-  {
-    feature: 'Content',
-    basic: 'Access to a wide selection of movies and shows, including some new releases.',
-    standard:
-      'Access to a wider selection of movies and shows, including most new releases and exclusive content',
-    premium:
-      'Access to a widest selection of movies and shows, including all new releases and Offline Viewing',
-  },
-  {
-    feature: 'Devices',
-    basic: 'Watch on one device simultaneously',
-    standard: 'Watch on Two device simultaneously',
-    premium: 'Watch on Four device simultaneously',
-  },
-  {
-    feature: 'Free Trial',
-    basic: '7 Days',
-    standard: '7 Days',
-    premium: '7 Days',
-  },
-  {
-    feature: 'Cancel Anytime',
-    basic: 'Yes',
-    standard: 'Yes',
-    premium: 'Yes',
-  },
-  {
-    feature: 'HDR',
-    basic: 'No',
-    standard: 'Yes',
-    premium: 'Yes',
-  },
-  {
-    feature: 'Dolby Atmos',
-    basic: 'No',
-    standard: 'Yes',
-    premium: 'Yes',
-  },
-  {
-    feature: 'Ad - Free',
-    basic: 'No',
-    standard: 'Yes',
-    premium: 'Yes',
-  },
-  {
-    feature: 'Offline Viewing',
-    basic: 'No',
-    standard: 'Yes, for select titles.',
-    premium: 'Yes, for all titles.',
-  },
-  {
-    feature: 'Family Sharing',
-    basic: 'No',
-    standard: 'Yes, up to 5 family members.',
-    premium: 'Yes, up to 6 family members.',
+      'Visit our Support page to send a direct message to the ZappyFun Admin inbox or email us at ContactZappyFun@gmail.com.',
   },
 ];
 
@@ -273,7 +199,7 @@ export default function App() {
   const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
 
   const [catalog, setCatalog] = useState<MediaItem[]>([]);
-  const [, setIsLoadingCatalog] = useState<boolean>(true);
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(true);
   const [videoAdConfig] = useState<VideoAdConfig>({
     imaEnabled: true,
     testMode: true,
@@ -283,15 +209,17 @@ export default function App() {
   });
 
   const [activeView, setActiveView] = useState<NavView>('home');
+  const [previousView, setPreviousView] = useState<NavView>('home');
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [autoPlayOnOpen, setAutoPlayOnOpen] = useState<boolean>(false);
+  const [resumeSavedOnOpen, setResumeSavedOnOpen] = useState<boolean>(false);
   const [activeHeroIndex, setActiveHeroIndex] = useState<number>(0);
 
   // Admin Studio Modal & Live Visual UI Editor State
   const [adminStudioOpen, setAdminStudioOpen] = useState<boolean>(false);
-  const [adminInitialTab, setAdminInitialTab] = useState<'catalog' | 'support'>(
-    'catalog'
-  );
+  const [adminInitialTab, setAdminInitialTab] = useState<
+    'catalog' | 'support' | 'legal'
+  >('catalog');
   const [adminPrefillMedia, setAdminPrefillMedia] =
     useState<MediaItem | null>(null);
   const [previewDraftItem, setPreviewDraftItem] =
@@ -305,9 +233,10 @@ export default function App() {
   const [profileMenuOpen, setProfileMenuOpen] = useState<boolean>(false);
   const [sessionToast, setSessionToast] = useState<string | null>(null);
 
-  // Search & Filter State
+  // Search & Filter State (with Debounced Input)
   const [searchBarOpen, setSearchBarOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState<string>('');
   const [selectedGenre, setSelectedGenre] = useState<string>('All');
   const [searchTypeFilter, setSearchTypeFilter] = useState<
     'all' | 'movie' | 'series'
@@ -316,16 +245,51 @@ export default function App() {
     'relevance' | 'newest' | 'popular' | 'title'
   >('relevance');
 
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 180);
+    return () => window.clearTimeout(timer);
+  }, [searchQuery]);
+
   // Genre Pagination State (allows cycling through all genres)
   const [genrePageIndex, setGenrePageIndex] = useState<number>(0);
 
-  // Home / FAQ / Pricing Interactive State
+  // Home / FAQ Interactive State
   const [openFaqId, setOpenFaqId] = useState<string>('01');
-  const [billingCycle, setBillingCycle] = useState<'monthly' | 'yearly'>(
-    'monthly'
-  );
-  const [mobileShowsTab, setMobileShowsTab] = useState<'movies' | 'shows'>(
-    'movies'
+
+  // Auto-Add newly aired episodes to ZappyFun catalog & Cloud Firestore (Admin only for Firestore writes)
+  const handleAutoSyncEpisodes = useCallback(
+    async (targetItem: MediaItem, newSeasons: number, newEpisodes: number) => {
+      setCatalog((prev) =>
+        prev.map((c) =>
+          c.id === targetItem.id
+            ? { ...c, seasonsCount: newSeasons, episodesCount: newEpisodes }
+            : c
+        )
+      );
+      if (
+        !auth.currentUser ||
+        !isUserAdmin(auth.currentUser.email, auth.currentUser.emailVerified)
+      ) {
+        return;
+      }
+      try {
+        const docRef = doc(db, 'catalog', targetItem.id);
+        await updateDoc(docRef, {
+          seasonsCount: newSeasons,
+          episodesCount: newEpisodes,
+          updatedAt: serverTimestamp(),
+        });
+        setSessionToast(
+          `✨ Automatically added ${newEpisodes} episodes for "${targetItem.title}" to ZappyFun!`
+        );
+        setTimeout(() => setSessionToast(null), 5000);
+      } catch {
+        // Guest or offline fallback is preserved in local state
+      }
+    },
+    []
   );
 
   // Support Form & Admin Support Messages State
@@ -367,10 +331,19 @@ export default function App() {
     }
   });
 
-  // Continue Watching Progress State
+  // Continue Watching Progress State (Persisted to localStorage)
   const [watchProgressMap, setWatchProgressMap] = useState<
     Record<string, WatchProgressEntry>
-  >({});
+  >(() => {
+    try {
+      const raw = localStorage.getItem(WATCH_PROGRESS_STORAGE_KEY);
+      if (!raw) return {};
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' ? parsed : {};
+    } catch {
+      return {};
+    }
+  });
 
   // Configurable Display Ad-Supported Placeholder State
   const [adsEnabled, setAdsEnabled] = useState<boolean>(() => {
@@ -382,8 +355,80 @@ export default function App() {
     }
   });
 
-  const [activeModal, setActiveModal] = useState<InfoModalType>(null);
+  // Admin-Editable Legal Pages & Contact Email State (Synced with Cloud Firestore ui_config/legal_pages)
+  const [legalPages, setLegalPages] = useState<LegalPagesConfig>(() => {
+    try {
+      const raw = localStorage.getItem(LEGAL_PAGES_STORAGE_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return normalizeLegalPagesConfig(parsed);
+        }
+      }
+    } catch {
+      // Ignore
+    }
+    return DEFAULT_LEGAL_PAGES;
+  });
+
+  const [activeModal, setActiveModal] = useState<InfoModalType>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      const legalParam = params.get('legal');
+      if (legalParam === 'cookies') {
+        return 'advertising';
+      }
+      if (
+        legalParam === 'terms' ||
+        legalParam === 'privacy' ||
+        legalParam === 'advertising' ||
+        legalParam === 'disclaimer' ||
+        legalParam === 'about' ||
+        legalParam === 'contact'
+      ) {
+        return legalParam;
+      }
+    } catch {
+      // Ignore
+    }
+    return null;
+  });
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        LEGAL_PAGES_STORAGE_KEY,
+        JSON.stringify(legalPages)
+      );
+    } catch {
+      // Ignore
+    }
+  }, [legalPages]);
+
+  useEffect(() => {
+    const legalDocRef = doc(db, 'ui_config', 'legal_pages');
+    const unsubscribe = onSnapshot(
+      legalDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data && typeof data === 'object') {
+            setLegalPages((prev) =>
+              normalizeLegalPagesConfig({
+                ...prev,
+                ...(data as Partial<LegalPagesConfig>),
+              })
+            );
+          }
+        }
+      },
+      () => {
+        // Ignore if not yet created
+      }
+    );
+    return () => unsubscribe();
+  }, []);
 
   // Hero Banner 8-Movie Daily Cycle State (24h batch rotation & 28h per-movie tenure)
   const [heroCycleConfig, setHeroCycleConfig] = useState<{
@@ -531,19 +576,29 @@ export default function App() {
             typeof data.cinesrcEmbedUrl === 'string'
               ? data.cinesrcEmbedUrl.trim()
               : '';
-          const imdbMatch = rawEmbedStr.match(/(tt\d{5,12})/i);
           const numMatch = rawEmbedStr.match(
             /(?:movie|tv|series|show)\/(\d+)/i
           );
+          const rawTmdbNum =
+            Number(data.tmdbId) || (numMatch?.[1] ? Number(numMatch[1]) : 0);
           const resolvedNumericId =
-            Number(data.tmdbId) || (numMatch?.[1] ? Number(numMatch[1]) : 1);
-          const resolvedStreamId = imdbMatch?.[1]
-            ? imdbMatch[1].toLowerCase()
-            : String(resolvedNumericId);
-          const normalizedEmbedMasterUrl =
+            rawTmdbNum > 0 && rawTmdbNum !== 10000 ? rawTmdbNum : 157336;
+          const normalizedVidlyUrl =
             mediaType === 'tv'
-              ? `https://embedmaster.link/tv/${resolvedStreamId}/1/1`
-              : `https://embedmaster.link/movie/${resolvedStreamId}`;
+              ? `https://vidly.pro/tv/${resolvedNumericId}/1/1`
+              : `https://vidly.pro/movie/${resolvedNumericId}`;
+
+          if (
+            auth.currentUser &&
+            isUserAdmin(auth.currentUser.email, auth.currentUser.emailVerified) &&
+            (!rawEmbedStr.includes('vidly.pro') || !data.cinesrcEmbedUrl)
+          ) {
+            updateDoc(doc(db, 'catalog', docSnap.id), {
+              cinesrcEmbedUrl: normalizedVidlyUrl,
+              tmdbId: resolvedNumericId,
+              updatedAt: serverTimestamp(),
+            }).catch(() => {});
+          }
 
           return {
             id: data.id || docSnap.id,
@@ -570,7 +625,7 @@ export default function App() {
               typeof data.creditsJson === 'string' ? data.creditsJson : '[]',
             posterUrl: data.posterUrl || '',
             backdropUrl: data.backdropUrl || data.posterUrl || '',
-            cinesrcEmbedUrl: normalizedEmbedMasterUrl,
+            cinesrcEmbedUrl: normalizedVidlyUrl,
             justWatchUrl: data.justWatchUrl || '',
             visibility: data.visibility || 'public',
             authorUid: data.authorUid || '',
@@ -637,113 +692,14 @@ export default function App() {
       ACTIVE_FIRESTORE_DATABASE_ID !==
         LEGACY_FIREBASE_CONFIG.firestoreDatabaseId;
 
-    if (!isDifferentProject) return;
-
-    let cancelled = false;
-    async function recoverAndMigrateFromLegacyProject() {
-      try {
-        const legacyCatalogSnap = await getDocs(
-          query(
-            collection(legacyDb, 'catalog'),
-            where('visibility', '==', 'public')
-          )
-        );
-        if (cancelled || legacyCatalogSnap.empty) return;
-
-        // If current catalog is empty, hydrate UI immediately from legacy snapshot
-        setCatalog((currentItems) => {
-          if (currentItems.length > 0) return currentItems;
-          return legacyCatalogSnap.docs.map((docSnap) => {
-            const data = docSnap.data();
-            const mediaType = data.mediaType === 'tv' ? 'tv' : 'movie';
-            return {
-              id: data.id || docSnap.id,
-              tmdbId: Number(data.tmdbId) || 157336,
-              mediaType,
-              title: data.title || 'Untitled',
-              tagline: data.tagline || '',
-              synopsis: data.synopsis || '',
-              contentType: mediaType === 'tv' ? 'series' : 'movie',
-              genres: Array.isArray(data.genres) ? data.genres : ['Drama'],
-              releaseYear: Number(data.releaseYear) || 2024,
-              durationMinutes: Number(data.durationMinutes) || 120,
-              maturityRating: data.maturityRating || 'PG-13',
-              directorOrCreator: data.directorOrCreator || 'Featured Creator',
-              cast: Array.isArray(data.cast) ? data.cast : ['Featured Cast'],
-              posterUrl: data.posterUrl || '',
-              backdropUrl: data.backdropUrl || data.posterUrl || '',
-              cinesrcEmbedUrl: data.cinesrcEmbedUrl || '',
-              justWatchUrl: data.justWatchUrl || '',
-              featured: Boolean(data.featured),
-              popularScore: Number(data.popularScore) || 92,
-              seasonsCount: Number(data.seasonsCount) || 1,
-              episodesCount: Number(data.episodesCount) || 8,
-              availabilityStatus: 'playable_demo',
-              availabilityNote: '4K UHD · Instant Stream',
-              visualTheme: {
-                primaryHex: '#141414',
-                secondaryHex: '#1A1A1A',
-                accentHex: '#E50000',
-                motif: 'horizon',
-              },
-            };
-          });
-        });
-
-        // If signed in as Admin, automatically copy all legacy catalog & UI overrides into the new Firebase project
-        if (currentUser && isAdmin) {
-          let migratedCount = 0;
-          for (const docSnap of legacyCatalogSnap.docs) {
-            const targetRef = doc(db, 'catalog', docSnap.id);
-            const existing = await getDoc(targetRef);
-            if (!existing.exists()) {
-              const raw = docSnap.data();
-              await setDoc(targetRef, {
-                ...raw,
-                id: raw.id || docSnap.id,
-                authorUid: currentUser.uid,
-                createdAt: serverTimestamp(),
-                updatedAt: serverTimestamp(),
-              });
-              migratedCount += 1;
-            }
-          }
-
-          const legacyUiSnap = await getDocs(
-            collection(legacyDb, 'ui_overrides')
-          );
-          for (const uiDoc of legacyUiSnap.docs) {
-            const targetUiRef = doc(db, 'ui_overrides', uiDoc.id);
-            const existingUi = await getDoc(targetUiRef);
-            if (!existingUi.exists()) {
-              await setDoc(targetUiRef, {
-                ...uiDoc.data(),
-                updatedBy: currentUser.email || ADMIN_EMAIL,
-                updatedAt: serverTimestamp(),
-              });
-            }
-          }
-
-          if (migratedCount > 0 && !cancelled) {
-            setSessionToast(
-              `Automatically recovered & migrated ${migratedCount} title(s) into your new Firebase project (${ACTIVE_FIREBASE_PROJECT_ID})!`
-            );
-          }
-        }
-      } catch {
-        // Ignore if legacy project is unreachable
-      }
-    }
-
-    recoverAndMigrateFromLegacyProject();
-    return () => {
-      cancelled = true;
-    };
+    // Catalog clean-slate state: Legacy movies are no longer re-injected automatically
+    // The admin now has full, clean control to populate or clear titles in Admin Studio.
+    return () => {};
   }, [currentUser, isAdmin]);
 
   // 3. Real-time Cloud Firestore Watchlist Subscription
   useEffect(() => {
-    if (!isAuthReady || !currentUser || !currentUser.emailVerified) return;
+    if (!isAuthReady || !currentUser) return;
 
     const watchlistQuery = query(
       collection(db, 'watchlists'),
@@ -759,17 +715,26 @@ export default function App() {
         setWatchlistIds(Array.from(new Set(ids)));
       },
       (error) => {
-        handleFirestoreError(error, OperationType.LIST, 'watchlists');
+        console.error('Watchlist subscription error:', error);
       }
     );
 
     return () => unsubscribe();
   }, [isAuthReady, currentUser]);
 
-  // 4. Real-time Admin Support Messages Subscription (Firestore + Backend API)
+  // 4. Real-time Admin Support Messages Subscription (Firestore + Backend API with Verified Admin Token)
   const fetchServerSupportMessages = useCallback(async () => {
+    if (!currentUser || !isAdmin) {
+      setServerSupportMessages([]);
+      return;
+    }
     try {
-      const res = await fetch('/api/support');
+      const idToken = await currentUser.getIdToken();
+      const res = await fetch('/api/support', {
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
+      });
       if (res.ok) {
         const data = await res.json();
         if (Array.isArray(data.messages)) {
@@ -779,7 +744,7 @@ export default function App() {
     } catch {
       // Ignore network error
     }
-  }, []);
+  }, [currentUser, isAdmin]);
 
   useEffect(() => {
     fetchServerSupportMessages();
@@ -853,6 +818,17 @@ export default function App() {
     }
   }, [adsEnabled]);
 
+  useEffect(() => {
+    try {
+      localStorage.setItem(
+        WATCH_PROGRESS_STORAGE_KEY,
+        JSON.stringify(watchProgressMap)
+      );
+    } catch {
+      // Ignore
+    }
+  }, [watchProgressMap]);
+
   const handleGoogleLogin = async () => {
     try {
       const result = await signInWithGoogle();
@@ -880,6 +856,148 @@ export default function App() {
     }
   };
 
+  const [isPurgingCatalog, setIsPurgingCatalog] = useState<boolean>(false);
+  const [confirmingPurgeCatalog, setConfirmingPurgeCatalog] =
+    useState<boolean>(false);
+
+  // Self-Service Account & Personal Data Deletion State (My Space)
+  const [showDeleteAccountConfirm, setShowDeleteAccountConfirm] =
+    useState<boolean>(false);
+  const [isDeletingAccount, setIsDeletingAccount] = useState<boolean>(false);
+  const [deleteAccountNeedsReauth, setDeleteAccountNeedsReauth] =
+    useState<boolean>(false);
+  const [deleteAccountError, setDeleteAccountError] = useState<string | null>(
+    null
+  );
+  const [deleteAccountSuccessBanner, setDeleteAccountSuccessBanner] = useState<
+    string | null
+  >(null);
+
+  const handleClearLocalViewerDataOnly = () => {
+    try {
+      localStorage.removeItem(WATCHLIST_STORAGE_KEY);
+      localStorage.removeItem(COMPLETED_STORAGE_KEY);
+      localStorage.removeItem(WATCH_PROGRESS_STORAGE_KEY);
+    } catch {
+      // Ignore storage error
+    }
+    setWatchlistIds([]);
+    setCompletedIds([]);
+    setWatchProgressMap({});
+    showToast(
+      'Cleared local watchlist, watch history, and completed records on this browser.'
+    );
+  };
+
+  const handleDeleteAccountAndData = async (reauthFirst = false) => {
+    if (!currentUser) return;
+    setIsDeletingAccount(true);
+    setDeleteAccountError(null);
+    setDeleteAccountSuccessBanner(null);
+
+    try {
+      // 1. Optional Google Re-authentication when required by Firebase Auth
+      if (reauthFirst) {
+        await reauthenticateWithGoogle(currentUser);
+        setDeleteAccountNeedsReauth(false);
+      }
+
+      // 2. Delete all Cloud Firestore /watchlists documents owned by this user
+      const userWatchlistQuery = query(
+        collection(db, 'watchlists'),
+        where('ownerId', '==', currentUser.uid)
+      );
+      const watchlistSnap = await getDocs(userWatchlistQuery);
+      if (!watchlistSnap.empty) {
+        await Promise.all(
+          watchlistSnap.docs.map((docSnap) =>
+            deleteDoc(doc(db, 'watchlists', docSnap.id))
+          )
+        );
+      }
+
+      // 3. Delete the Firebase Authentication user record
+      await deleteUserAccount(currentUser);
+
+      // 4. Clear ONLY user-specific localStorage keys (preserve global app config keys)
+      try {
+        localStorage.removeItem(WATCHLIST_STORAGE_KEY);
+        localStorage.removeItem(COMPLETED_STORAGE_KEY);
+        localStorage.removeItem(WATCH_PROGRESS_STORAGE_KEY);
+      } catch {
+        // Ignore storage error
+      }
+
+      setWatchlistIds([]);
+      setCompletedIds([]);
+      setWatchProgressMap({});
+      setShowDeleteAccountConfirm(false);
+      setDeleteAccountNeedsReauth(false);
+      setDeleteAccountSuccessBanner(
+        'Your ZappyFun account, Cloud Firestore watchlist records, and local watch history on this browser have been permanently deleted.'
+      );
+      showToast(
+        'Your ZappyFun account and personal data have been permanently deleted.'
+      );
+    } catch (err: unknown) {
+      const errObj = err as { code?: string; message?: string };
+      const errCode = String(errObj?.code || '');
+      const errMsg = String(errObj?.message || err || '');
+
+      if (
+        errCode === 'auth/requires-recent-login' ||
+        errMsg.includes('requires-recent-login')
+      ) {
+        setDeleteAccountNeedsReauth(true);
+        setDeleteAccountError(
+          'For your security, Firebase requires a fresh Google sign-in before deleting your account. Your cloud watchlist entries were cleared, but your account is still active. Click "Re-verify with Google & Complete Deletion" below to finish.'
+        );
+      } else if (
+        errCode === 'auth/popup-closed-by-user' ||
+        errCode === 'auth/cancelled-popup-request'
+      ) {
+        setDeleteAccountError(
+          'Google re-authentication popup was closed before verification completed. Your account was not deleted.'
+        );
+      } else {
+        setDeleteAccountError(
+          `Account deletion could not be completed: ${errMsg || 'Unexpected error'}. Your account remains signed in so you can retry.`
+        );
+      }
+    } finally {
+      setIsDeletingAccount(false);
+    }
+  };
+
+  const handleClearEntireCatalog = async () => {
+    if (!currentUser || !isAdmin) {
+      showToast('Please sign in as Admin to clear the catalog.');
+      return;
+    }
+    setIsPurgingCatalog(true);
+    setConfirmingPurgeCatalog(false);
+    try {
+      const snap = await getDocs(collection(db, 'catalog'));
+      const batchPromises = snap.docs.map((docSnap) =>
+        deleteDoc(doc(db, 'catalog', docSnap.id)).catch(() => {})
+      );
+      await Promise.all(batchPromises);
+      setCatalog([]);
+      setSelectedMedia(null);
+      showToast(
+        `Successfully removed all ${snap.size} movies and TV shows from the catalog.`
+      );
+    } catch (error) {
+      console.error('Failed to clear catalog:', error);
+      showToast(
+        'Failed to clear catalog: ' +
+          (error instanceof Error ? error.message : String(error))
+      );
+    } finally {
+      setIsPurgingCatalog(false);
+    }
+  };
+
   const handleToggleWatchlist = async (
     item: MediaItem,
     e?: React.MouseEvent
@@ -901,7 +1019,7 @@ export default function App() {
         : Array.from(new Set([...prev, item.id]))
     );
 
-    if (currentUser && currentUser.emailVerified) {
+    if (currentUser) {
       const docId = `${currentUser.uid}_${item.id}`.replace(
         /[^a-zA-Z0-9_-]/g,
         '_'
@@ -917,11 +1035,7 @@ export default function App() {
           });
         }
       } catch (error) {
-        handleFirestoreError(
-          error,
-          alreadySaved ? OperationType.DELETE : OperationType.CREATE,
-          `watchlists/${docId}`
-        );
+        console.error('Watchlist sync error:', error);
       }
     }
   };
@@ -958,29 +1072,106 @@ export default function App() {
     [currentUser, showToast]
   );
 
-  const handleSelectMedia = (item: MediaItem, autoPlay = false) => {
+  const handleUpdateWatchProgress = useCallback(
+    (
+      item: MediaItem,
+      seasonNumber: number,
+      episodeNumber: number,
+      progressPercent?: number,
+      remainingMinutes?: number
+    ) => {
+      if (completedIds.includes(item.id)) return;
+      setWatchProgressMap((prev) => {
+        const existing = prev[item.id];
+        const totalMins = Math.max(
+          15,
+          item.durationMinutes || (item.contentType === 'series' ? 45 : 110)
+        );
+        const sameEpisode =
+          existing &&
+          existing.seasonNumber === seasonNumber &&
+          existing.episodeNumber === episodeNumber;
+
+        const resolvedPercent =
+          typeof progressPercent === 'number' && progressPercent > 0
+            ? Math.min(99, Math.max(1, Math.round(progressPercent)))
+            : sameEpisode && existing.progressPercent
+            ? existing.progressPercent
+            : 5;
+
+        const resolvedRemaining =
+          typeof remainingMinutes === 'number' && remainingMinutes > 0
+            ? `${Math.max(1, Math.round(remainingMinutes))}m`
+            : sameEpisode &&
+              existing.remainingLabel &&
+              typeof progressPercent !== 'number'
+            ? existing.remainingLabel
+            : `${Math.max(
+                1,
+                Math.round(totalMins * (1 - resolvedPercent / 100))
+              )}m`;
+
+        return {
+          [item.id]: {
+            mediaId: item.id,
+            seasonNumber,
+            episodeNumber,
+            seasonEpisodeLabel:
+              item.contentType === 'series'
+                ? `S${seasonNumber} · E${episodeNumber}`
+                : 'Movie',
+            remainingLabel: resolvedRemaining,
+            progressPercent: resolvedPercent,
+            updatedAtMs: Date.now(),
+          },
+          ...prev,
+        };
+      });
+    },
+    [completedIds]
+  );
+
+  const handleSelectMedia = (
+    item: MediaItem,
+    autoPlay = false,
+    resumeSaved = false
+  ) => {
+    if (activeView !== 'details') {
+      setPreviousView(activeView);
+    }
     setSelectedMedia(item);
     setAutoPlayOnOpen(autoPlay);
+    setResumeSavedOnOpen(Boolean(resumeSaved));
     setActiveView('details');
     setNotificationsOpen(false);
     setProfileMenuOpen(false);
     setMobileMenuOpen(false);
 
-    if (!watchProgressMap[item.id] && !completedIds.includes(item.id)) {
-      setWatchProgressMap((prev) => ({
-        [item.id]: {
-          mediaId: item.id,
-          seasonEpisodeLabel:
-            item.contentType === 'series' ? 'S1 · E1' : 'Movie',
-          remainingLabel: `${item.durationMinutes}m`,
-          progressPercent: 28,
-        },
-        ...prev,
-      }));
+    if (autoPlay && !completedIds.includes(item.id)) {
+      const existing = watchProgressMap[item.id];
+      const startSeason = resumeSaved ? existing?.seasonNumber || 1 : 1;
+      const startEpisode = resumeSaved ? existing?.episodeNumber || 1 : 1;
+      handleUpdateWatchProgress(item, startSeason, startEpisode);
     }
   };
 
+  const handleRemoveWatchProgress = useCallback(
+    (mediaId: string, e?: React.MouseEvent) => {
+      if (e) e.stopPropagation();
+      setWatchProgressMap((prev) => {
+        const next = { ...prev };
+        delete next[mediaId];
+        return next;
+      });
+    },
+    []
+  );
+
   const handleNavigate = (view: NavView) => {
+    if (activeView !== 'details') {
+      setPreviousView(activeView);
+    }
+    setSearchBarOpen(false);
     setActiveView(view);
     setMobileMenuOpen(false);
     setNotificationsOpen(false);
@@ -990,7 +1181,7 @@ export default function App() {
 
   const openAdminStudio = (
     mediaItem: MediaItem | null = null,
-    tab: 'catalog' | 'support' = 'catalog'
+    tab: 'catalog' | 'support' | 'legal' = 'catalog'
   ) => {
     setAdminPrefillMedia(mediaItem);
     setAdminInitialTab(tab);
@@ -998,6 +1189,24 @@ export default function App() {
     setMobileMenuOpen(false);
     setProfileMenuOpen(false);
   };
+
+  const handleSaveLegalPages = useCallback(
+    async (nextLegal: LegalPagesConfig) => {
+      setLegalPages(nextLegal);
+      if (currentUser && isAdmin) {
+        await setDoc(
+          doc(db, 'ui_config', 'legal_pages'),
+          {
+            ...nextLegal,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+      showToast('Legal pages and contact information updated!');
+    },
+    [currentUser, isAdmin, showToast]
+  );
 
   const handlePreviewDraftInApp = (draftItem: MediaItem) => {
     setPreviewDraftItem(draftItem);
@@ -1159,38 +1368,48 @@ export default function App() {
     msg: SupportMessageItem,
     nextStatus: 'open' | 'resolved'
   ) => {
+    if (!currentUser || !isAdmin) return;
     try {
-      await fetch(`/api/support/${encodeURIComponent(msg.id)}`, {
+      const idToken = await currentUser.getIdToken();
+      const res = await fetch(`/api/support/${encodeURIComponent(msg.id)}`, {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${idToken}`,
+        },
         body: JSON.stringify({ status: nextStatus }),
       });
-      setServerSupportMessages((prev) =>
-        prev.map((m) => (m.id === msg.id ? { ...m, status: nextStatus } : m))
-      );
-
-      if (currentUser && isAdmin) {
-        const docRef = doc(db, 'support_messages', msg.id);
-        await updateDoc(docRef, {
-          status: nextStatus,
-          updatedAt: serverTimestamp(),
-        });
+      if (res.ok) {
+        setServerSupportMessages((prev) =>
+          prev.map((m) => (m.id === msg.id ? { ...m, status: nextStatus } : m))
+        );
       }
+
+      const docRef = doc(db, 'support_messages', msg.id);
+      await updateDoc(docRef, {
+        status: nextStatus,
+        updatedAt: serverTimestamp(),
+      });
     } catch {
       // Ignore if document is only in backend memory
     }
   };
 
   const handleDeleteSupportMessage = async (msg: SupportMessageItem) => {
+    if (!currentUser || !isAdmin) return;
     try {
-      await fetch(`/api/support/${encodeURIComponent(msg.id)}`, {
+      const idToken = await currentUser.getIdToken();
+      const res = await fetch(`/api/support/${encodeURIComponent(msg.id)}`, {
         method: 'DELETE',
+        headers: {
+          Authorization: `Bearer ${idToken}`,
+        },
       });
-      setServerSupportMessages((prev) => prev.filter((m) => m.id !== msg.id));
-
-      if (currentUser && isAdmin) {
-        await deleteDoc(doc(db, 'support_messages', msg.id));
+      if (res.ok) {
+        setServerSupportMessages((prev) => prev.filter((m) => m.id !== msg.id));
       }
+
+      await deleteDoc(doc(db, 'support_messages', msg.id));
     } catch {
       // Ignore
     }
@@ -1348,13 +1567,15 @@ export default function App() {
 
   const continueWatchingItems = useMemo(() => {
     const entries: { item: MediaItem; progress: WatchProgressEntry }[] = [];
-    Object.values(watchProgressMap).forEach((progress) => {
-      if (completedIds.includes(progress.mediaId)) return;
-      const found = catalog.find((c) => c.id === progress.mediaId);
-      if (found) {
-        entries.push({ item: found, progress });
-      }
-    });
+    Object.values(watchProgressMap)
+      .sort((a, b) => (b.updatedAtMs || 0) - (a.updatedAtMs || 0))
+      .forEach((progress) => {
+        if (completedIds.includes(progress.mediaId)) return;
+        const found = catalog.find((c) => c.id === progress.mediaId);
+        if (found) {
+          entries.push({ item: found, progress });
+        }
+      });
     return entries;
   }, [catalog, watchProgressMap, completedIds]);
 
@@ -1431,7 +1652,7 @@ export default function App() {
       );
     }
 
-    const rawQuery = searchQuery.trim().toLowerCase();
+    const rawQuery = debouncedSearchQuery.trim().toLowerCase();
     const tokens = rawQuery.split(/\s+/).filter(Boolean);
 
     if (tokens.length > 0) {
@@ -1510,7 +1731,7 @@ export default function App() {
     catalog,
     searchTypeFilter,
     selectedGenre,
-    searchQuery,
+    debouncedSearchQuery,
     searchSortBy,
   ]);
 
@@ -1534,20 +1755,13 @@ export default function App() {
       : catalog;
 
     return (
-      <section className="space-y-6">
-        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-          <div>
-            <h2 className="text-xl sm:text-2xl lg:text-3xl font-bold text-white font-display">
-              {sectionTitle}
-            </h2>
-            {sectionSubtitle && (
-              <p className="text-xs sm:text-sm text-[#999999] mt-1.5 max-w-2xl">
-                {sectionSubtitle}
-              </p>
-            )}
-          </div>
+      <section className="space-y-3.5">
+        <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-2.5">
+          <h2 className="text-lg sm:text-xl lg:text-2xl font-bold text-white font-display">
+            {sectionTitle}
+          </h2>
 
-          <div className="inline-flex items-center gap-3 p-2 rounded-xl bg-[#0F0F0F] border border-[#1F1F1F] self-start sm:self-auto shrink-0">
+          <div className="inline-flex items-center gap-2.5 p-1.5 rounded-xl bg-[#0F1117] border border-[#292C35] self-start sm:self-auto shrink-0">
             <button
               type="button"
               onClick={() =>
@@ -1555,7 +1769,7 @@ export default function App() {
                   (prev) => (prev - 1 + totalPages) % totalPages
                 )
               }
-              className="w-9 h-9 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#1F1F1F] text-white flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-white flex items-center justify-center cursor-pointer transition-colors"
               aria-label="Previous genre page"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -1568,8 +1782,8 @@ export default function App() {
                   onClick={() => setGenrePageIndex(idx)}
                   className={`h-1 rounded-full transition-all cursor-pointer ${
                     idx === safePage
-                      ? 'w-5 bg-[#E50000]'
-                      : 'w-3 bg-[#333333] hover:bg-[#555555]'
+                      ? 'w-5 bg-[#FFC400]'
+                      : 'w-3 bg-[#292C35] hover:bg-[#747784]'
                   }`}
                   aria-label={`Genre page ${idx + 1}`}
                 />
@@ -1580,7 +1794,7 @@ export default function App() {
               onClick={() =>
                 setGenrePageIndex((prev) => (prev + 1) % totalPages)
               }
-              className="w-9 h-9 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#1F1F1F] text-white flex items-center justify-center cursor-pointer"
+              className="w-8 h-8 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-white flex items-center justify-center cursor-pointer transition-colors"
               aria-label="Next genre page"
             >
               <ArrowRight className="w-4 h-4" />
@@ -1588,7 +1802,7 @@ export default function App() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-4 sm:gap-5">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3 sm:gap-4">
           {displayGenres.map((genre) => {
             const matching = sourceList.filter((i) =>
               i.genres.includes(genre)
@@ -1607,16 +1821,16 @@ export default function App() {
                   }
                   handleNavigate('search');
                 }}
-                className="group rounded-xl bg-[#1A1A1A] border border-[#262626] hover:border-[#E50000]/60 p-4 sm:p-5 flex flex-col justify-between gap-3 transition-all cursor-pointer cinema-card-shadow"
+                className="group rounded-xl bg-[#14161D] border border-[#292C35] hover:border-[#FFC400]/60 p-3 sm:p-3.5 flex flex-col justify-between gap-2.5 transition-all cursor-pointer cinema-card-shadow"
               >
                 {/* 2x2 Poster Mosaic with Bottom Fade */}
-                <div className="relative grid grid-cols-2 gap-2 aspect-square overflow-hidden rounded-lg bg-[#141414]">
+                <div className="relative grid grid-cols-2 gap-2 aspect-square overflow-hidden rounded-lg bg-[#0F1117]">
                   {[0, 1, 2, 3].map((slotIdx) => {
                     const posterItem = fourPosters[slotIdx];
                     return (
                       <div
                         key={slotIdx}
-                        className="w-full h-full overflow-hidden rounded-md bg-[#0F0F0F]"
+                        className="w-full h-full overflow-hidden rounded-md bg-[#08090D]"
                       >
                         {posterItem ? (
                           <MediaArtwork
@@ -1627,33 +1841,33 @@ export default function App() {
                             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                           />
                         ) : (
-                          <div className="w-full h-full bg-gradient-to-br from-[#222222] to-[#141414] flex items-center justify-center text-[10px] font-semibold text-zinc-600">
+                          <div className="w-full h-full bg-gradient-to-br from-[#252832] to-[#14161D] flex items-center justify-center text-[10px] font-semibold text-[#747784]">
                             {genre}
                           </div>
                         )}
                       </div>
                     );
                   })}
-                  <div className="absolute inset-0 bg-gradient-to-t from-[#1A1A1A] via-[#1A1A1A]/25 to-transparent pointer-events-none" />
+                  <div className="absolute inset-0 bg-gradient-to-t from-[#14161D] via-[#14161D]/25 to-transparent pointer-events-none" />
                 </div>
 
                 {/* Bottom Genre Label + Count + Right Arrow */}
                 <div className="flex items-center justify-between gap-2 pt-1">
                   <div className="min-w-0">
                     {showTop10Badge && (
-                      <span className="inline-block px-2 py-0.5 rounded bg-[#E50000] text-white text-[10px] font-semibold mb-1">
+                      <span className="inline-block px-2 py-0.5 rounded bg-[#FFC400] text-[#08090D] text-[10px] font-bold mb-1">
                         Top 10 In
                       </span>
                     )}
-                    <h3 className="text-sm sm:text-base font-semibold text-white group-hover:text-[#E50000] transition-colors truncate">
+                    <h3 className="text-sm sm:text-base font-semibold text-white group-hover:text-[#FFC400] transition-colors truncate">
                       {genre}
                     </h3>
-                    <p className="text-[11px] text-[#999999]">
+                    <p className="text-[11px] text-[#747784]">
                       {matching.length}{' '}
                       {matching.length === 1 ? 'title' : 'titles'}
                     </p>
                   </div>
-                  <ArrowRight className="w-4 h-4 text-white group-hover:translate-x-1 group-hover:text-[#E50000] transition-all shrink-0" />
+                  <ArrowRight className="w-4 h-4 text-white group-hover:translate-x-1 group-hover:text-[#FFC400] transition-all shrink-0" />
                 </div>
               </div>
             );
@@ -1665,62 +1879,46 @@ export default function App() {
 
   // Reusable FAQ Section
   const renderFaqSection = () => (
-    <section className="space-y-8" aria-label="Frequently Asked Questions">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-white font-display">
-            Frequently Asked Questions
-          </h2>
-          <p className="text-xs sm:text-sm text-[#999999] mt-1.5 max-w-2xl">
-            Got questions? We&apos;ve got answers! Check out our FAQ section to
-            find answers to the most common questions about Zappy.
-          </p>
-        </div>
+    <section className="space-y-4" aria-label="Frequently Asked Questions">
+      <h2 className="text-xl sm:text-2xl font-bold text-white font-display">
+        FAQ
+      </h2>
 
-        <button
-          type="button"
-          onClick={() => handleNavigate('support')}
-          className="min-h-[46px] px-5 py-3 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs sm:text-sm font-semibold transition-colors cursor-pointer self-start sm:self-auto shrink-0"
-        >
-          Ask a Question
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-10 gap-y-2">
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-x-8 gap-y-1">
         {ZAPPY_FAQS.map((faq) => {
           const isOpen = openFaqId === faq.num;
           return (
-            <div key={faq.num} className="pt-4 pb-5 relative">
+            <div key={faq.num} className="py-3 relative">
               <button
                 type="button"
                 onClick={() => setOpenFaqId(isOpen ? '' : faq.num)}
-                className="w-full flex items-start justify-between gap-4 text-left cursor-pointer"
+                className="w-full flex items-start justify-between gap-3 text-left cursor-pointer"
               >
-                <div className="flex items-start gap-4">
-                  <span className="w-12 h-12 rounded-xl bg-[#1F1F1F] border border-[#262626] text-white font-bold text-sm flex items-center justify-center shrink-0">
+                <div className="flex items-start gap-3">
+                  <span className="w-10 h-10 rounded-xl bg-[#14161D] border border-[#292C35] text-[#FFC400] font-bold text-xs flex items-center justify-center shrink-0">
                     {faq.num}
                   </span>
-                  <div className="space-y-2 pt-2.5">
-                    <h3 className="text-base sm:text-lg font-medium text-white">
+                  <div className="space-y-1.5 pt-1.5">
+                    <h3 className="text-sm sm:text-base font-medium text-white">
                       {faq.question}
                     </h3>
                     {isOpen && (
-                      <p className="text-xs sm:text-sm text-[#999999] leading-relaxed pr-2">
+                      <p className="text-xs sm:text-sm text-[#A7A9B4] leading-relaxed pr-2">
                         {faq.answer}
                       </p>
                     )}
                   </div>
                 </div>
 
-                <span className="pt-3 text-white shrink-0">
+                <span className="pt-2 text-[#FFC400] shrink-0">
                   {isOpen ? (
-                    <Minus className="w-5 h-5" />
+                    <Minus className="w-4 h-4" />
                   ) : (
-                    <Plus className="w-5 h-5" />
+                    <Plus className="w-4 h-4" />
                   )}
                 </span>
               </button>
-              <div className="h-[1px] w-full sv-faq-divider mt-5" />
+              <div className="h-[1px] w-full sv-faq-divider mt-3" />
             </div>
           );
         })}
@@ -1728,109 +1926,13 @@ export default function App() {
     </section>
   );
 
-  // Reusable Pricing Section
-  const renderPricingSection = () => (
-    <section className="space-y-8" aria-label="Subscription Plans">
-      <div className="flex flex-col sm:flex-row sm:items-end justify-between gap-4">
-        <div>
-          <h2 className="text-2xl sm:text-3xl font-bold text-white font-display">
-            Choose the plan that&apos;s right for you
-          </h2>
-          <p className="text-xs sm:text-sm text-[#999999] mt-1.5 max-w-2xl">
-            Join Zappy and select from our flexible subscription options
-            tailored to suit your viewing preferences. Get ready for non-stop
-            entertainment!
-          </p>
-        </div>
-
-        <div className="inline-flex items-center p-2 rounded-xl bg-[#0F0F0F] border border-[#262626] self-start sm:self-auto shrink-0">
-          <button
-            type="button"
-            onClick={() => setBillingCycle('monthly')}
-            className={`px-5 py-2.5 rounded-lg text-xs sm:text-sm font-medium transition-colors cursor-pointer ${
-              billingCycle === 'monthly'
-                ? 'bg-[#1F1F1F] text-white'
-                : 'text-[#999999] hover:text-white'
-            }`}
-          >
-            Monthly
-          </button>
-          <button
-            type="button"
-            onClick={() => setBillingCycle('yearly')}
-            className={`px-5 py-2.5 rounded-lg text-xs sm:text-sm font-medium transition-colors cursor-pointer ${
-              billingCycle === 'yearly'
-                ? 'bg-[#1F1F1F] text-white'
-                : 'text-[#999999] hover:text-white'
-            }`}
-          >
-            Yearly
-          </button>
-        </div>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 sm:gap-6">
-        {ZAPPY_PLANS.map((plan) => (
-          <div
-            key={plan.name}
-            className="rounded-xl bg-[#1A1A1A] border border-[#262626] p-6 sm:p-8 flex flex-col justify-between gap-6"
-          >
-            <div className="space-y-3">
-              <div className="flex items-center justify-between gap-2">
-                <h3 className="text-lg sm:text-xl font-bold text-white font-display">
-                  {plan.name}
-                </h3>
-                {plan.popular && (
-                  <span className="px-2.5 py-0.5 rounded bg-[#E50000] text-white text-[11px] font-semibold">
-                    Popular
-                  </span>
-                )}
-              </div>
-              <p className="text-xs sm:text-sm text-[#999999] leading-relaxed">
-                {plan.description}
-              </p>
-            </div>
-
-            <div className="space-y-6">
-              <div className="flex items-baseline gap-1">
-                <span className="text-2xl sm:text-4xl font-bold text-white font-display">
-                  {billingCycle === 'monthly'
-                    ? plan.monthlyPrice
-                    : plan.yearlyPrice}
-                </span>
-                <span className="text-xs sm:text-sm font-medium text-[#999999]">
-                  /{billingCycle === 'monthly' ? 'month' : 'year'}
-                </span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-3">
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('movies_shows')}
-                  className="min-h-[46px] px-4 py-3 rounded-lg bg-[#141414] hover:bg-[#262626] border border-[#262626] text-xs sm:text-sm font-semibold text-white transition-colors cursor-pointer"
-                >
-                  Start Free Trial
-                </button>
-                <button
-                  type="button"
-                  onClick={() => handleNavigate('movies_shows')}
-                  className="min-h-[46px] px-4 py-3 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-xs sm:text-sm font-semibold text-white transition-colors cursor-pointer"
-                >
-                  Choose Plan
-                </button>
-              </div>
-            </div>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-
-  const topNavTabs: { id: NavView; label: string }[] = [
-    { id: 'home', label: 'Home' },
-    { id: 'movies_shows', label: 'Movies & Shows' },
-    { id: 'support', label: 'Support' },
-    { id: 'subscriptions', label: 'Subscriptions' },
+  const navRailItems: { id: NavView; label: string; icon: React.ComponentType<{ className?: string }> }[] = [
+    { id: 'myspace', label: 'My Space', icon: UserIcon },
+    { id: 'search', label: 'Search', icon: Search },
+    { id: 'home', label: 'Home', icon: Home },
+    { id: 'tv', label: 'TV Shows', icon: Tv },
+    { id: 'movies', label: 'Movies', icon: Film },
+    { id: 'categories', label: 'Categories', icon: Layers },
   ];
 
   const openSupportTicketsCount = mergedSupportMessages.filter(
@@ -1838,356 +1940,240 @@ export default function App() {
   ).length;
 
   return (
-    <div className="min-h-screen w-full bg-[#141414] text-white flex flex-col overflow-x-hidden">
-      {/* TOP ZAPPY NAVIGATION BAR (Compact 64px/68px height so Navbar + Hero fit 100% inside viewport without scrolling) */}
-      <header className="sticky top-0 z-40 w-full bg-[#141414]/95 backdrop-blur-xl border-b border-[#262626]/60">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 sm:h-[4.25rem] flex items-center justify-between gap-4">
-          {/* Left: Attached Brand Logo Only (No App Name Text Beside or Below) */}
-          <a
-            href="#home"
-            onClick={(e) => {
-              e.preventDefault();
-              handleNavigate('home');
-            }}
-            aria-label="Home"
-            className="h-11 sm:h-12 w-32 sm:w-36 overflow-hidden flex items-center justify-center shrink-0 group"
+    <div className="min-h-screen w-full bg-[#08090D] text-white flex flex-col md:pl-32 lg:pl-36 pb-20 md:pb-0 overflow-x-hidden transition-[padding] duration-300">
+      {/* =========================================================
+          ZAPPYFUN DESKTOP LEFT NAVIGATION RAIL (Full Logo Always Visible)
+      ========================================================= */}
+      <aside
+        aria-label="Sidebar Navigation"
+        className="hidden md:flex fixed left-0 top-0 bottom-0 z-40 w-32 lg:w-36 hover:w-60 bg-[#14161D]/95 backdrop-blur-2xl border-r border-[#292C35] transition-all duration-300 group flex-col justify-between py-5 px-3 select-none shadow-2xl"
+      >
+        {/* Top: Original ZappyFun Logo (Fully Visible) */}
+        <div className="flex flex-col items-center group-hover:items-start gap-5 w-full">
+          <button
+            type="button"
+            onClick={() => handleNavigate('home')}
+            className="flex items-center justify-center group-hover:justify-start w-full px-1.5 py-2 rounded-xl hover:bg-[#252832]/50 cursor-pointer transition-all active:scale-95"
+            title="ZappyFun Home"
           >
             <img
               src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
-              alt="Brand Logo"
-              className="w-full h-full object-contain scale-[1.55] group-hover:scale-[1.62] transition-transform select-none pointer-events-none"
+              alt="ZappyFun"
+              className="w-full max-w-[116px] lg:max-w-[128px] group-hover:max-w-[172px] h-10 sm:h-11 object-contain object-center group-hover:object-left shrink-0 transition-all duration-300 drop-shadow-md"
             />
-          </a>
+          </button>
 
-          {/* Center: Navigation Bar */}
-          <nav
-            aria-label="Primary Navigation"
-            className="hidden lg:flex items-center gap-1 p-1.5 rounded-xl bg-[#0F0F0F] border-2 border-[#1F1F1F]"
-          >
-            {topNavTabs.map((tab) => {
+          {/* Navigation Links */}
+          <nav className="w-full flex flex-col gap-1">
+            {navRailItems.map((tab) => {
+              const Icon = tab.icon;
               const isActive =
                 activeView === tab.id ||
-                (tab.id === 'movies_shows' && activeView === 'details');
+                (tab.id === 'movies' && activeView === 'movies_shows') ||
+                (tab.id === 'home' && activeView === 'details');
               return (
                 <button
                   key={tab.id}
                   type="button"
                   onClick={() => handleNavigate(tab.id)}
-                  className={`px-4 py-2 rounded-lg text-xs sm:text-sm transition-colors cursor-pointer ${
+                  className={`flex items-center gap-2.5 w-full px-3 py-2.5 rounded-xl transition-all cursor-pointer ${
                     isActive
-                      ? 'bg-[#1A1A1A] text-white font-semibold shadow-sm'
-                      : 'text-[#BFBFBF] hover:text-white'
+                      ? 'bg-[#252832] text-white font-semibold border-l-2 border-[#FFC400] shadow-sm'
+                      : 'text-[#A7A9B4] hover:text-white hover:bg-[#252832]/60'
                   }`}
+                  title={tab.label}
                 >
-                  {tab.label}
+                  <Icon
+                    className={`w-5 h-5 shrink-0 transition-colors ${
+                      isActive ? 'text-[#FFC400]' : 'group-hover:text-[#FFD54A]'
+                    }`}
+                  />
+                  <span className="truncate text-xs font-semibold">
+                    {tab.label}
+                  </span>
                 </button>
               );
             })}
           </nav>
-
-          {/* Right: Search Icon, Watchlist, Notifications, Admin Studio, Profile */}
-          <div className="flex items-center gap-2 sm:gap-2.5 relative">
-            <button
-              type="button"
-              onClick={() => {
-                setSearchBarOpen((prev) => !prev);
-                if (activeView !== 'search') {
-                  setActiveView('search');
-                }
-                setTimeout(() => searchInputRef.current?.focus(), 60);
-              }}
-              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-lg border flex items-center justify-center transition-colors cursor-pointer ${
-                activeView === 'search'
-                  ? 'bg-[#E50000] border-[#E50000] text-white'
-                  : 'bg-[#1A1A1A] border-[#262626] text-white hover:border-[#E50000]'
-              }`}
-              aria-label="Search movies and shows"
-              title="Search"
-            >
-              <Search className="w-4 h-4" />
-            </button>
-
-            <button
-              type="button"
-              onClick={() => handleNavigate('watchlist')}
-              className={`w-9 h-9 sm:w-10 sm:h-10 rounded-lg border flex items-center justify-center transition-colors cursor-pointer relative ${
-                activeView === 'watchlist'
-                  ? 'bg-[#E50000] border-[#E50000] text-white'
-                  : 'bg-[#1A1A1A] border-[#262626] text-white hover:border-[#E50000]'
-              }`}
-              aria-label="Watchlist"
-              title="Watchlist"
-            >
-              <Bookmark className="w-4 h-4" />
-              {watchlistItems.length > 0 && (
-                <span className="absolute -top-1 -right-1 w-4 h-4 rounded-full bg-[#E50000] text-[10px] font-bold text-white flex items-center justify-center">
-                  {watchlistItems.length}
-                </span>
-              )}
-            </button>
-
-            <button
-              type="button"
-              onClick={() => {
-                setNotificationsOpen((prev) => !prev);
-                setProfileMenuOpen(false);
-              }}
-              className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg bg-[#1A1A1A] border border-[#262626] hover:border-[#E50000] text-white flex items-center justify-center transition-colors cursor-pointer relative"
-              aria-label="Notifications"
-            >
-              <Bell className="w-4 h-4" />
-              {catalog.length > 0 && (
-                <span className="absolute top-2 right-2 w-2 h-2 rounded-full bg-[#E50000]" />
-              )}
-            </button>
-
-            {isAdmin && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => openAdminStudio(null, 'support')}
-                  className="hidden md:flex min-h-[38px] px-3 py-1.5 rounded-lg bg-[#1A1A1A] border border-[#262626] hover:border-[#E50000] text-white text-xs font-semibold items-center gap-1.5 cursor-pointer relative"
-                  title="User Support Messages Inbox"
-                >
-                  <MessageSquare className="w-3.5 h-3.5 text-[#E50000]" />
-                  <span>Support Inbox</span>
-                  {openSupportTicketsCount > 0 && (
-                    <span className="px-1.5 py-0.2 rounded-full bg-[#E50000] text-white text-[10px] font-bold">
-                      {openSupportTicketsCount}
-                    </span>
-                  )}
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => setVisualEditorActive((prev) => !prev)}
-                  className={`hidden sm:flex min-h-[38px] px-3 py-1.5 rounded-lg text-xs font-semibold items-center gap-1.5 cursor-pointer transition-colors ${
-                    visualEditorActive
-                      ? 'bg-[#E50000] text-white'
-                      : 'bg-[#1A1A1A] border border-[#262626] text-white hover:border-[#E50000]'
-                  }`}
-                >
-                  <Sparkles className="w-3.5 h-3.5 text-[#E50000]" />
-                  <span>{visualEditorActive ? 'Exit UI Editor' : 'Edit UI'}</span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => openAdminStudio(null, 'catalog')}
-                  className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Plus className="w-4 h-4" />
-                  <span className="hidden sm:inline">Admin Studio</span>
-                </button>
-              </>
-            )}
-
-            {!currentUser ? (
-              <button
-                type="button"
-                onClick={handleGoogleLogin}
-                className="min-h-[38px] px-3.5 py-1.5 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer"
-              >
-                <LogIn className="w-3.5 h-3.5 text-[#E50000]" />
-                <span className="hidden sm:inline">Sign In</span>
-              </button>
-            ) : (
-              <button
-                type="button"
-                onClick={() => {
-                  setProfileMenuOpen((prev) => !prev);
-                  setNotificationsOpen(false);
-                }}
-                className="w-9 h-9 sm:w-10 sm:h-10 rounded-lg overflow-hidden border border-[#262626] hover:border-[#E50000] bg-[#1A1A1A] flex items-center justify-center cursor-pointer"
-                aria-label="User Profile"
-              >
-                {currentUser.photoURL ? (
-                  <img
-                    src={currentUser.photoURL}
-                    alt={currentUser.displayName || 'User'}
-                    referrerPolicy="no-referrer"
-                    className="w-full h-full object-cover"
-                  />
-                ) : (
-                  <span className="text-xs font-bold text-white">
-                    {currentUser.email?.slice(0, 2).toUpperCase() || 'ZP'}
-                  </span>
-                )}
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => setMobileMenuOpen((prev) => !prev)}
-              className="lg:hidden w-9 h-9 rounded-lg bg-[#1A1A1A] border border-[#262626] text-white flex items-center justify-center cursor-pointer"
-              aria-label="Toggle mobile menu"
-            >
-              {mobileMenuOpen ? (
-                <X className="w-5 h-5" />
-              ) : (
-                <Menu className="w-5 h-5" />
-              )}
-            </button>
-
-            {/* Notifications Dropdown */}
-            <AnimatePresence>
-              {notificationsOpen && (
-                <motion.div
-                  initial={{ opacity: 0, y: -8, scale: 0.96 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -8, scale: 0.96 }}
-                  className="absolute right-0 top-12 w-80 rounded-xl bg-[#1A1A1A] border border-[#262626] p-4 shadow-2xl z-50 space-y-3"
-                >
-                  <div className="flex items-center justify-between">
-                    <span className="text-xs font-bold text-white uppercase tracking-wider">
-                      Latest Additions
-                    </span>
-                    <button
-                      type="button"
-                      onClick={() => setNotificationsOpen(false)}
-                      className="text-xs text-[#999999] hover:text-white cursor-pointer"
-                    >
-                      Close
-                    </button>
-                  </div>
-                  {featuredItems.length === 0 ? (
-                    <p className="text-xs text-[#999999]">
-                      No titles published yet. Sign in as {ADMIN_EMAIL} to add movies and shows!
-                    </p>
-                  ) : (
-                    <div className="space-y-2">
-                      {featuredItems.slice(0, 3).map((item) => (
-                        <button
-                          key={item.id}
-                          type="button"
-                          onClick={() => handleSelectMedia(item, true)}
-                          className="w-full text-left p-2.5 rounded-lg bg-[#141414] hover:bg-[#262626] border border-[#262626] flex items-center justify-between gap-2 cursor-pointer"
-                        >
-                          <div className="min-w-0">
-                            <p className="text-xs font-bold text-white truncate">
-                              {item.title}
-                            </p>
-                            <p className="text-[11px] text-[#999999] truncate">
-                              {item.releaseYear} · {item.genres.slice(0, 2).join(', ')}
-                            </p>
-                          </div>
-                          <Play className="w-3.5 h-3.5 text-[#E50000] fill-current shrink-0" />
-                        </button>
-                      ))}
-                    </div>
-                  )}
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Profile Dropdown */}
-            <AnimatePresence>
-              {profileMenuOpen && (
-                <motion.div
-                  initial={{ opacity: 0, y: -8, scale: 0.96 }}
-                  animate={{ opacity: 1, y: 0, scale: 1 }}
-                  exit={{ opacity: 0, y: -8, scale: 0.96 }}
-                  className="absolute right-0 top-12 w-64 rounded-xl bg-[#1A1A1A] border border-[#262626] p-3 shadow-2xl z-50 space-y-1"
-                >
-                  <div className="px-3 py-2 border-b border-[#262626]">
-                    <p className="text-xs font-bold text-white truncate">
-                      {currentUser?.displayName || currentUser?.email}
-                    </p>
-                    <p className="text-[11px] text-[#999999] truncate">
-                      {isAdmin ? 'Zappy Administrator' : currentUser?.email}
-                    </p>
-                  </div>
-                  {isAdmin && (
-                    <>
-                      <button
-                        type="button"
-                        onClick={() => openAdminStudio(null, 'catalog')}
-                        className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-[#E50000] hover:bg-[#141414] flex items-center gap-2 cursor-pointer"
-                      >
-                        <ShieldCheck className="w-3.5 h-3.5" />
-                        <span>Open Admin Studio</span>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => openAdminStudio(null, 'support')}
-                        className="w-full text-left px-3 py-2 rounded-lg text-xs font-semibold text-white hover:bg-[#141414] flex items-center justify-between gap-2 cursor-pointer"
-                      >
-                        <span className="flex items-center gap-2">
-                          <MessageSquare className="w-3.5 h-3.5 text-[#E50000]" />
-                          <span>Support Messages</span>
-                        </span>
-                        <span className="px-1.5 py-0.5 rounded bg-[#E50000] text-white text-[10px] font-bold">
-                          {mergedSupportMessages.length}
-                        </span>
-                      </button>
-                    </>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('watchlist')}
-                    className="w-full text-left px-3 py-2 rounded-lg text-xs text-white hover:bg-[#141414] cursor-pointer"
-                  >
-                    My Watchlist ({watchlistItems.length})
-                  </button>
-                  <button
-                    type="button"
-                    onClick={handleLogout}
-                    className="w-full text-left px-3 py-2 rounded-lg text-xs text-red-400 hover:bg-[#141414] flex items-center gap-2 cursor-pointer"
-                  >
-                    <LogOut className="w-3.5 h-3.5" />
-                    <span>Sign Out</span>
-                  </button>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
         </div>
 
-        {/* Mobile Dropdown Navigation Drawer */}
-        <AnimatePresence>
-          {mobileMenuOpen && (
-            <motion.div
-              initial={{ height: 0, opacity: 0 }}
-              animate={{ height: 'auto', opacity: 1 }}
-              exit={{ height: 0, opacity: 0 }}
-              className="lg:hidden bg-[#0F0F0F] border-t border-[#262626] px-4 py-4 space-y-2"
-            >
-              {topNavTabs.map((tab) => (
-                <button
-                  key={tab.id}
-                  type="button"
-                  onClick={() => handleNavigate(tab.id)}
-                  className={`w-full text-left px-4 py-3 rounded-lg text-sm font-medium cursor-pointer ${
-                    activeView === tab.id
-                      ? 'bg-[#1A1A1A] text-white'
-                      : 'text-[#BFBFBF]'
+        {/* Bottom: Admin Studio, Visual UI Editor, and Profile */}
+        <div className="w-full flex flex-col gap-1.5 pt-3 border-t border-[#292C35]">
+          {isAdmin && (
+            <>
+              <button
+                type="button"
+                onClick={() => openAdminStudio(null, 'catalog')}
+                className="flex items-center gap-2.5 w-full px-3 py-2 rounded-xl bg-[#FFC400]/15 hover:bg-[#FFC400]/25 border border-[#FFC400]/30 text-[#FFC400] transition-colors cursor-pointer"
+                title="Admin Studio (Catalog & Content Manager)"
+              >
+                <SlidersHorizontal className="w-4 h-4 shrink-0" />
+                <span className="truncate text-xs font-bold">
+                  Admin Studio
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setVisualEditorActive((prev) => !prev)}
+                className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-xl transition-colors cursor-pointer ${
+                  visualEditorActive
+                    ? 'bg-[#FFC400] text-[#08090D] font-bold'
+                    : 'hover:bg-[#252832] text-[#A7A9B4] hover:text-white'
+                }`}
+                title="Visual UI Component Editor"
+              >
+                <Palette
+                  className={`w-4 h-4 shrink-0 ${
+                    visualEditorActive ? 'text-[#08090D]' : 'text-[#FFC400]'
                   }`}
-                >
-                  {tab.label}
-                </button>
-              ))}
-              {isAdmin && (
-                <div className="pt-2 border-t border-[#262626] flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => openAdminStudio(null, 'catalog')}
-                    className="flex-1 py-2.5 rounded-lg bg-[#E50000] text-white text-xs font-bold cursor-pointer"
-                  >
-                    Admin Studio
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => openAdminStudio(null, 'support')}
-                    className="flex-1 py-2.5 rounded-lg bg-[#1A1A1A] border border-[#262626] text-white text-xs font-bold cursor-pointer"
-                  >
-                    Support Inbox ({mergedSupportMessages.length})
-                  </button>
+                />
+                <span className="truncate text-xs font-semibold">
+                  {visualEditorActive ? 'Exit Editor' : 'Edit UI'}
+                </span>
+              </button>
+            </>
+          )}
+
+          {currentUser ? (
+            <button
+              type="button"
+              onClick={() => handleNavigate('myspace')}
+              className="flex items-center gap-2.5 w-full px-2 py-2 rounded-xl hover:bg-[#252832] transition-colors cursor-pointer"
+              title={currentUser.displayName || currentUser.email || 'My Space'}
+            >
+              {currentUser.photoURL ? (
+                <img
+                  src={currentUser.photoURL}
+                  alt="User"
+                  referrerPolicy="no-referrer"
+                  className="w-8 h-8 rounded-full object-cover shrink-0 ring-1 ring-[#FFC400]/40"
+                />
+              ) : (
+                <div className="w-8 h-8 rounded-full bg-[#FFC400]/20 text-[#FFC400] font-bold text-xs flex items-center justify-center shrink-0 border border-[#FFC400]/30">
+                  {currentUser.email?.slice(0, 2).toUpperCase() || 'ME'}
                 </div>
               )}
-            </motion.div>
+              <div className="text-left truncate min-w-0 flex-1">
+                <p className="text-xs font-bold text-white truncate">
+                  {currentUser.displayName || currentUser.email?.split('@')[0]}
+                </p>
+                <p className="text-[10px] text-[#747784] truncate">
+                  {isAdmin ? 'Admin' : 'My Space'}
+                </p>
+              </div>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={handleGoogleLogin}
+              className="flex items-center justify-center gap-2 w-full px-3 py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold transition-colors cursor-pointer shadow-md"
+              title="Sign In"
+            >
+              <LogIn className="w-4 h-4 shrink-0 text-[#08090D]" />
+              <span className="truncate text-xs font-bold">
+                Sign In
+              </span>
+            </button>
           )}
-        </AnimatePresence>
+        </div>
+      </aside>
+
+      {/* =========================================================
+          MOBILE TOP HEADER (Original ZappyFun Logo, Search, Admin Pill, Profile)
+      ========================================================= */}
+      <header className="md:hidden sticky top-0 z-40 w-full bg-[#14161D]/95 backdrop-blur-xl border-b border-[#292C35] px-4 h-14 flex items-center justify-between">
+        <button
+          type="button"
+          onClick={() => handleNavigate('home')}
+          className="flex items-center cursor-pointer py-1"
+          title="ZappyFun Home"
+        >
+          <img
+            src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
+            alt="ZappyFun"
+            className="h-9 w-auto max-w-[140px] object-contain drop-shadow"
+          />
+        </button>
+
+        <div className="flex items-center gap-2">
+          <button
+            type="button"
+            onClick={() => handleNavigate('search')}
+            className="w-9 h-9 rounded-lg bg-[#252832] border border-[#292C35] flex items-center justify-center text-white hover:text-[#FFC400] cursor-pointer transition-colors"
+            aria-label="Search"
+          >
+            <Search className="w-4 h-4" />
+          </button>
+
+          {isAdmin && (
+            <button
+              type="button"
+              onClick={() => openAdminStudio(null, 'catalog')}
+              className="px-3 py-1.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-[11px] font-bold cursor-pointer"
+            >
+              Admin
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={() => handleNavigate('myspace')}
+            className="w-9 h-9 rounded-full overflow-hidden bg-[#252832] border border-[#292C35] flex items-center justify-center cursor-pointer"
+            aria-label="Profile"
+          >
+            {currentUser?.photoURL ? (
+              <img
+                src={currentUser.photoURL}
+                alt="Profile"
+                className="w-full h-full object-cover"
+              />
+            ) : currentUser ? (
+              <span className="text-[10px] font-bold text-[#FFC400]">
+                {currentUser.email?.slice(0, 2).toUpperCase()}
+              </span>
+            ) : (
+              <UserIcon className="w-4 h-4 text-[#FFC400]" />
+            )}
+          </button>
+        </div>
       </header>
+
+      {/* =========================================================
+          MOBILE BOTTOM NAVIGATION RAIL
+      ========================================================= */}
+      <nav
+        aria-label="Mobile Navigation"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-16 bg-[#14161D]/95 backdrop-blur-xl border-t border-[#292C35] flex items-center justify-around px-2 select-none safe-bottom-nav"
+      >
+        {[
+          { id: 'home', label: 'Home', icon: Home },
+          { id: 'search', label: 'Search', icon: Search },
+          { id: 'tv', label: 'TV', icon: Tv },
+          { id: 'movies', label: 'Movies', icon: Film },
+          { id: 'categories', label: 'Genres', icon: Layers },
+          { id: 'myspace', label: 'My Space', icon: UserIcon },
+        ].map((tab) => {
+          const Icon = tab.icon;
+          const isActive =
+            activeView === tab.id ||
+            (tab.id === 'movies' && activeView === 'movies_shows') ||
+            (tab.id === 'home' && activeView === 'details');
+          return (
+            <button
+              key={tab.id}
+              type="button"
+              onClick={() => handleNavigate(tab.id as NavView)}
+              className={`min-h-[44px] min-w-[48px] flex flex-col items-center justify-center py-1 px-2 rounded-lg cursor-pointer transition-colors ${
+                isActive ? 'text-[#FFC400]' : 'text-[#A7A9B4] hover:text-white'
+              }`}
+            >
+              <Icon className="w-5 h-5" />
+              <span className="text-[10px] font-medium mt-0.5">{tab.label}</span>
+            </button>
+          );
+        })}
+      </nav>
 
       {/* Session Toast */}
       <AnimatePresence>
@@ -2198,12 +2184,16 @@ export default function App() {
             exit={{ opacity: 0, y: -10 }}
             className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mt-2"
           >
-            <div className="px-4 py-3 rounded-xl bg-[#1A1A1A] border border-[#E50000]/50 text-xs text-white flex items-center justify-between">
-              <span>{sessionToast}</span>
+            <div className="px-4 py-3 rounded-xl bg-[#14161D] border border-[#FFC400]/50 text-xs text-white flex items-center justify-between shadow-xl">
+              <span className="flex items-center gap-2">
+                <span className="w-2 h-2 rounded-full bg-[#FFC400] shrink-0" />
+                <span>{sessionToast}</span>
+              </span>
               <button
                 type="button"
                 onClick={() => setSessionToast(null)}
-                className="text-[#999999] hover:text-white cursor-pointer"
+                className="text-[#A7A9B4] hover:text-white cursor-pointer"
+                aria-label="Dismiss notification"
               >
                 <X className="w-3.5 h-3.5" />
               </button>
@@ -2212,8 +2202,21 @@ export default function App() {
         )}
       </AnimatePresence>
 
-      {/* MAIN PAGE CONTENT (Tight top padding pt-3 sm:pt-4 so Navbar + Hero fit 100% inside 100dvh without scrolling) */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 pt-3 sm:pt-4 pb-10 space-y-16 sm:space-y-24">
+      {/* MAIN PAGE CONTENT */}
+      <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-5 lg:px-6 pt-2 sm:pt-3 pb-6 space-y-6 sm:space-y-8">
+        {isLoadingCatalog ? (
+          <div className="space-y-5 animate-pulse" aria-busy="true" aria-label="Loading catalog">
+            <div className="w-full h-[280px] sm:h-[360px] rounded-2xl bg-[#14161D] border border-[#292C35]" />
+            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 sm:gap-4">
+              {Array.from({ length: 5 }, (_, i) => (
+                <div
+                  key={i}
+                  className="aspect-[2/3] rounded-2xl bg-[#14161D] border border-[#292C35]"
+                />
+              ))}
+            </div>
+          </div>
+        ) : (
         <AnimatePresence mode="wait">
           {/* =========================================================
               MOVIE & SHOW DETAILS + STREAMING PLAYER PAGE
@@ -2233,16 +2236,46 @@ export default function App() {
                   previewDraftItem && selectedMedia.id === previewDraftItem.id
                 )}
                 isPublishingDraft={isPublishingDraft}
+                initialSeason={
+                  resumeSavedOnOpen
+                    ? watchProgressMap[selectedMedia.id]?.seasonNumber || 1
+                    : 1
+                }
+                initialEpisode={
+                  resumeSavedOnOpen
+                    ? watchProgressMap[selectedMedia.id]?.episodeNumber || 1
+                    : 1
+                }
+                savedSeason={watchProgressMap[selectedMedia.id]?.seasonNumber}
+                savedEpisode={watchProgressMap[selectedMedia.id]?.episodeNumber}
+                hasProgress={Boolean(watchProgressMap[selectedMedia.id])}
                 onBack={() => {
                   setPreviewDraftItem(null);
-                  setActiveView('movies_shows');
+                  setActiveView(
+                    previousView && previousView !== 'details'
+                      ? previousView
+                      : 'home'
+                  );
                 }}
-                onSelectMedia={(item, auto) => {
+                onSelectMedia={(item, auto, resumeSaved) => {
                   setPreviewDraftItem(null);
-                  handleSelectMedia(item, auto);
+                  handleSelectMedia(item, auto, resumeSaved);
                 }}
                 onToggleWatchlist={handleToggleWatchlist}
                 onMarkWatched={handleWatchComplete}
+                onUpdateProgress={(seasonNum, epNum, pct, remMins) =>
+                  handleUpdateWatchProgress(
+                    selectedMedia,
+                    seasonNum,
+                    epNum,
+                    pct,
+                    remMins
+                  )
+                }
+                onStartOver={() => {
+                  handleUpdateWatchProgress(selectedMedia, 1, 1, 5);
+                  showToast(`Restarted ${selectedMedia.title} from the beginning.`);
+                }}
                 onSelectGenre={(genre) => {
                   setPreviewDraftItem(null);
                   setSelectedGenre(genre);
@@ -2262,6 +2295,7 @@ export default function App() {
                     ? () => handlePublishDraftFromPreview(previewDraftItem)
                     : undefined
                 }
+                onAutoSyncEpisodes={handleAutoSyncEpisodes}
               />
             </div>
           ) : /* =========================================================
@@ -2273,23 +2307,41 @@ export default function App() {
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              className="space-y-8"
+              className="space-y-5"
             >
-              <div className="rounded-2xl bg-[#1A1A1A] border border-[#262626] p-5 sm:p-7 space-y-5">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h1 className="text-xl sm:text-3xl font-bold text-white font-display">
-                      Search & Genre Explorer
+              <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-3.5">
+                <div className="flex flex-wrap items-center justify-between gap-2.5">
+                  <div className="flex items-center gap-2.5">
+                    <h1 className="text-lg sm:text-2xl font-bold text-white font-display">
+                      Search
                     </h1>
-                    <p className="text-xs text-[#999999] mt-0.5">
-                      Showing {filteredSearchCatalog.length} of {catalog.length}{' '}
-                      published titles
-                    </p>
+                    <span className="text-xs font-semibold text-[#A7A9B4] tabular-nums">
+                      ({filteredSearchCatalog.length})
+                    </span>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
+                    {(searchQuery.trim() !== '' ||
+                      selectedGenre !== 'All' ||
+                      searchTypeFilter !== 'all' ||
+                      searchSortBy !== 'relevance') && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery('');
+                          setDebouncedSearchQuery('');
+                          setSelectedGenre('All');
+                          setSearchTypeFilter('all');
+                          setSearchSortBy('relevance');
+                        }}
+                        className="h-9 px-3 rounded-xl bg-[#252832] hover:bg-[#FFC400] text-[#FFC400] hover:text-[#08090D] border border-[#FFC400]/40 text-xs font-bold cursor-pointer transition-colors"
+                      >
+                        Reset
+                      </button>
+                    )}
+
                     {/* Content Type Filter */}
-                    <div className="inline-flex items-center p-1 rounded-xl bg-[#141414] border border-[#262626]">
+                    <div className="inline-flex items-center p-1 rounded-xl bg-[#08090D] border border-[#292C35]">
                       {(
                         [
                           { id: 'all', label: 'All' },
@@ -2301,10 +2353,10 @@ export default function App() {
                           key={tab.id}
                           type="button"
                           onClick={() => setSearchTypeFilter(tab.id)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-semibold cursor-pointer transition-colors ${
+                          className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
                             searchTypeFilter === tab.id
-                              ? 'bg-[#E50000] text-white'
-                              : 'text-[#999999] hover:text-white'
+                              ? 'bg-[#FFC400] text-[#08090D]'
+                              : 'text-[#A7A9B4] hover:text-white'
                           }`}
                         >
                           {tab.label}
@@ -2325,42 +2377,35 @@ export default function App() {
                         )
                       }
                       aria-label="Sort results"
-                      className="h-9 px-3 rounded-xl bg-[#141414] border border-[#262626] text-xs font-semibold text-white focus:outline-none focus:border-[#E50000]"
+                      className="h-9 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-semibold text-white focus:outline-none focus:border-[#FFC400]"
                     >
-                      <option value="relevance">Sort: Relevance</option>
-                      <option value="popular">Sort: Top Rated</option>
-                      <option value="newest">Sort: Newest Release</option>
-                      <option value="title">Sort: Title (A-Z)</option>
+                      <option value="relevance">Relevance</option>
+                      <option value="popular">Top Rated</option>
+                      <option value="newest">Newest</option>
+                      <option value="title">Title (A-Z)</option>
                     </select>
-
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSearchBarOpen(false);
-                        setActiveView('home');
-                      }}
-                      className="px-3 py-1.5 rounded-xl bg-[#141414] border border-[#262626] text-xs text-[#999999] hover:text-white cursor-pointer"
-                    >
-                      Close
-                    </button>
                   </div>
                 </div>
 
                 <div className="relative">
-                  <Search className="w-5 h-5 text-[#999999] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                  <Search className="w-5 h-5 text-[#A7A9B4] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     ref={searchInputRef}
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search by movie or show title, actor, director, release year, or genre..."
-                    className="w-full h-13 pl-12 pr-12 rounded-xl bg-[#141414] border border-[#262626] text-sm sm:text-base text-white placeholder:text-[#999999] focus:outline-none focus:border-[#E50000]"
+                    placeholder="Movies, shows, cast, or genres"
+                    className="w-full h-12 sm:h-13 pl-12 pr-12 rounded-xl bg-[#08090D] border border-[#292C35] text-sm sm:text-base text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400] transition-colors"
                   />
                   {searchQuery && (
                     <button
                       type="button"
-                      onClick={() => setSearchQuery('')}
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-[#999999] hover:text-white cursor-pointer"
+                      onClick={() => {
+                        setSearchQuery('');
+                        setDebouncedSearchQuery('');
+                      }}
+                      aria-label="Clear search query"
+                      className="absolute right-4 top-1/2 -translate-y-1/2 text-[#A7A9B4] hover:text-white cursor-pointer"
                     >
                       <X className="w-4 h-4" />
                     </button>
@@ -2372,10 +2417,10 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => setSelectedGenre('All')}
-                    className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                    className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
                       selectedGenre === 'All'
-                        ? 'bg-[#E50000] text-white'
-                        : 'bg-[#141414] border border-[#262626] text-[#999999] hover:text-white'
+                        ? 'bg-[#FFC400] text-[#08090D]'
+                        : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFC400]/50'
                     }`}
                   >
                     <span>All Genres</span>
@@ -2388,10 +2433,10 @@ export default function App() {
                         key={g}
                         type="button"
                         onClick={() => setSelectedGenre(g)}
-                        className={`px-3.5 py-2 rounded-lg text-xs font-semibold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                        className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
                           selectedGenre === g
-                            ? 'bg-[#E50000] text-white'
-                            : 'bg-[#141414] border border-[#262626] text-[#999999] hover:text-white'
+                            ? 'bg-[#FFC400] text-[#08090D]'
+                            : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFC400]/50'
                         }`}
                       >
                         <span>{g}</span>
@@ -2403,7 +2448,7 @@ export default function App() {
               </div>
 
               {filteredSearchCatalog.length === 0 ? (
-                <div className="rounded-2xl bg-[#1A1A1A] border border-[#262626] p-10 text-center max-w-lg mx-auto space-y-4">
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-10 text-center max-w-lg mx-auto space-y-4">
                   <p className="text-base font-bold text-white">
                     No matching titles found
                   </p>
@@ -2411,10 +2456,12 @@ export default function App() {
                     type="button"
                     onClick={() => {
                       setSearchQuery('');
+                      setDebouncedSearchQuery('');
                       setSelectedGenre('All');
                       setSearchTypeFilter('all');
+                      setSearchSortBy('relevance');
                     }}
-                    className="px-5 py-2.5 rounded-lg bg-[#E50000] text-white text-xs font-semibold cursor-pointer"
+                    className="px-5 py-2.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
                   >
                     Reset Filters
                   </button>
@@ -2442,36 +2489,28 @@ export default function App() {
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              className="space-y-8"
+              className="space-y-5"
             >
-              <div>
-                <h1 className="text-2xl sm:text-4xl font-bold text-white font-display">
-                  My Watchlist ({watchlistItems.length})
-                </h1>
-                <p className="text-xs sm:text-sm text-[#999999] mt-1">
-                  Saved movies and shows synced with your account. Titles you watch fully are automatically cleared from your watchlist.
-                </p>
-              </div>
+              <h1 className="text-xl sm:text-3xl font-bold text-white font-display">
+                Watchlist ({watchlistItems.length})
+              </h1>
 
               {watchlistItems.length === 0 ? (
-                <div className="rounded-2xl bg-[#1A1A1A] border border-[#262626] p-10 text-center max-w-lg mx-auto space-y-4">
-                  <Bookmark className="w-10 h-10 text-[#E50000] mx-auto" />
-                  <h2 className="text-lg font-bold text-white">
-                    Your Watchlist Is Empty
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-lg mx-auto space-y-3">
+                  <Bookmark className="w-9 h-9 text-[#FFC400] mx-auto" />
+                  <h2 className="text-base font-bold text-white">
+                    No Saved Titles
                   </h2>
-                  <p className="text-xs sm:text-sm text-[#999999]">
-                    Click the + button on any movie or show to save it here.
-                  </p>
                   <button
                     type="button"
                     onClick={() => handleNavigate('movies_shows')}
-                    className="px-6 py-3 rounded-lg bg-[#E50000] text-white text-xs font-semibold cursor-pointer"
+                    className="px-5 py-2.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
                   >
-                    Browse Movies & Shows
+                    Browse Catalog
                   </button>
                 </div>
               ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-5">
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
                   {watchlistItems.map((item) => (
                     <MovieCard
                       key={item.id}
@@ -2485,7 +2524,652 @@ export default function App() {
               )}
             </motion.section>
           ) : /* =========================================================
-              PAGE 2: MOVIES & SHOWS PAGE
+              ZAPPYFUN VIEW: MOVIES
+          ========================================================= */
+          activeView === 'movies' ? (
+            <motion.section
+              key="movies-view"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="space-y-6"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight">
+                  Movies
+                </h1>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => openAdminStudio(null, 'catalog')}
+                    className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Movies</span>
+                  </button>
+                )}
+              </div>
+
+              {moviesList.length === 0 ? (
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-xl mx-auto space-y-3">
+                  <Film className="w-10 h-10 text-[#FFC400] mx-auto opacity-80" />
+                  <h2 className="text-lg font-bold text-white">
+                    No Movies Available
+                  </h2>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openAdminStudio(null, 'catalog')}
+                      className="px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
+                    >
+                      Open Admin Studio
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <CarouselRow
+                    title="Top 10 Movies"
+                    items={moviesList.slice(0, 10)}
+                    watchlistIds={activeWatchlistIds}
+                    isTop10Row={true}
+                    onSelectMedia={handleSelectMedia}
+                    onToggleWatchlist={handleToggleWatchlist}
+                  />
+
+                  <div className="space-y-3">
+                    <h2 className="text-lg sm:text-xl font-bold text-white font-display">
+                      All Movies ({moviesList.length})
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
+                      {moviesList.map((item) => (
+                        <MovieCard
+                          key={item.id}
+                          item={item}
+                          inWatchlist={activeWatchlistIds.includes(item.id)}
+                          onSelect={handleSelectMedia}
+                          onToggleWatchlist={handleToggleWatchlist}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.section>
+          ) : /* =========================================================
+              ZAPPYFUN VIEW: TV SHOWS
+          ========================================================= */
+          activeView === 'tv' ? (
+            <motion.section
+              key="tv-view"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="space-y-6"
+            >
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight">
+                  TV Shows
+                </h1>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => openAdminStudio(null, 'catalog')}
+                    className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Add Shows</span>
+                  </button>
+                )}
+              </div>
+
+              {showsList.length === 0 ? (
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-xl mx-auto space-y-3">
+                  <Tv className="w-10 h-10 text-[#FFC400] mx-auto opacity-80" />
+                  <h2 className="text-lg font-bold text-white">
+                    No TV Shows Available
+                  </h2>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openAdminStudio(null, 'catalog')}
+                      className="px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
+                    >
+                      Open Admin Studio
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <CarouselRow
+                    title="Top 10 Series"
+                    items={showsList.slice(0, 10)}
+                    watchlistIds={activeWatchlistIds}
+                    isTop10Row={true}
+                    onSelectMedia={handleSelectMedia}
+                    onToggleWatchlist={handleToggleWatchlist}
+                  />
+
+                  <div className="space-y-3">
+                    <h2 className="text-lg sm:text-xl font-bold text-white font-display">
+                      All TV Shows ({showsList.length})
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
+                      {showsList.map((item) => (
+                        <MovieCard
+                          key={item.id}
+                          item={item}
+                          inWatchlist={activeWatchlistIds.includes(item.id)}
+                          onSelect={handleSelectMedia}
+                          onToggleWatchlist={handleToggleWatchlist}
+                        />
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </motion.section>
+          ) : /* =========================================================
+              ZAPPYFUN VIEW: CATEGORIES & GENRE HUB
+          ========================================================= */
+          activeView === 'categories' ? (
+            <motion.section
+              key="categories-view"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="space-y-5"
+            >
+              <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight flex items-center gap-2.5">
+                <Layers className="w-7 h-7 text-[#FFC400]" />
+                <span>Categories</span>
+              </h1>
+
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+                {ALL_GENRES.map((genre) => {
+                  const count = catalog.filter((i) => i.genres.includes(genre)).length;
+                  return (
+                    <button
+                      key={genre}
+                      type="button"
+                      onClick={() => {
+                        setSelectedGenre(genre);
+                        setActiveView('search');
+                      }}
+                      className="relative h-24 sm:h-28 rounded-2xl overflow-hidden bg-gradient-to-br from-[#252832] to-[#14161D] border border-[#292C35] hover:border-[#FFC400] p-4 text-left flex flex-col justify-between transition-all group cursor-pointer shadow-lg hover:shadow-[#FFC400]/10"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="w-2 h-2 rounded-full bg-[#FFC400]" />
+                        <span className="text-[11px] font-bold text-[#A7A9B4]">
+                          {count} {count === 1 ? 'title' : 'titles'}
+                        </span>
+                      </div>
+                      <h3 className="text-base sm:text-lg font-bold text-white group-hover:text-[#FFC400] transition-colors">
+                        {genre}
+                      </h3>
+                    </button>
+                  );
+                })}
+              </div>
+            </motion.section>
+          ) : /* =========================================================
+              ZAPPYFUN VIEW: MY SPACE (Dashboard, Watchlist, Admin Controls)
+          ========================================================= */
+          activeView === 'myspace' ? (
+            <motion.section
+              key="myspace-view"
+              initial={{ opacity: 0, y: 12 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              className="space-y-6"
+            >
+              {/* Profile Card */}
+              <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+                <div className="flex items-center gap-4">
+                  {currentUser?.photoURL ? (
+                    <img
+                      src={currentUser.photoURL}
+                      alt="Profile"
+                      className="w-16 h-16 rounded-2xl object-cover ring-2 ring-[#FFC400]/40"
+                    />
+                  ) : (
+                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#FFC400] to-[#FFD54A] text-[#08090D] font-black text-xl flex items-center justify-center shadow-lg">
+                      {currentUser?.email ? currentUser.email.slice(0, 2).toUpperCase() : 'ZF'}
+                    </div>
+                  )}
+
+                  <div className="space-y-1">
+                    <div className="flex items-center gap-2">
+                      <h2 className="text-xl sm:text-2xl font-bold text-white font-display">
+                        {currentUser?.displayName || currentUser?.email || 'Guest Viewer'}
+                      </h2>
+                      {isAdmin && (
+                        <span className="px-2.5 py-0.5 rounded-full bg-[#FFC400] text-[#08090D] text-[10px] font-black uppercase tracking-wider">
+                          Admin
+                        </span>
+                      )}
+                    </div>
+                    {currentUser?.email && (
+                      <p className="text-xs text-[#A7A9B4]">
+                        {currentUser.email}
+                      </p>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex flex-wrap items-center gap-3">
+                  {!currentUser ? (
+                    <button
+                      type="button"
+                      onClick={handleGoogleLogin}
+                      className="px-5 py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20"
+                    >
+                      <LogIn className="w-4 h-4" />
+                      <span>Sign In</span>
+                    </button>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleLogout}
+                      className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-2 cursor-pointer"
+                    >
+                      <LogOut className="w-4 h-4 text-[#FFC400]" />
+                      <span>Sign Out</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* ADMIN CONTROL HUB */}
+              {isAdmin && (
+                <div className="rounded-2xl bg-gradient-to-br from-[#252832]/80 via-[#14161D] to-[#14161D] border border-[#FFC400]/30 p-6 sm:p-8 space-y-6">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                      <ShieldCheck className="w-5 h-5 text-[#FFC400]" />
+                      <span>Admin Studio</span>
+                    </h3>
+
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => openAdminStudio(null, 'catalog')}
+                        className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20"
+                      >
+                        <SlidersHorizontal className="w-4 h-4" />
+                        <span>Open Admin Studio</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => openAdminStudio(null, 'legal')}
+                        className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-[#FFC400] text-xs font-bold flex items-center gap-2 cursor-pointer"
+                      >
+                        <FileText className="w-4 h-4" />
+                        <span>Edit Legal &amp; Policies</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={() => setVisualEditorActive(true)}
+                        className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-2 cursor-pointer"
+                      >
+                        <Palette className="w-4 h-4 text-[#FFC400]" />
+                        <span>Visual UI Editor</span>
+                      </button>
+
+                      {confirmingPurgeCatalog ? (
+                        <div className="flex items-center gap-1.5">
+                          <button
+                            type="button"
+                            disabled={isPurgingCatalog}
+                            onClick={handleClearEntireCatalog}
+                            className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                            <span>
+                              {isPurgingCatalog
+                                ? 'Purging...'
+                                : 'Confirm Purge All'}
+                            </span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setConfirmingPurgeCatalog(false)}
+                            className="px-2.5 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#292C35] text-xs font-semibold text-[#A7A9B4] hover:text-white cursor-pointer"
+                          >
+                            Cancel
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={isPurgingCatalog}
+                          onClick={() => setConfirmingPurgeCatalog(true)}
+                          className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-red-600/30 border border-[#292C35] hover:border-red-500/40 text-[#A7A9B4] hover:text-white text-xs font-bold flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
+                          title="Remove every movie and TV show from the database"
+                        >
+                          <Trash2 className="w-4 h-4 text-red-400" />
+                          <span>
+                            {isPurgingCatalog
+                              ? 'Purging...'
+                              : 'Remove Every Movie & TV Show'}
+                          </span>
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Hero Cycle Status */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs">
+                    <div>
+                      <span className="text-[#747784] block">Hero Rotation Cycle</span>
+                      <span className="font-bold text-white">Daily 8 Movies (Batch #{activeHeroBatchNumber})</span>
+                    </div>
+                    <div>
+                      <span className="text-[#747784] block">Tenure Window</span>
+                      <span className="font-bold text-white">28 Hours per Spotlight Movie</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <div>
+                        <span className="text-[#747784] block">Next Daily Batch</span>
+                        <span className="font-bold text-[#FFC400]">{hoursUntilNextHeroBatch}h remaining</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={handleAdvanceHeroBatch}
+                        className="px-2.5 py-1 rounded-lg bg-[#252832] hover:bg-[#FFC400] text-white hover:text-[#08090D] text-[11px] font-bold cursor-pointer transition-colors"
+                      >
+                        Rotate Now
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Saved Watchlist Shelf */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xl font-bold text-white font-display flex items-center gap-2">
+                    <Bookmark className="w-5 h-5 text-[#FFC400]" />
+                    <span>My Watchlist ({watchlistItems.length})</span>
+                  </h3>
+                  {watchlistItems.length > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('watchlist')}
+                      className="text-xs text-[#FFC400] hover:text-[#FFD54A] cursor-pointer font-semibold"
+                    >
+                      View All
+                    </button>
+                  )}
+                </div>
+
+                {watchlistItems.length === 0 ? (
+                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-md mx-auto space-y-3">
+                    <p className="text-xs sm:text-sm text-[#A7A9B4]">
+                      No saved titles
+                    </p>
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('movies')}
+                      className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
+                    >
+                      Browse Movies
+                    </button>
+                  </div>
+                ) : (
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
+                    {watchlistItems.slice(0, 5).map((item) => (
+                      <MovieCard
+                        key={item.id}
+                        item={item}
+                        inWatchlist={true}
+                        onSelect={handleSelectMedia}
+                        onToggleWatchlist={handleToggleWatchlist}
+                      />
+                    ))}
+                  </div>
+                )}
+              </div>
+
+              {/* Continue Watching Shelf */}
+              {continueWatchingItems.length > 0 && (
+                <ContinueWatchingRow
+                  items={continueWatchingItems}
+                  onSelectMedia={handleSelectMedia}
+                  onSeeAll={() => handleNavigate('movies_shows')}
+                  onRemoveProgress={handleRemoveWatchProgress}
+                />
+              )}
+
+              {/* App Preferences & Legal / Help */}
+              <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 space-y-4">
+                <h3 className="text-base font-bold text-white font-display">
+                  Preferences, Legal &amp; Contact
+                </h3>
+                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setAdsEnabled((prev) => !prev)}
+                    className="p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-left flex items-center justify-between cursor-pointer hover:border-[#FFC400]/50 transition-colors"
+                  >
+                    <div>
+                      <p className="text-xs font-bold text-white">Display Preferences</p>
+                      <p className="text-[11px] text-[#A7A9B4]">{adsEnabled ? 'Standard Mode' : 'Clean Mode'}</p>
+                    </div>
+                    <span className={`w-3 h-3 rounded-full shrink-0 ${adsEnabled ? 'bg-[#FFC400]' : 'bg-[#747784]'}`} />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('support')}
+                    className="p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-left flex items-center justify-between cursor-pointer hover:border-[#FFC400]/50 transition-colors"
+                  >
+                    <div className="min-w-0 pr-2">
+                      <p className="text-xs font-bold text-white">Support &amp; Contact</p>
+                      <p className="text-[11px] text-[#FFC400] truncate">
+                        {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
+                      </p>
+                    </div>
+                    <MessageSquare className="w-4 h-4 text-[#FFC400] shrink-0" />
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => setActiveModal('terms')}
+                    className="p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-left flex items-center justify-between cursor-pointer hover:border-[#FFC400]/50 transition-colors"
+                  >
+                    <div>
+                      <p className="text-xs font-bold text-white">Terms &amp; Privacy Policy</p>
+                      <p className="text-[11px] text-[#A7A9B4]">Legal guidelines &amp; policies</p>
+                    </div>
+                    <FileText className="w-4 h-4 text-[#FFC400] shrink-0" />
+                  </button>
+                </div>
+              </div>
+
+              {/* Account & Data Privacy Controls (Self-Service Account Deletion + Local Data Clear) */}
+              <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 space-y-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <h3 className="text-base font-bold text-white font-display flex items-center gap-2">
+                      <ShieldCheck className="w-4 h-4 text-[#FFC400]" />
+                      <span>Account &amp; Personal Data Controls</span>
+                    </h3>
+                    <p className="text-xs text-[#A7A9B4] mt-0.5">
+                      Manage your local browser watch data or permanently delete your ZappyFun account and cloud watchlist.
+                    </p>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={handleClearLocalViewerDataOnly}
+                      className="px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#D4D6DF] hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
+                    >
+                      <Trash2 className="w-3.5 h-3.5 text-[#FFC400]" />
+                      <span>Clear Local Watch History</span>
+                    </button>
+
+                    {currentUser && !showDeleteAccountConfirm && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setShowDeleteAccountConfirm(true);
+                          setDeleteAccountError(null);
+                          setDeleteAccountSuccessBanner(null);
+                        }}
+                        className="px-4 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 hover:text-red-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                        <span>Delete Account &amp; Data</span>
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                {deleteAccountSuccessBanner && (
+                  <div
+                    role="status"
+                    className="rounded-xl bg-emerald-500/10 border border-emerald-500/40 p-4 flex items-start gap-3 text-xs text-emerald-200"
+                  >
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                    <div className="space-y-1">
+                      <p className="font-bold text-white">
+                        Account &amp; Personal Data Deleted
+                      </p>
+                      <p className="leading-relaxed">
+                        {deleteAccountSuccessBanner}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                {currentUser && showDeleteAccountConfirm && (
+                  <div className="rounded-xl bg-[#08090D] border border-red-500/40 p-4 sm:p-5 space-y-4">
+                    <div className="flex items-start gap-3">
+                      <div className="w-9 h-9 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 flex items-center justify-center shrink-0">
+                        <AlertTriangle className="w-5 h-5" />
+                      </div>
+                      <div className="space-y-1.5">
+                        <h4 className="text-sm font-bold text-white">
+                          Permanently Delete Your ZappyFun Account ({currentUser.email})?
+                        </h4>
+                        <p className="text-xs text-[#A7A9B4] leading-relaxed">
+                          This action is permanent and cannot be undone. Please review what will be removed immediately and what requires a separate support request:
+                        </p>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+                      <div className="rounded-xl bg-[#14161D] border border-[#292C35] p-3.5 space-y-1.5">
+                        <span className="font-bold text-emerald-400 block">
+                          Deleted Immediately by Self-Service:
+                        </span>
+                        <ul className="list-disc pl-4 space-y-1 text-[#D4D6DF]">
+                          <li>
+                            Your Cloud Firestore watchlist documents (<code className="text-[#FFC400]">/watchlists</code> where <code className="text-[#FFC400]">ownerId == {currentUser.uid.slice(0, 8)}…</code>).
+                          </li>
+                          <li>
+                            Your browser&apos;s local watchlist (<code className="text-[#FFC400]">zappy_watchlist_v2</code>), completed titles (<code className="text-[#FFC400]">zappy_completed_v1</code>), and Continue Watching progress (<code className="text-[#FFC400]">zappy_watch_progress_v2</code>).
+                          </li>
+                          <li>
+                            Your Firebase Authentication user account (<code className="text-[#FFC400]">{currentUser.email}</code>).
+                          </li>
+                        </ul>
+                      </div>
+
+                      <div className="rounded-xl bg-[#14161D] border border-[#292C35] p-3.5 space-y-1.5">
+                        <span className="font-bold text-[#FFC400] block">
+                          Requires Separate Deletion Request:
+                        </span>
+                        <ul className="list-disc pl-4 space-y-1 text-[#D4D6DF]">
+                          <li>
+                            Previously submitted support messages stored in <code className="text-[#FFC400]">/support_messages</code> or server memory cannot be self-deleted by client accounts (to protect other users&apos; support tickets). Email{' '}
+                            <a
+                              href={`mailto:${legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}`}
+                              className="text-[#FFC400] underline font-semibold"
+                            >
+                              {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
+                            </a>{' '}
+                            to request support ticket erasure.
+                          </li>
+                          <li>
+                            Third-party embedded player (<code className="text-[#FFC400]">vidly.pro</code>) browser storage is governed by that third-party domain and can be cleared via your browser settings.
+                          </li>
+                        </ul>
+                      </div>
+                    </div>
+
+                    {deleteAccountError && (
+                      <div
+                        role="alert"
+                        className="rounded-xl bg-red-500/10 border border-red-500/40 p-3.5 text-xs text-red-200 leading-relaxed"
+                      >
+                        {deleteAccountError}
+                      </div>
+                    )}
+
+                    <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
+                      <button
+                        type="button"
+                        disabled={isDeletingAccount}
+                        onClick={() => {
+                          setShowDeleteAccountConfirm(false);
+                          setDeleteAccountNeedsReauth(false);
+                          setDeleteAccountError(null);
+                        }}
+                        className="px-4 py-2 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#A7A9B4] hover:text-white cursor-pointer disabled:opacity-50"
+                      >
+                        Cancel
+                      </button>
+
+                      {deleteAccountNeedsReauth ? (
+                        <button
+                          type="button"
+                          disabled={isDeletingAccount}
+                          onClick={() => handleDeleteAccountAndData(true)}
+                          className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-50"
+                        >
+                          {isDeletingAccount ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Re-verifying &amp; Deleting...</span>
+                            </>
+                          ) : (
+                            <>
+                              <RefreshCw className="w-3.5 h-3.5" />
+                              <span>Re-verify with Google &amp; Complete Deletion</span>
+                            </>
+                          )}
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          disabled={isDeletingAccount}
+                          onClick={() => handleDeleteAccountAndData(false)}
+                          className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-red-600/25 disabled:opacity-50"
+                        >
+                          {isDeletingAccount ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                              <span>Deleting Account &amp; Data...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Trash2 className="w-3.5 h-3.5" />
+                              <span>Permanently Delete My Account</span>
+                            </>
+                          )}
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
+            </motion.section>
+          ) : /* =========================================================
+              VIEW: MOVIES & SHOWS (Combined)
           ========================================================= */
           activeView === 'movies_shows' ? (
             <motion.div
@@ -2493,148 +3177,65 @@ export default function App() {
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              className="space-y-16 sm:space-y-24"
+              className="space-y-6"
             >
-              {featuredItems.length > 0 && (
-                <HeroBanner
-                  featuredItems={featuredItems}
-                  activeHeroIndex={activeHeroIndex}
-                  onSelectHeroIndex={setActiveHeroIndex}
-                  watchlistIds={activeWatchlistIds}
-                  onPlayMedia={(item) => handleSelectMedia(item, true)}
-                  onOpenDetails={(item) => handleSelectMedia(item, false)}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight">
+                  Movies &amp; Shows
+                </h1>
+                {isAdmin && (
+                  <button
+                    type="button"
+                    onClick={() => openAdminStudio(null, 'catalog')}
+                    className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20"
+                  >
+                    <Plus className="w-4 h-4" />
+                    <span>Admin Studio</span>
+                  </button>
+                )}
+              </div>
+
+              {catalog.length === 0 ? (
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-xl mx-auto space-y-3">
+                  <Film className="w-10 h-10 text-[#FFC400] mx-auto opacity-80" />
+                  <h2 className="text-lg font-bold text-white">
+                    Catalog Empty
+                  </h2>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openAdminStudio(null, 'catalog')}
+                      className="px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
+                    >
+                      Open Admin Studio
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  {moviesList.length > 0 && (
+                    <CarouselRow
+                      title="Popular Movies"
+                      items={moviesList}
+                      watchlistIds={activeWatchlistIds}
+                      onSelectMedia={handleSelectMedia}
+                      onToggleWatchlist={handleToggleWatchlist}
+                    />
+                  )}
+                  {showsList.length > 0 && (
+                    <CarouselRow
+                      title="TV Series"
+                      items={showsList}
+                      watchlistIds={activeWatchlistIds}
+                      onSelectMedia={handleSelectMedia}
+                      onToggleWatchlist={handleToggleWatchlist}
+                    />
+                  )}
+                </div>
               )}
-
-              {/* Mobile Movies / Shows Switcher */}
-              <div className="flex sm:hidden p-2 rounded-xl bg-[#0F0F0F] border border-[#262626]">
-                <button
-                  type="button"
-                  onClick={() => setMobileShowsTab('movies')}
-                  className={`flex-1 py-2.5 rounded-lg text-xs font-semibold cursor-pointer ${
-                    mobileShowsTab === 'movies'
-                      ? 'bg-[#1F1F1F] text-white'
-                      : 'text-[#999999]'
-                  }`}
-                >
-                  Movies
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setMobileShowsTab('shows')}
-                  className={`flex-1 py-2.5 rounded-lg text-xs font-semibold cursor-pointer ${
-                    mobileShowsTab === 'shows'
-                      ? 'bg-[#1F1F1F] text-white'
-                      : 'text-[#999999]'
-                  }`}
-                >
-                  Shows
-                </button>
-              </div>
-
-              {/* BORDERED CONTAINER 1: MOVIES */}
-              <div
-                className={`relative rounded-2xl border border-[#262626] p-5 sm:p-10 lg:p-12 space-y-14 sm:space-y-20 ${
-                  mobileShowsTab === 'shows' ? 'hidden sm:block' : 'block'
-                }`}
-              >
-                <span className="hidden sm:inline-block absolute -top-4 left-10 px-5 py-2 rounded-lg bg-[#E50000] text-white text-sm font-semibold shadow-md">
-                  Movies
-                </span>
-
-                {renderGenre2x2GridSection(
-                  'Our Movie Genres',
-                  undefined,
-                  false,
-                  'movie'
-                )}
-                {renderGenre2x2GridSection(
-                  'Popular Top 10 In Genres',
-                  undefined,
-                  true,
-                  'movie'
-                )}
-
-                <CarouselRow
-                  title="Trending Movies Now"
-                  items={moviesList.length > 0 ? moviesList : catalog}
-                  watchlistIds={activeWatchlistIds}
-                  onSelectMedia={handleSelectMedia}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
-
-                <CarouselRow
-                  title="New Releases"
-                  cardVariant="release"
-                  items={moviesList.length > 0 ? moviesList : catalog}
-                  watchlistIds={activeWatchlistIds}
-                  onSelectMedia={handleSelectMedia}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
-
-                <CarouselRow
-                  title="Must - Watch Movies"
-                  cardVariant="must_watch"
-                  items={moviesList.length > 0 ? moviesList : catalog}
-                  watchlistIds={activeWatchlistIds}
-                  onSelectMedia={handleSelectMedia}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
-              </div>
-
-              {/* BORDERED CONTAINER 2: SHOWS */}
-              <div
-                className={`relative rounded-2xl border border-[#262626] p-5 sm:p-10 lg:p-12 space-y-14 sm:space-y-20 ${
-                  mobileShowsTab === 'movies' ? 'hidden sm:block' : 'block'
-                }`}
-              >
-                <span className="hidden sm:inline-block absolute -top-4 left-10 px-5 py-2 rounded-lg bg-[#E50000] text-white text-sm font-semibold shadow-md">
-                  Shows
-                </span>
-
-                {renderGenre2x2GridSection(
-                  'Our Show Genres',
-                  undefined,
-                  false,
-                  'series'
-                )}
-                {renderGenre2x2GridSection(
-                  'Popular Top 10 In Genres',
-                  undefined,
-                  true,
-                  'series'
-                )}
-
-                <CarouselRow
-                  title="Trending Shows Now"
-                  items={showsList.length > 0 ? showsList : catalog}
-                  watchlistIds={activeWatchlistIds}
-                  onSelectMedia={handleSelectMedia}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
-
-                <CarouselRow
-                  title="New Releases Shows"
-                  cardVariant="release"
-                  items={showsList.length > 0 ? showsList : catalog}
-                  watchlistIds={activeWatchlistIds}
-                  onSelectMedia={handleSelectMedia}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
-
-                <CarouselRow
-                  title="Must - Watch Shows"
-                  cardVariant="must_watch"
-                  items={showsList.length > 0 ? showsList : catalog}
-                  watchlistIds={activeWatchlistIds}
-                  onSelectMedia={handleSelectMedia}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
-              </div>
             </motion.div>
           ) : /* =========================================================
-              PAGE 5: SUPPORT PAGE (Sends messages directly to Admin Panel)
+              SUPPORT PAGE (Sends messages directly to Admin Panel + ContactZappyFun@gamil.com)
           ========================================================= */
           activeView === 'support' ? (
             <motion.div
@@ -2642,23 +3243,36 @@ export default function App() {
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              className="space-y-20"
+              className="space-y-8"
             >
-              <div className="grid grid-cols-1 lg:grid-cols-12 gap-8 lg:gap-12 items-start">
-                {/* Left 5 Cols: Welcome Heading + 4x4 Poster Grid Frame */}
-                <div className="lg:col-span-5 space-y-6">
-                  <div className="space-y-2.5">
-                    <h1 className="text-2xl sm:text-4xl font-bold text-white font-display leading-tight">
-                      Welcome to our support page!
-                    </h1>
-                    <p className="text-xs sm:text-sm text-[#999999] leading-relaxed">
-                      We&apos;re here to help you with any problems you may be
-                      having with Zappy. Every message sent here goes directly
-                      to our Admin Studio inbox.
-                    </p>
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-6 lg:gap-8 items-start">
+                {/* Left 5 Cols: Heading + Direct Contact Info + 4x4 Poster Grid Frame */}
+                <div className="lg:col-span-5 space-y-4">
+                  <h1 className="text-xl sm:text-3xl font-bold text-white font-display leading-tight">
+                    Support &amp; Contact
+                  </h1>
+
+                  {/* Official Contact Email Card */}
+                  <div className="rounded-xl bg-[#14161D] border border-[#FFC400]/40 p-4 flex flex-wrap items-center justify-between gap-3 shadow-lg">
+                    <div className="flex items-center gap-3 min-w-0">
+                      <div className="w-10 h-10 rounded-xl bg-[#FFC400]/15 border border-[#FFC400]/30 text-[#FFC400] flex items-center justify-center shrink-0">
+                        <Mail className="w-5 h-5" />
+                      </div>
+                      <div className="min-w-0">
+                        <span className="block text-[10px] font-bold uppercase tracking-wider text-[#A7A9B4]">
+                          Direct Email Support
+                        </span>
+                        <a
+                          href={`mailto:${legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}`}
+                          className="text-xs sm:text-sm font-bold text-[#FFC400] hover:underline truncate block"
+                        >
+                          {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
+                        </a>
+                      </div>
+                    </div>
                   </div>
 
-                  <div className="rounded-xl bg-[#0F0F0F] border-4 border-[#262626] p-4 grid grid-cols-4 gap-2.5 aspect-[4/3.6] overflow-hidden">
+                  <div className="rounded-xl bg-[#0F1117] border-4 border-[#292C35] p-4 grid grid-cols-4 gap-2.5 aspect-[4/3.6] overflow-hidden">
                     {Array.from({ length: 16 }, (_, idx) => {
                       const item =
                         catalog.length > 0
@@ -2667,7 +3281,7 @@ export default function App() {
                       return (
                         <div
                           key={idx}
-                          className="rounded-lg overflow-hidden bg-[#1A1A1A]"
+                          className="rounded-lg overflow-hidden bg-[#14161D]"
                         >
                           {item ? (
                             <MediaArtwork
@@ -2678,7 +3292,7 @@ export default function App() {
                               className="w-full h-full object-cover"
                             />
                           ) : (
-                            <div className="w-full h-full bg-gradient-to-br from-[#262626] to-[#141414]" />
+                            <div className="w-full h-full bg-gradient-to-br from-[#252832] to-[#14161D]" />
                           )}
                         </div>
                       );
@@ -2689,9 +3303,9 @@ export default function App() {
                 {/* Right 7 Cols: Contact Form Box */}
                 <form
                   onSubmit={handleSupportSubmit}
-                  className="lg:col-span-7 rounded-xl bg-[#0F0F0F] border border-[#262626] p-6 sm:p-10 space-y-6"
+                  className="lg:col-span-7 rounded-xl bg-[#14161D] border border-[#292C35] p-5 sm:p-8 space-y-5"
                 >
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="block text-xs sm:text-sm font-semibold text-white">
                         First Name
@@ -2702,7 +3316,7 @@ export default function App() {
                         value={supportFirstName}
                         onChange={(e) => setSupportFirstName(e.target.value)}
                         placeholder="Enter First Name"
-                        className="w-full h-12 px-4 rounded-lg bg-[#141414] border border-[#262626] text-xs sm:text-sm text-white placeholder:text-[#999999] focus:outline-none focus:border-[#E50000]"
+                        className="w-full h-11 px-4 rounded-lg bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
                       />
                     </div>
                     <div className="space-y-2">
@@ -2715,12 +3329,12 @@ export default function App() {
                         value={supportLastName}
                         onChange={(e) => setSupportLastName(e.target.value)}
                         placeholder="Enter Last Name"
-                        className="w-full h-12 px-4 rounded-lg bg-[#141414] border border-[#262626] text-xs sm:text-sm text-white placeholder:text-[#999999] focus:outline-none focus:border-[#E50000]"
+                        className="w-full h-11 px-4 rounded-lg bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
                       />
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-5">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                     <div className="space-y-2">
                       <label className="block text-xs sm:text-sm font-semibold text-white">
                         Email
@@ -2731,7 +3345,7 @@ export default function App() {
                         value={supportEmail}
                         onChange={(e) => setSupportEmail(e.target.value)}
                         placeholder="Enter your Email"
-                        className="w-full h-12 px-4 rounded-lg bg-[#141414] border border-[#262626] text-xs sm:text-sm text-white placeholder:text-[#999999] focus:outline-none focus:border-[#E50000]"
+                        className="w-full h-11 px-4 rounded-lg bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
                       />
                     </div>
                     <div className="space-y-2">
@@ -2739,15 +3353,15 @@ export default function App() {
                         Phone Number
                       </label>
                       <div className="flex gap-2">
-                        <span className="h-12 px-3 rounded-lg bg-[#141414] border border-[#262626] text-xs font-semibold text-white flex items-center shrink-0">
-                          🇮🇳 +91
+                        <span className="h-11 px-3 rounded-lg bg-[#08090D] border border-[#292C35] text-xs font-semibold text-white flex items-center shrink-0">
+                          IN +91
                         </span>
                         <input
                           type="tel"
                           value={supportPhone}
                           onChange={(e) => setSupportPhone(e.target.value)}
                           placeholder="Enter Phone Number"
-                          className="flex-1 h-12 px-4 rounded-lg bg-[#141414] border border-[#262626] text-xs sm:text-sm text-white placeholder:text-[#999999] focus:outline-none focus:border-[#E50000]"
+                          className="flex-1 min-w-0 h-11 px-4 rounded-lg bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
                         />
                       </div>
                     </div>
@@ -2763,28 +3377,43 @@ export default function App() {
                       value={supportMessage}
                       onChange={(e) => setSupportMessage(e.target.value)}
                       placeholder="Enter your Message"
-                      className="w-full p-4 rounded-lg bg-[#141414] border border-[#262626] text-xs sm:text-sm text-white placeholder:text-[#999999] focus:outline-none focus:border-[#E50000]"
+                      className="w-full p-4 rounded-lg bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
                     />
                   </div>
 
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-2">
-                    <label className="flex items-center gap-2.5 text-xs sm:text-sm text-[#999999] cursor-pointer">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pt-1">
+                    <label className="flex items-center gap-2.5 text-xs sm:text-sm text-[#A7A9B4] cursor-pointer">
                       <input
                         type="checkbox"
                         required
                         checked={supportAgreed}
                         onChange={(e) => setSupportAgreed(e.target.checked)}
-                        className="w-4 h-4 accent-[#E50000]"
+                        className="w-4 h-4 accent-[#FFC400] shrink-0"
                       />
                       <span>
-                        I agree with Terms of Use and Privacy Policy
+                        I agree with{' '}
+                        <button
+                          type="button"
+                          onClick={() => setActiveModal('terms')}
+                          className="text-[#FFC400] hover:underline cursor-pointer"
+                        >
+                          Terms of Use
+                        </button>{' '}
+                        and{' '}
+                        <button
+                          type="button"
+                          onClick={() => setActiveModal('privacy')}
+                          className="text-[#FFC400] hover:underline cursor-pointer"
+                        >
+                          Privacy Policy
+                        </button>
                       </span>
                     </label>
 
                     <button
                       type="submit"
                       disabled={isSendingSupport}
-                      className="min-h-[48px] px-6 py-3 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs sm:text-sm font-semibold transition-colors cursor-pointer disabled:opacity-60"
+                      className="min-h-[44px] px-6 py-2.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs sm:text-sm font-bold transition-colors cursor-pointer disabled:opacity-60 shrink-0"
                     >
                       {isSendingSupport ? 'Sending...' : 'Send Message'}
                     </button>
@@ -2794,167 +3423,100 @@ export default function App() {
 
               {renderFaqSection()}
             </motion.div>
-          ) : /* =========================================================
-              PAGE 6: SUBSCRIPTIONS PAGE
-          ========================================================= */
-          activeView === 'subscriptions' ? (
-            <motion.div
-              key="subscriptions-page"
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              className="space-y-20"
-            >
-              {renderPricingSection()}
-
-              {/* Plan Comparison Table Section */}
-              <section className="space-y-8" aria-label="Compare Plans">
-                <div>
-                  <h2 className="text-2xl sm:text-3xl font-bold text-white font-display">
-                    Compare our plans and find the right one for you
-                  </h2>
-                  <p className="text-xs sm:text-sm text-[#999999] mt-1.5 max-w-3xl">
-                    Zappy offers three different plans to fit your needs: Basic,
-                    Standard, and Premium. Compare the features of each plan and
-                    choose the one that&apos;s right for you.
-                  </p>
-                </div>
-
-                <div className="overflow-x-auto rounded-xl border border-[#262626]">
-                  <table className="w-full text-left border-collapse min-w-[680px]">
-                    <thead>
-                      <tr className="bg-[#0F0F0F] border-b border-[#262626] text-sm sm:text-base font-semibold text-white">
-                        <th className="p-5 border-r border-[#262626] w-1/4">
-                          Features
-                        </th>
-                        <th className="p-5 border-r border-[#262626] w-1/4">
-                          Basic
-                        </th>
-                        <th className="p-5 border-r border-[#262626] w-1/4">
-                          <span className="inline-flex items-center gap-2">
-                            <span>Standard</span>
-                            <span className="px-2 py-0.5 rounded bg-[#E50000] text-white text-[10px] font-semibold">
-                              Popular
-                            </span>
-                          </span>
-                        </th>
-                        <th className="p-5 w-1/4">Premium</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-[#262626] text-xs sm:text-sm text-[#999999] bg-[#141414]">
-                      {PLAN_COMPARISON_ROWS.map((row) => (
-                        <tr key={row.feature}>
-                          <td className="p-5 border-r border-[#262626] font-medium text-[#BFBFBF]">
-                            {row.feature}
-                          </td>
-                          <td className="p-5 border-r border-[#262626]">
-                            {row.basic}
-                          </td>
-                          <td className="p-5 border-r border-[#262626]">
-                            {row.standard}
-                          </td>
-                          <td className="p-5">{row.premium}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </section>
-            </motion.div>
           ) : (
             /* =========================================================
-              PAGE 1: HOME PAGE (Hero Banner + Upside Navbar fit 100% in 100dvh without scrolling)
+              PAGE 1: HOME PAGE
           ========================================================= */
             <motion.div
               key="home-page"
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              className="space-y-16 sm:space-y-24"
+              className="space-y-6 sm:space-y-8"
             >
-              {/* SECTION 1: HERO SPOTLIGHT BANNER OR MOSAIC (Fits 100% inside initial viewport with Navbar) */}
+              {/* SECTION 1: HERO SPOTLIGHT BANNER OR WELCOME BILLBOARD */}
               {featuredItems.length > 0 ? (
-                <HeroBanner
-                  featuredItems={featuredItems}
-                  activeHeroIndex={activeHeroIndex}
-                  onSelectHeroIndex={setActiveHeroIndex}
-                  watchlistIds={activeWatchlistIds}
-                  onPlayMedia={(item) => handleSelectMedia(item, true)}
-                  onOpenDetails={(item) => handleSelectMedia(item, false)}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
+                <>
+                  <HeroBanner
+                    featuredItems={featuredItems}
+                    activeHeroIndex={activeHeroIndex}
+                    onSelectHeroIndex={setActiveHeroIndex}
+                    watchlistIds={activeWatchlistIds}
+                    onPlayMedia={(item) => handleSelectMedia(item, true, false)}
+                    onOpenDetails={(item) => handleSelectMedia(item, false, false)}
+                    onToggleWatchlist={handleToggleWatchlist}
+                  />
+
+                  {continueWatchingItems.length > 0 && (
+                    <ContinueWatchingRow
+                      items={continueWatchingItems}
+                      onSelectMedia={handleSelectMedia}
+                      onSeeAll={() => handleNavigate('movies_shows')}
+                      onRemoveProgress={handleRemoveWatchProgress}
+                    />
+                  )}
+
+                  {/* Top 10 Today Row */}
+                  <CarouselRow
+                    title="Top 10 Today"
+                    items={catalog.slice(0, 10)}
+                    watchlistIds={activeWatchlistIds}
+                    isTop10Row={true}
+                    onSelectMedia={handleSelectMedia}
+                    onToggleWatchlist={handleToggleWatchlist}
+                  />
+
+                  {moviesList.length > 0 && (
+                    <CarouselRow
+                      title="Popular Movies"
+                      items={moviesList}
+                      watchlistIds={activeWatchlistIds}
+                      onSelectMedia={handleSelectMedia}
+                      onToggleWatchlist={handleToggleWatchlist}
+                    />
+                  )}
+
+                  {showsList.length > 0 && (
+                    <CarouselRow
+                      title="TV Shows"
+                      items={showsList}
+                      watchlistIds={activeWatchlistIds}
+                      onSelectMedia={handleSelectMedia}
+                      onToggleWatchlist={handleToggleWatchlist}
+                    />
+                  )}
+                </>
               ) : (
-                <section className="relative h-[calc(100dvh-5.25rem)] min-h-[380px] max-h-[650px] rounded-2xl overflow-hidden border border-[#262626] bg-[#0F0F0F] flex flex-col justify-end">
-                  <div className="absolute inset-0 overflow-hidden">
-                    <div className="grid grid-cols-3 sm:grid-cols-6 lg:grid-cols-9 gap-2.5 p-3 opacity-55">
-                      {Array.from({ length: 36 }, (_, idx) => {
-                        const item =
-                          catalog.length > 0
-                            ? catalog[idx % catalog.length]
-                            : null;
-                        return (
-                          <div
-                            key={idx}
-                            className="aspect-[3/4] rounded-xl overflow-hidden bg-[#1A1A1A]"
-                          >
-                            {item ? (
-                              <MediaArtwork
-                                src={item.posterUrl}
-                                alt={item.title}
-                                item={item}
-                                aspectRatio="poster"
-                                className="w-full h-full object-cover"
-                              />
-                            ) : (
-                              <div className="w-full h-full bg-gradient-to-br from-[#262626] to-[#141414]" />
-                            )}
-                          </div>
-                        );
-                      })}
+                <section className="relative min-h-[340px] rounded-2xl overflow-hidden border border-[#292C35] bg-gradient-to-b from-[#14161D] to-[#08090D] p-8 sm:p-12 flex flex-col justify-center items-center text-center shadow-2xl">
+                  <div className="space-y-4 max-w-xl">
+                    <div className="h-14 mx-auto rounded-2xl bg-[#08090D] border border-[#292C35] flex items-center justify-center px-5 py-2 shadow-xl">
+                      <img
+                        src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
+                        alt="ZappyFun"
+                        className="h-10 w-auto object-contain"
+                      />
                     </div>
-
-                    <div className="absolute inset-0 bg-gradient-to-b from-[#141414] via-transparent to-[#141414]" />
-                    <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/65 to-transparent" />
-
-                    <div className="absolute inset-0 flex items-center justify-center pb-28 pointer-events-none">
-                      <div className="px-6 py-3 rounded-3xl bg-black/55 border border-white/15 backdrop-blur-md flex items-center justify-center shadow-2xl">
-                        <div className="h-16 sm:h-20 w-44 sm:w-56 overflow-hidden flex items-center justify-center">
-                          <img
-                            src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
-                            alt="Brand Logo"
-                            className="w-full h-full object-contain scale-[1.55] select-none"
-                          />
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="relative z-10 px-4 pb-8 sm:pb-10 text-center max-w-4xl mx-auto space-y-4">
-                    <h1 className="text-2xl sm:text-4xl lg:text-5xl font-bold text-white font-display tracking-tight">
-                      The Best Streaming Experience on Zappy
+                    <h1 className="text-2xl sm:text-4xl font-black text-white font-display tracking-tight">
+                      No Titles Available
                     </h1>
-                    <p className="text-xs sm:text-sm text-[#999999] leading-relaxed max-w-2xl mx-auto">
-                      Zappy is the best streaming experience for watching your
-                      favorite movies and shows on demand, anytime, anywhere.
-                    </p>
-                    <div className="pt-1 flex flex-wrap items-center justify-center gap-3">
-                      <button
-                        type="button"
-                        onClick={() => handleNavigate('movies_shows')}
-                        className="min-h-[48px] px-6 py-3 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white font-semibold text-sm flex items-center gap-2.5 cursor-pointer shadow-xl shadow-[#E50000]/25 transition-colors"
-                      >
-                        <Play className="w-4 h-4 fill-current" />
-                        <span>Start Watching Now</span>
-                      </button>
-
-                      {isAdmin && (
+                    <div className="pt-2 flex flex-wrap items-center justify-center gap-3">
+                      {isAdmin ? (
                         <button
                           type="button"
                           onClick={() => openAdminStudio(null, 'catalog')}
-                          className="min-h-[48px] px-5 py-3 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-white font-semibold text-sm flex items-center gap-2 cursor-pointer"
+                          className="px-6 py-3 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-xl shadow-[#FFC400]/20 transition-transform active:scale-95"
                         >
-                          <Plus className="w-4 h-4 text-[#E50000]" />
-                          <span>Add Movies / Shows</span>
+                          <SlidersHorizontal className="w-4 h-4" />
+                          <span>Open Admin Studio</span>
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={handleGoogleLogin}
+                          className="px-6 py-3 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-xl shadow-[#FFC400]/20"
+                        >
+                          <LogIn className="w-4 h-4" />
+                          <span>Sign In</span>
                         </button>
                       )}
                     </div>
@@ -2962,150 +3524,35 @@ export default function App() {
                 </section>
               )}
 
-              {/* Continue Watching Row */}
-              {continueWatchingItems.length > 0 && (
-                <ContinueWatchingRow
-                  items={continueWatchingItems}
-                  onSelectMedia={handleSelectMedia}
-                  onSeeAll={() => handleNavigate('movies_shows')}
-                />
-              )}
-
-              {/* Live Published Catalog Carousels right on Home */}
-              {catalog.length > 0 && (
-                <CarouselRow
-                  title="Trending Movies & Shows"
-                  subtitle="Click any poster to stream immediately in 4K UHD"
-                  items={catalog}
-                  watchlistIds={activeWatchlistIds}
-                  onSelectMedia={handleSelectMedia}
-                  onToggleWatchlist={handleToggleWatchlist}
-                />
-              )}
-
-              {/* SECTION 2: "Explore our wide variety of categories" */}
-              {renderGenre2x2GridSection(
-                'Explore our wide variety of categories',
-                "Whether you're looking for a comedy to make you laugh, a drama to make you think, or a documentary to learn something new"
-              )}
-
-              {/* SECTION 3: "We Provide you streaming experience across various devices." */}
-              <section
-                className="space-y-8"
-                aria-label="Supported Streaming Devices"
-              >
-                <div>
-                  <h2 className="text-2xl sm:text-3xl font-bold text-white font-display">
-                    We Provide you streaming experience across various devices.
-                  </h2>
-                  <p className="text-xs sm:text-sm text-[#999999] mt-1.5 max-w-3xl">
-                    With Zappy, you can enjoy your favorite movies and TV shows
-                    anytime, anywhere. Our platform is designed to be compatible
-                    with a wide range of devices, ensuring that you never miss a
-                    moment of entertainment.
-                  </p>
-                </div>
-
-                <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5 sm:gap-6">
-                  {ZAPPY_DEVICES.map((device) => {
-                    const Icon = device.icon;
-                    return (
-                      <div
-                        key={device.title}
-                        className="sv-device-card rounded-xl border border-[#262626] p-6 sm:p-8 space-y-5"
-                      >
-                        <div className="flex items-center gap-3.5">
-                          <div className="w-12 h-12 rounded-xl bg-[#141414] border border-[#1F1F1F] text-[#E50000] flex items-center justify-center shrink-0">
-                            <Icon className="w-6 h-6" />
-                          </div>
-                          <h3 className="text-lg sm:text-xl font-semibold text-white font-display">
-                            {device.title}
-                          </h3>
-                        </div>
-                        <p className="text-xs sm:text-sm text-[#999999] leading-relaxed">
-                          {device.description}
-                        </p>
-                      </div>
-                    );
-                  })}
-                </div>
-              </section>
-
-              {/* SECTION 4: FREQUENTLY ASKED QUESTIONS */}
-              {renderFaqSection()}
-
-              {/* SECTION 5: CHOOSE THE PLAN THAT'S RIGHT FOR YOU */}
-              {renderPricingSection()}
+              {/* Categories Row */}
+              {renderGenre2x2GridSection('Categories')}
             </motion.div>
           )}
         </AnimatePresence>
-
-        {/* BOTTOM FREE TRIAL CTA BANNER */}
-        <section
-          aria-label="Free Trial Call to Action"
-          className="relative rounded-xl overflow-hidden border border-[#262626] bg-[#0F0F0F] p-8 sm:p-12 lg:p-16"
-        >
-          <div className="absolute inset-0 grid grid-cols-4 sm:grid-cols-8 gap-2 opacity-25 pointer-events-none">
-            {Array.from({ length: 16 }, (_, idx) => {
-              const item =
-                catalog.length > 0 ? catalog[idx % catalog.length] : null;
-              return (
-                <div key={idx} className="w-full h-full overflow-hidden">
-                  {item && (
-                    <MediaArtwork
-                      src={item.posterUrl}
-                      alt={item.title}
-                      item={item}
-                      aspectRatio="poster"
-                      className="w-full h-full object-cover"
-                    />
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <div
-            className="absolute inset-0 pointer-events-none"
-            style={{
-              background:
-                'linear-gradient(90deg, #0F0F0F 2%, rgba(20, 15, 15, 0.96) 25%, rgba(34, 14, 14, 0.90) 55%, rgba(229, 0, 0, 0.35) 100%)',
-            }}
-          />
-
-          <div className="relative z-10 flex flex-col lg:flex-row lg:items-center justify-between gap-6">
-            <div className="space-y-2 max-w-2xl">
-              <h2 className="text-2xl sm:text-3xl lg:text-4xl font-bold text-white font-display">
-                Start your free trial today!
-              </h2>
-              <p className="text-xs sm:text-sm text-[#999999]">
-                Sign up for a free trial of Zappy and stream your favorite
-                movies and series in 4K UHD.
-              </p>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => handleNavigate('movies_shows')}
-              className="min-h-[48px] px-6 py-3.5 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs sm:text-sm font-semibold transition-colors cursor-pointer self-start lg:self-auto shrink-0"
-            >
-              Start a Free Trial
-            </button>
-          </div>
-        </section>
+        )}
       </main>
 
-      {/* 6-COLUMN DARK FOOTER (#0F0F0F) */}
-      <footer className="mt-auto bg-[#0F0F0F] border-t border-[#262626] pt-14 pb-10 px-4 sm:px-6 lg:px-8 text-xs sm:text-sm text-[#999999]">
-        <div className="max-w-7xl mx-auto space-y-12">
-          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-8">
+      {/* DARK FOOTER (#08090D) */}
+      <footer className="mt-auto bg-[#08090D] border-t border-[#292C35] pt-6 pb-6 px-4 sm:px-6 lg:px-8 text-xs sm:text-sm text-[#747784]">
+        <div className="max-w-7xl mx-auto space-y-6">
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-6">
             <div className="space-y-3">
-              <h3 className="text-white font-semibold text-base">Home</h3>
+              <h3 className="text-white font-semibold text-base">Browse</h3>
               <ul className="space-y-2">
                 <li>
                   <button
                     type="button"
                     onClick={() => handleNavigate('home')}
-                    className="hover:text-white cursor-pointer"
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
+                  >
+                    Home
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => handleNavigate('categories')}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
                     Categories
                   </button>
@@ -3113,28 +3560,10 @@ export default function App() {
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('home')}
-                    className="hover:text-white cursor-pointer"
+                    onClick={() => handleNavigate('watchlist')}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Devices
-                  </button>
-                </li>
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('subscriptions')}
-                    className="hover:text-white cursor-pointer"
-                  >
-                    Pricing
-                  </button>
-                </li>
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('support')}
-                    className="hover:text-white cursor-pointer"
-                  >
-                    FAQ
+                    Watchlist
                   </button>
                 </li>
               </ul>
@@ -3146,158 +3575,161 @@ export default function App() {
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
+                    onClick={() => handleNavigate('movies')}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Genres
+                    All Movies
                   </button>
                 </li>
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
+                    onClick={() => {
+                      setSearchTypeFilter('movie');
+                      setSearchSortBy('popular');
+                      handleNavigate('search');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Trending
+                    Top Rated
                   </button>
                 </li>
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
+                    onClick={() => {
+                      setSearchTypeFilter('movie');
+                      setSearchSortBy('newest');
+                      handleNavigate('search');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    New Release
-                  </button>
-                </li>
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
-                  >
-                    Popular
+                    New Releases
                   </button>
                 </li>
               </ul>
             </div>
 
             <div className="space-y-3">
-              <h3 className="text-white font-semibold text-base">Shows</h3>
+              <h3 className="text-white font-semibold text-base">TV Shows</h3>
               <ul className="space-y-2">
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
+                    onClick={() => handleNavigate('tv')}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Genres
+                    All Shows
                   </button>
                 </li>
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
+                    onClick={() => {
+                      setSearchTypeFilter('series');
+                      setSearchSortBy('popular');
+                      handleNavigate('search');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Trending
+                    Top Rated
                   </button>
                 </li>
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
+                    onClick={() => {
+                      setSearchTypeFilter('series');
+                      setSearchSortBy('newest');
+                      handleNavigate('search');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    New Release
-                  </button>
-                </li>
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('movies_shows')}
-                    className="hover:text-white cursor-pointer"
-                  >
-                    Popular
+                    New Episodes
                   </button>
                 </li>
               </ul>
             </div>
 
             <div className="space-y-3">
-              <h3 className="text-white font-semibold text-base">Support</h3>
+              <h3 className="text-white font-semibold text-base">Legal</h3>
+              <ul className="space-y-2">
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModal('terms')}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
+                  >
+                    Terms of Use
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModal('privacy')}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
+                  >
+                    Privacy Policy
+                  </button>
+                </li>
+                <li>
+                  <button
+                    type="button"
+                    onClick={() => setActiveModal('disclaimer')}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
+                  >
+                    Disclaimer &amp; DMCA
+                  </button>
+                </li>
+              </ul>
+            </div>
+
+            <div className="space-y-3">
+              <h3 className="text-white font-semibold text-base">Contact &amp; Help</h3>
               <ul className="space-y-2">
                 <li>
                   <button
                     type="button"
                     onClick={() => handleNavigate('support')}
-                    className="hover:text-white cursor-pointer"
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Contact Us
-                  </button>
-                </li>
-              </ul>
-            </div>
-
-            <div className="space-y-3">
-              <h3 className="text-white font-semibold text-base">
-                Subscription
-              </h3>
-              <ul className="space-y-2">
-                <li>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('subscriptions')}
-                    className="hover:text-white cursor-pointer"
-                  >
-                    Plans
+                    Support &amp; FAQ
                   </button>
                 </li>
                 <li>
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('subscriptions')}
-                    className="hover:text-white cursor-pointer"
+                  <a
+                    href={`mailto:${legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}`}
+                    className="text-[#FFC400] hover:underline break-all block"
                   >
-                    Features
-                  </button>
+                    {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
+                  </a>
                 </li>
               </ul>
-            </div>
-
-            <div className="space-y-3">
-              <h3 className="text-white font-semibold text-base">
-                Connect With Us
-              </h3>
-              <div className="flex items-center gap-2.5">
-                {['FB', 'TW', 'IN'].map((social) => (
-                  <button
-                    key={social}
-                    type="button"
-                    onClick={() => handleNavigate('support')}
-                    className="w-10 h-10 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-white text-xs font-bold flex items-center justify-center cursor-pointer"
-                  >
-                    {social}
-                  </button>
-                ))}
-              </div>
             </div>
           </div>
 
-          <div className="pt-6 border-t border-[#262626] flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#999999]">
-            <div className="flex items-center gap-4">
-              <div className="h-9 w-28 overflow-hidden flex items-center justify-center shrink-0">
+          <div className="pt-6 border-t border-[#292C35] flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#747784]">
+            <div className="flex flex-wrap items-center gap-4">
+              <div className="h-9 flex items-center justify-center shrink-0">
                 <img
                   src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
-                  alt="Brand Logo"
-                  className="w-full h-full object-contain scale-[1.55] select-none pointer-events-none"
+                  alt="ZappyFun Logo"
+                  className="h-9 w-auto max-w-[140px] object-contain select-none pointer-events-none"
                 />
               </div>
-              <p className="border-l border-[#262626] pl-4">
-                © 2026 All Rights Reserved
+              <p className="border-l border-[#292C35] pl-4">
+                © 2026 ZappyFun · {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
               </p>
             </div>
-            <div className="flex items-center gap-5">
+            <div className="flex flex-wrap items-center justify-center gap-4">
+              <button
+                type="button"
+                onClick={() => setActiveModal('about')}
+                className="hover:text-white cursor-pointer"
+              >
+                About
+              </button>
+              <span className="text-[#292C35]">|</span>
               <button
                 type="button"
                 onClick={() => setActiveModal('terms')}
@@ -3305,7 +3737,7 @@ export default function App() {
               >
                 Terms of Use
               </button>
-              <span className="text-[#262626]">|</span>
+              <span className="text-[#292C35]">|</span>
               <button
                 type="button"
                 onClick={() => setActiveModal('privacy')}
@@ -3313,7 +3745,7 @@ export default function App() {
               >
                 Privacy Policy
               </button>
-              <span className="text-[#262626]">|</span>
+              <span className="text-[#292C35]">|</span>
               <button
                 type="button"
                 onClick={() => setActiveModal('advertising')}
@@ -3321,12 +3753,20 @@ export default function App() {
               >
                 Cookie Policy
               </button>
+              <span className="text-[#292C35]">|</span>
+              <button
+                type="button"
+                onClick={() => setActiveModal('disclaimer')}
+                className="hover:text-white cursor-pointer"
+              >
+                Disclaimer
+              </button>
             </div>
           </div>
         </div>
       </footer>
 
-      {/* ADMIN STUDIO MODAL (Catalog + User Support Messages Inbox) */}
+      {/* ADMIN STUDIO MODAL (Catalog + Support Inbox + Legal & Policies Editor) */}
       <AdminStudioModal
         isOpen={adminStudioOpen}
         currentUser={currentUser}
@@ -3335,6 +3775,8 @@ export default function App() {
         videoAdConfig={videoAdConfig}
         supportMessages={mergedSupportMessages}
         initialTab={adminInitialTab}
+        legalPages={legalPages}
+        onSaveLegalPages={handleSaveLegalPages}
         heroBatchInfo={{
           activeBatchNumber: activeHeroBatchNumber,
           totalBatches: totalHeroBatches,
@@ -3348,7 +3790,7 @@ export default function App() {
         onClose={() => setAdminStudioOpen(false)}
         onSelectMediaToWatch={(item) => {
           setPreviewDraftItem(null);
-          handleSelectMedia(item, true);
+          handleSelectMedia(item, true, false);
         }}
         onPreviewDraftInApp={handlePreviewDraftInApp}
         onLaunchVisualEditor={() => setVisualEditorActive(true)}
@@ -3361,10 +3803,11 @@ export default function App() {
         onCloseEditor={() => setVisualEditorActive(false)}
       />
 
-      {/* INFO & PREFERENCES MODAL */}
+      {/* INFO, LEGAL & PREFERENCES MODAL */}
       <InfoModal
         modalType={activeModal}
         adsEnabled={adsEnabled}
+        legalPages={legalPages}
         onToggleAds={() => setAdsEnabled((prev) => !prev)}
         onClose={() => setActiveModal(null)}
       />

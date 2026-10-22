@@ -1,16 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import {
-  Maximize,
-  Minimize,
-  RotateCcw,
-  SkipForward,
-  Loader2,
-  CheckCircle2,
-  Server,
-} from 'lucide-react';
+import React, { useEffect, useRef, useCallback, useMemo } from 'react';
+import { Loader2 } from 'lucide-react';
 import { MediaItem, PlaybackResolutionResponse } from '../types/media';
 
-interface VideoPlayerProps {
+export interface VideoPlayerProps {
   item: MediaItem;
   playbackResolution?: PlaybackResolutionResponse | null;
   isResolvingPlayback?: boolean;
@@ -21,9 +13,19 @@ interface VideoPlayerProps {
   isCompleted?: boolean;
   resolvedImdbId?: string;
   resolvedTmdbId?: number;
+  hasProgress?: boolean;
+  selectedTrackIndex?: number;
+  reloadKey?: number;
   onOpenAdminStudio?: () => void;
   onNextEpisode?: () => void;
   onMarkWatched?: () => void;
+  onStartOver?: () => void;
+  onPlaybackProgress?: (
+    progressPercent?: number,
+    remainingMinutes?: number,
+    seasonFromPlayer?: number,
+    episodeFromPlayer?: number
+  ) => void;
 }
 
 export interface StreamTrackOption {
@@ -90,70 +92,43 @@ function extractImmediateIdentifiers(item: MediaItem): {
   };
 }
 
-const STREAM_TRACKS: StreamTrackOption[] = [
+export const STREAM_TRACKS: StreamTrackOption[] = [
   {
-    id: 'embedmaster-primary',
-    label: 'EmbedMaster Primary (10+ Servers)',
-    buildUrl: (stablePrimaryId, _tmdbNumericId, _imdbId, isTv, s, e) => {
-      if (isTv) {
-        return `https://embedmaster.link/tv/${stablePrimaryId}/${s}/${e}`;
-      }
-      return `https://embedmaster.link/movie/${stablePrimaryId}`;
-    },
-  },
-  {
-    id: 'embedmaster-alt',
-    label: 'EmbedMaster Alt-ID (TMDB/IMDb)',
-    buildUrl: (stablePrimaryId, tmdbNumericId, imdbId, isTv, s, e) => {
-      const altToken =
-        stablePrimaryId.startsWith('tt') && tmdbNumericId > 0
-          ? String(tmdbNumericId)
-          : imdbId || String(tmdbNumericId) || stablePrimaryId;
-      if (isTv) {
-        return `https://embedmaster.link/tv/${altToken}/${s}/${e}`;
-      }
-      return `https://embedmaster.link/movie/${altToken}`;
-    },
-  },
-  {
-    id: 'vidsrc-multi',
-    label: 'Multi-Server Stream 2',
-    buildUrl: (stablePrimaryId, tmdbNumericId, imdbId, isTv, s, e) => {
-      const useImdb =
-        imdbId || (stablePrimaryId.startsWith('tt') ? stablePrimaryId : '');
-      if (isTv) {
-        return useImdb
-          ? `https://vidsrc.xyz/embed/tv?imdb=${useImdb}&season=${s}&episode=${e}`
-          : `https://vidsrc.xyz/embed/tv?tmdb=${tmdbNumericId}&season=${s}&episode=${e}`;
-      }
-      return useImdb
-        ? `https://vidsrc.xyz/embed/movie?imdb=${useImdb}`
-        : `https://vidsrc.xyz/embed/movie?tmdb=${tmdbNumericId}`;
-    },
-  },
-  {
-    id: 'backup-cdn-1',
-    label: 'Backup Server 1',
+    id: 'vidly-primary',
+    label: 'Server 1',
     buildUrl: (_stablePrimaryId, tmdbNumericId, _imdbId, isTv, s, e) => {
+      const tmdb = tmdbNumericId > 0 ? tmdbNumericId : 157336;
       if (isTv) {
-        return `https://vidlink.pro/tv/${tmdbNumericId}/${s}/${e}?primaryColor=E50000&secondaryColor=141414&autoplay=true`;
+        return `https://vidly.pro/tv/${tmdb}/${s}/${e}`;
       }
-      return `https://vidlink.pro/movie/${tmdbNumericId}?primaryColor=E50000&secondaryColor=141414&autoplay=true`;
+      return `https://vidly.pro/movie/${tmdb}`;
     },
   },
   {
-    id: 'backup-cdn-2',
-    label: 'Backup Server 2',
+    id: 'vidly-fast',
+    label: 'Server 2',
     buildUrl: (_stablePrimaryId, tmdbNumericId, _imdbId, isTv, s, e) => {
+      const tmdb = tmdbNumericId > 0 ? tmdbNumericId : 157336;
       if (isTv) {
-        return `https://cinesrc.st/embed/tv/${tmdbNumericId}?s=${s}&e=${e}`;
+        return `https://vidly.pro/tv/${tmdb}/${s}/${e}?autoplay=1`;
       }
-      return `https://cinesrc.st/embed/movie/${tmdbNumericId}`;
+      return `https://vidly.pro/movie/${tmdb}?autoplay=1`;
+    },
+  },
+  {
+    id: 'vidly-mirror',
+    label: 'Server 3',
+    buildUrl: (_stablePrimaryId, tmdbNumericId, _imdbId, isTv, s, e) => {
+      const tmdb = tmdbNumericId > 0 ? tmdbNumericId : 157336;
+      if (isTv) {
+        return `https://vidly.pro/embed/tv/${tmdb}/${s}/${e}`;
+      }
+      return `https://vidly.pro/embed/movie/${tmdb}`;
     },
   },
 ];
 
-export function buildEmbedMasterUrl(
+export function buildVidlyUrl(
   item: MediaItem,
   seasonNumber = 1,
   episodeNumber = 1
@@ -161,38 +136,39 @@ export function buildEmbedMasterUrl(
   const isTv = item.mediaType === 'tv' || item.contentType === 'series';
   const s = Math.max(1, Number(seasonNumber) || 1);
   const e = Math.max(1, Number(episodeNumber) || 1);
-  const { stablePrimaryId, initialTmdbId, initialImdbId } =
-    extractImmediateIdentifiers(item);
-  return STREAM_TRACKS[0].buildUrl(
-    stablePrimaryId,
-    initialTmdbId,
-    initialImdbId,
-    isTv,
-    s,
-    e
-  );
+  const { initialTmdbId } = extractImmediateIdentifiers(item);
+  const tmdb = initialTmdbId > 0 ? initialTmdbId : 157336;
+  if (isTv) {
+    return `https://vidly.pro/tv/${tmdb}/${s}/${e}`;
+  }
+  return `https://vidly.pro/movie/${tmdb}`;
 }
 
-export const buildCineSrcEmbedUrl = buildEmbedMasterUrl;
-export const buildVidLinkEmbedUrl = buildEmbedMasterUrl;
-export const buildZappyStreamUrl = buildEmbedMasterUrl;
+export const buildEmbedMasterUrl = buildVidlyUrl;
+export const buildCineSrcEmbedUrl = buildVidlyUrl;
+export const buildVidLinkEmbedUrl = buildVidlyUrl;
+export const buildZappyStreamUrl = buildVidlyUrl;
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = React.memo(
   ({
     item,
     selectedSeason = 1,
     selectedEpisodeNumber = 1,
-    episodeTitle,
-    isCompleted = false,
-    onNextEpisode,
+    selectedTrackIndex = 0,
+    reloadKey = 0,
     onMarkWatched,
+    onPlaybackProgress,
   }) => {
     const playerWrapperRef = useRef<HTMLDivElement>(null);
     const iframeRef = useRef<HTMLIFrameElement>(null);
     const loaderOverlayRef = useRef<HTMLDivElement>(null);
     const markedWatchedRef = useRef<boolean>(false);
+    const playbackStartedRef = useRef<boolean>(false);
+    const lastReportedPercentRef = useRef<number>(0);
     const onMarkWatchedRef = useRef(onMarkWatched);
     onMarkWatchedRef.current = onMarkWatched;
+    const onPlaybackProgressRef = useRef(onPlaybackProgress);
+    onPlaybackProgressRef.current = onPlaybackProgress;
 
     const isTv = item.mediaType === 'tv' || item.contentType === 'series';
     const sNum = Math.max(1, Number(selectedSeason) || 1);
@@ -203,10 +179,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = React.memo(
       () => extractImmediateIdentifiers(item),
       [item.id, item.tmdbId, item.cinesrcEmbedUrl]
     );
-
-    const [selectedTrackIndex, setSelectedTrackIndex] = useState<number>(0);
-    const [reloadNonce, setReloadNonce] = useState<number>(0);
-    const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
 
     const activeTrack = STREAM_TRACKS[selectedTrackIndex] || STREAM_TRACKS[0];
 
@@ -251,30 +223,98 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = React.memo(
         hideLoaderOverlay();
       }, 650);
       return () => window.clearTimeout(timer);
-    }, [embedUrl, reloadNonce, showLoaderOverlay, hideLoaderOverlay]);
+    }, [embedUrl, reloadKey, showLoaderOverlay, hideLoaderOverlay]);
 
     useEffect(() => {
       markedWatchedRef.current = false;
-    }, [item.id]);
+      playbackStartedRef.current = false;
+      lastReportedPercentRef.current = 0;
+    }, [item.id, sNum, eNum]);
 
-    // Listen for EmbedMaster postMessage events (ready, play, time, ended)
+    // Detect user clicking into the embedded player iframe to start playback
+    useEffect(() => {
+      const handleWindowBlur = () => {
+        if (
+          document.activeElement === iframeRef.current &&
+          !playbackStartedRef.current
+        ) {
+          playbackStartedRef.current = true;
+          onPlaybackProgressRef.current?.(undefined, undefined, sNum, eNum);
+        }
+      };
+      window.addEventListener('blur', handleWindowBlur);
+      return () => window.removeEventListener('blur', handleWindowBlur);
+    }, [sNum, eNum]);
+
+    // Listen for Vidly & iframe postMessage events (VIDLY_PLAYER_EVENT, SYNC_HISTORY, play, timeupdate, ended)
     useEffect(() => {
       const handleMessage = (event: MessageEvent) => {
         const data = event.data;
         if (!data || typeof data !== 'object') return;
 
-        if (data.source === 'embedmaster_player') {
+        if (
+          data.type === 'VIDLY_PLAYER_EVENT' ||
+          data.type === 'SYNC_HISTORY' ||
+          data.source === 'vidly_player' ||
+          data.source === 'embedmaster_player' ||
+          data.event ||
+          data.type
+        ) {
           hideLoaderOverlay();
-          const ev = String(data.event || '').toLowerCase();
-          if (ev === 'ended' || ev === 'finish' || ev === 'complete') {
+          const inner = data.data || data.info || data;
+          const ev = String(
+            inner?.event || data.event || data.type || ''
+          ).toLowerCase();
+
+          const reportedSeason =
+            Number(inner?.season) >= 1 ? Number(inner.season) : sNum;
+          const reportedEpisode =
+            Number(inner?.episode) >= 1 ? Number(inner.episode) : eNum;
+
+          if (ev === 'play' || ev === 'playing') {
+            if (!playbackStartedRef.current) {
+              playbackStartedRef.current = true;
+              onPlaybackProgressRef.current?.(
+                undefined,
+                undefined,
+                reportedSeason,
+                reportedEpisode
+              );
+            }
+          } else if (ev === 'ended' || ev === 'finish' || ev === 'complete') {
             if (!markedWatchedRef.current && onMarkWatchedRef.current) {
               markedWatchedRef.current = true;
               onMarkWatchedRef.current();
             }
-          } else if (ev === 'time' || ev === 'timeupdate') {
-            const info = data.info;
-            const current = Number(info?.currentTime ?? info?.time ?? 0);
-            const total = Number(info?.duration ?? 0);
+          } else if (
+            ev === 'time' ||
+            ev === 'timeupdate' ||
+            data.type === 'SYNC_HISTORY'
+          ) {
+            const current = Number(
+              inner?.currentTime ?? inner?.watched ?? inner?.time ?? 0
+            );
+            const total = Number(inner?.duration ?? 0);
+            if (total > 0 && current > 0) {
+              const pct = Math.min(
+                99,
+                Math.max(1, Math.round((current / total) * 100))
+              );
+              const remMins = Math.max(1, Math.round((total - current) / 60));
+              if (
+                !playbackStartedRef.current ||
+                Math.abs(pct - lastReportedPercentRef.current) >= 2
+              ) {
+                playbackStartedRef.current = true;
+                lastReportedPercentRef.current = pct;
+                onPlaybackProgressRef.current?.(
+                  pct,
+                  remMins,
+                  reportedSeason,
+                  reportedEpisode
+                );
+              }
+            }
             if (total > 60 && current / total >= 0.9) {
               if (!markedWatchedRef.current && onMarkWatchedRef.current) {
                 markedWatchedRef.current = true;
@@ -287,137 +327,21 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = React.memo(
 
       window.addEventListener('message', handleMessage);
       return () => window.removeEventListener('message', handleMessage);
-    }, [hideLoaderOverlay]);
-
-    useEffect(() => {
-      const onFsChange = () => {
-        setIsFullscreen(Boolean(document.fullscreenElement));
-      };
-      document.addEventListener('fullscreenchange', onFsChange);
-      return () => document.removeEventListener('fullscreenchange', onFsChange);
-    }, []);
-
-    const toggleFullscreen = useCallback(async () => {
-      const wrapper = playerWrapperRef.current;
-      if (!wrapper) return;
-      try {
-        if (!document.fullscreenElement) {
-          await wrapper.requestFullscreen();
-        } else {
-          await document.exitFullscreen();
-        }
-      } catch {
-        // Ignore
-      }
-    }, []);
+    }, [hideLoaderOverlay, sNum, eNum]);
 
     return (
-      <div className="w-full rounded-xl overflow-hidden bg-[#0F0F0F] border border-[#262626] shadow-2xl">
-        {/* Static Control Bar Outside Video Surface */}
-        <div className="px-3.5 py-2.5 bg-[#141414] border-b border-[#262626] flex flex-wrap items-center justify-between gap-2">
-          <div className="min-w-0 flex items-center gap-2.5">
-            <span className="px-2 py-0.5 rounded bg-[#E50000] text-white text-[11px] font-bold tracking-wide uppercase shrink-0">
-              {isTv ? `S${sNum} · E${eNum}` : 'MOVIE'}
-            </span>
-            <p className="text-xs sm:text-sm font-bold text-white truncate font-display">
-              {item.title}
-              {episodeTitle ? ` — ${episodeTitle}` : ''}
-            </p>
-          </div>
-
-          <div className="flex flex-wrap items-center gap-1.5">
-            {/* Stream Server Switcher */}
-            <div className="flex items-center gap-1 bg-[#0F0F0F] border border-[#262626] rounded-lg px-2 py-1">
-              <Server className="w-3.5 h-3.5 text-[#E50000] shrink-0" />
-              <select
-                value={selectedTrackIndex}
-                onChange={(e) => setSelectedTrackIndex(Number(e.target.value))}
-                aria-label="Select streaming server"
-                className="bg-transparent text-xs font-semibold text-white focus:outline-none cursor-pointer pr-1"
-              >
-                {STREAM_TRACKS.map((track, idx) => (
-                  <option
-                    key={track.id}
-                    value={idx}
-                    className="bg-[#141414] text-white"
-                  >
-                    {track.label}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            {onMarkWatched && (
-              <button
-                type="button"
-                onClick={() => {
-                  markedWatchedRef.current = true;
-                  onMarkWatched();
-                }}
-                className={`min-h-[32px] px-2.5 py-1 rounded-lg border text-xs font-semibold flex items-center gap-1.5 transition-colors cursor-pointer whitespace-nowrap shrink-0 ${
-                  isCompleted
-                    ? 'bg-emerald-500/15 border-emerald-500/40 text-emerald-300'
-                    : 'bg-[#1A1A1A] hover:bg-[#262626] border-[#262626] text-zinc-200 hover:text-white'
-                }`}
-                title="Mark as fully watched (automatically removes from Watchlist)"
-              >
-                <CheckCircle2 className="w-3.5 h-3.5 text-[#E50000]" />
-                <span>{isCompleted ? 'Watched' : 'Mark Watched'}</span>
-              </button>
-            )}
-
-            {isTv && onNextEpisode && (
-              <button
-                type="button"
-                onClick={onNextEpisode}
-                className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-xs font-semibold text-white flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
-                title="Next Episode"
-              >
-                <SkipForward className="w-3.5 h-3.5 text-[#E50000]" />
-                <span className="hidden sm:inline">Next Ep</span>
-              </button>
-            )}
-
-            <button
-              type="button"
-              onClick={() => {
-                showLoaderOverlay();
-                setReloadNonce((n) => n + 1);
-              }}
-              className="min-h-[32px] min-w-[32px] rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-zinc-200 hover:text-white flex items-center justify-center cursor-pointer"
-              title="Reload Stream"
-              aria-label="Reload Stream"
-            >
-              <RotateCcw className="w-3.5 h-3.5" />
-            </button>
-
-            <button
-              type="button"
-              onClick={toggleFullscreen}
-              className="min-h-[32px] min-w-[32px] rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-zinc-200 hover:text-white flex items-center justify-center cursor-pointer"
-              title={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-              aria-label={isFullscreen ? 'Exit Fullscreen' : 'Fullscreen'}
-            >
-              {isFullscreen ? (
-                <Minimize className="w-3.5 h-3.5" />
-              ) : (
-                <Maximize className="w-3.5 h-3.5" />
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* Pure Unobstructed 16:9 Video Container */}
+      <div className="-mx-3 sm:mx-0 w-[calc(100%+1.5rem)] sm:w-full rounded-none sm:rounded-2xl overflow-hidden bg-[#08090D] border-y sm:border border-[#292C35] shadow-2xl">
+        {/* Spacious Mobile Player + 16:9 Widescreen Desktop Container */}
         <div
           ref={playerWrapperRef}
-          className="relative aspect-video w-full bg-black overflow-hidden"
+          className="relative w-full min-h-[265px] h-[44vh] max-h-[390px] sm:min-h-0 sm:h-auto sm:max-h-none sm:aspect-video bg-black overflow-hidden"
         >
           <div
             ref={loaderOverlayRef}
             style={{ opacity: 1, transition: 'opacity 150ms ease-out' }}
-            className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#0F0F0F] pointer-events-none"
+            className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#08090D] pointer-events-none"
           >
-            <Loader2 className="w-8 h-8 text-[#E50000] animate-spin mb-2" />
+            <Loader2 className="w-8 h-8 text-[#FFC400] animate-spin mb-2" />
             <p className="text-xs sm:text-sm font-semibold text-white">
               Loading {item.title}
               {isTv ? ` · S${sNum} E${eNum}` : ''}...
@@ -425,9 +349,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = React.memo(
           </div>
 
           <iframe
-            id="embedmaster_iframe"
+            id="vidly_iframe"
             ref={iframeRef}
-            key={`${embedUrl}-${reloadNonce}`}
+            key={`${embedUrl}-${reloadKey}`}
             src={embedUrl}
             title={`${item.title} Stream`}
             allow="autoplay *; fullscreen *; picture-in-picture *; encrypted-media *"
@@ -445,5 +369,8 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = React.memo(
     prev.item.tmdbId === next.item.tmdbId &&
     prev.selectedSeason === next.selectedSeason &&
     prev.selectedEpisodeNumber === next.selectedEpisodeNumber &&
-    prev.isCompleted === next.isCompleted
+    prev.selectedTrackIndex === next.selectedTrackIndex &&
+    prev.reloadKey === next.reloadKey &&
+    prev.isCompleted === next.isCompleted &&
+    prev.hasProgress === next.hasProgress
 );

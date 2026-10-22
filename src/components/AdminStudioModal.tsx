@@ -28,6 +28,9 @@ import {
   Layers,
   Database,
   Copy,
+  FileText,
+  Save,
+  RotateCcw,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -36,6 +39,8 @@ import {
   deleteDoc,
   serverTimestamp,
   getDoc,
+  getDocs,
+  collection,
 } from 'firebase/firestore';
 import {
   db,
@@ -62,37 +67,66 @@ import {
   createBackdropDataUri,
 } from '../utils/artworkGenerator';
 import { VideoPlayer } from './VideoPlayer';
+import {
+  LegalPagesConfig,
+  LegalPageContent,
+  DEFAULT_LEGAL_PAGES,
+  OFFICIAL_CONTACT_EMAIL,
+  normalizeLegalPagesConfig,
+} from './InfoModal';
 
 const LOGO_ASSET_URL =
   '/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png';
 
-const ZAPPYFUN_FIRESTORE_RULES_SNIPPET = `rules_version = '2';
+export const ZAPPYFUN_FIRESTORE_RULES_SNIPPET = `rules_version = '2';
 service cloud.firestore {
   match /databases/{database}/documents {
+    match /{document=**} {
+      allow read, write: if false;
+    }
     function isSignedIn() {
       return request.auth != null;
     }
+    function isVerifiedUser() {
+      return isSignedIn() && request.auth.token.email_verified == true;
+    }
     function isAdmin() {
-      return isSignedIn() && request.auth.token.email == 'pawarayushai1@gmail.com';
+      return isSignedIn() && (
+        (request.auth.token.email_verified == true && (
+          request.auth.token.email == 'pawarayushai1@gmail.com' ||
+          request.auth.token.email == 'admin@zappy.app'
+        )) ||
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
     }
     match /catalog/{mediaId} {
-      allow read: if true;
-      allow write: if isAdmin();
+      allow get: if resource.data.visibility == 'public' || isAdmin();
+      allow list: if true;
+      allow create, update, delete: if isAdmin();
     }
     match /watchlists/{watchlistDocId} {
-      allow read, write: if isSignedIn();
+      allow get, list, delete: if isVerifiedUser() && (resource.data.ownerId == request.auth.uid || isAdmin());
+      allow create: if isVerifiedUser() && request.resource.data.ownerId == request.auth.uid;
+      allow update: if false;
     }
     match /support_messages/{messageId} {
-      allow create: if isSignedIn();
-      allow read, update, delete: if isAdmin() || (isSignedIn() && resource.data.senderUid == request.auth.uid);
+      allow get, list: if isAdmin();
+      allow create: if isVerifiedUser() && request.resource.data.senderUid == request.auth.uid;
+      allow update, delete: if isVerifiedUser() && isAdmin();
     }
     match /ui_config/{configId} {
-      allow read: if true;
-      allow write: if isAdmin();
+      allow get: if true;
+      allow list: if false;
+      allow create, update, delete: if isAdmin();
     }
     match /ui_overrides/{overrideId} {
-      allow read: if true;
-      allow write: if isAdmin();
+      allow get: if true;
+      allow list: if false;
+      allow create, update, delete: if isAdmin();
+    }
+    match /admins/{adminUid} {
+      allow get: if isVerifiedUser() && (request.auth.uid == adminUid || isAdmin());
+      allow list, create, update, delete: if false;
     }
   }
 }`;
@@ -138,7 +172,9 @@ interface AdminStudioModalProps {
   catalog: MediaItem[];
   videoAdConfig: VideoAdConfig;
   supportMessages?: SupportMessageItem[];
-  initialTab?: 'catalog' | 'support';
+  initialTab?: 'catalog' | 'support' | 'legal';
+  legalPages?: LegalPagesConfig;
+  onSaveLegalPages?: (nextLegal: LegalPagesConfig) => Promise<void> | void;
   heroBatchInfo?: {
     activeBatchNumber: number;
     totalBatches: number;
@@ -159,8 +195,7 @@ interface AdminStudioModalProps {
 }
 
 /**
- * Builds the EmbedMaster embed URL for a Movie or TV Show while preserving
- * both IMDb IDs (tt...) and numeric TMDB IDs without corrupting tmdbId.
+ * Builds the Vidly.pro embed URL for a Movie or TV Show using the numeric TMDb ID.
  */
 export function parseOrBuildCineSrcUrl(
   rawInput: string,
@@ -173,7 +208,7 @@ export function parseOrBuildCineSrcUrl(
 } {
   const trimmed = rawInput.trim();
   const streamRegex =
-    /(?:https?:\/\/)?(?:www\.)?(?:embedmaster\.link|embedmaster\.com|cinesrc\.st|vidlink\.pro)(?:\/embed)?\/(movie|tv|series|show)\/(tt\d+|\d+)/i;
+    /(?:https?:\/\/)?(?:www\.)?(?:vidly\.pro|embedmaster\.link|embedmaster\.com|cinesrc\.st|vidlink\.pro)(?:\/embed)?\/(movie|tv|series|show)\/(tt\d+|\d+)/i;
 
   const cleanFallbackTmdb =
     Number.isInteger(fallbackTmdbId) &&
@@ -194,11 +229,10 @@ export function parseOrBuildCineSrcUrl(
     const detectedTmdbId = isImdb
       ? cleanFallbackTmdb || 157336
       : Number(rawId) || cleanFallbackTmdb || 157336;
-    const streamId = isImdb ? rawId.toLowerCase() : String(detectedTmdbId);
     const embedUrl =
       detectedType === 'tv'
-        ? `https://embedmaster.link/tv/${streamId}/1/1`
-        : `https://embedmaster.link/movie/${streamId}`;
+        ? `https://vidly.pro/tv/${detectedTmdbId}/1/1`
+        : `https://vidly.pro/movie/${detectedTmdbId}`;
     return {
       embedUrl,
       detectedType,
@@ -209,8 +243,8 @@ export function parseOrBuildCineSrcUrl(
   const finalTmdbId = cleanFallbackTmdb || 157336;
   const embedUrl =
     fallbackType === 'tv'
-      ? `https://embedmaster.link/tv/${finalTmdbId}/1/1`
-      : `https://embedmaster.link/movie/${finalTmdbId}`;
+      ? `https://vidly.pro/tv/${finalTmdbId}/1/1`
+      : `https://vidly.pro/movie/${finalTmdbId}`;
   return {
     embedUrl,
     detectedType: fallbackType,
@@ -363,13 +397,11 @@ function buildMediaItemFromExtractedData(extracted: any): {
     }
   }
 
-  const streamToken = extracted.imdbId
-    ? String(extracted.imdbId).toLowerCase()
-    : String(finalTmdbId);
+  const streamTmdbId = finalTmdbId > 0 ? finalTmdbId : 157336;
   const finalEmbedUrl =
     finalMediaType === 'tv'
-      ? `https://embedmaster.link/tv/${streamToken}/1/1`
-      : `https://embedmaster.link/movie/${streamToken}`;
+      ? `https://vidly.pro/tv/${streamTmdbId}/1/1`
+      : `https://vidly.pro/movie/${streamTmdbId}`;
 
   const idToken = hasRealTmdbId
     ? String(finalTmdbId)
@@ -498,6 +530,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   catalog,
   supportMessages = [],
   initialTab = 'catalog',
+  legalPages = DEFAULT_LEGAL_PAGES,
+  onSaveLegalPages,
   heroBatchInfo,
   onAdvanceHeroBatch,
   onResetHeroCycleNow,
@@ -510,15 +544,89 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 }) => {
   const isAdmin = isUserAdmin(currentUser?.email, currentUser?.emailVerified);
 
-  const [activeAdminTab, setActiveAdminTab] = useState<'catalog' | 'support'>(
-    initialTab
-  );
+  const [activeAdminTab, setActiveAdminTab] = useState<
+    'catalog' | 'support' | 'legal'
+  >(initialTab);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [justWatchUrl, setJustWatchUrl] = useState<string>('');
   const [isExtractingJw, setIsExtractingJw] = useState<boolean>(false);
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Legal & Policies Editor State
+  const [legalDraft, setLegalDraft] = useState<LegalPagesConfig>(() =>
+    normalizeLegalPagesConfig(legalPages)
+  );
+  const [activeLegalSection, setActiveLegalSection] = useState<
+    'terms' | 'privacy' | 'advertising' | 'disclaimer' | 'about'
+  >('terms');
+  const [isSavingLegal, setIsSavingLegal] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (legalPages) {
+      setLegalDraft(normalizeLegalPagesConfig(legalPages));
+    }
+  }, [legalPages]);
+
+  const handleSaveLegalToFirestore = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!currentUser || !isAdmin) {
+      setErrorMessage(`Only ${ADMIN_EMAIL} can update legal pages.`);
+      return;
+    }
+    setIsSavingLegal(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    try {
+      const cleaned: LegalPagesConfig = {
+        ...legalDraft,
+        contactEmail:
+          legalDraft.contactEmail
+            .trim()
+            .replace(/ContactZappyFun@gamil\.com/gi, OFFICIAL_CONTACT_EMAIL) ||
+          OFFICIAL_CONTACT_EMAIL,
+        updatedAtMs: Date.now(),
+      };
+      if (onSaveLegalPages) {
+        await onSaveLegalPages(cleaned);
+      } else {
+        await setDoc(
+          doc(db, 'ui_config', 'legal_pages'),
+          {
+            ...cleaned,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+      }
+      setStatusMessage(
+        'Saved Terms, Privacy Policy, Legal Pages & Contact Email to live app!'
+      );
+    } catch (err) {
+      setErrorMessage(
+        `Failed to save legal pages: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    } finally {
+      setIsSavingLegal(false);
+    }
+  };
+
+  const updateLegalSectionField = (
+    sectionKey: 'terms' | 'privacy' | 'advertising' | 'disclaimer' | 'about',
+    field: keyof LegalPageContent,
+    value: string
+  ) => {
+    setLegalDraft((prev) => ({
+      ...prev,
+      [sectionKey]: {
+        ...(prev[sectionKey] || DEFAULT_LEGAL_PAGES[sectionKey]),
+        [field]: value,
+      },
+    }));
+  };
 
   // Multi-Link JustWatch Batch Importer State (Up to 100 Comma-Separated Links)
   const [multiLinksInput, setMultiLinksInput] = useState<string>('');
@@ -528,8 +636,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const [batchTotalCount, setBatchTotalCount] = useState<number>(0);
   const cancelBatchRef = useRef<boolean>(false);
 
-  // Firebase Project Switcher State
+  // Firebase Project Switcher & Security Rules Drawer State
   const [rulesCopied, setRulesCopied] = useState<boolean>(false);
+  const [showRulesDrawer, setShowRulesDrawer] = useState<boolean>(false);
   const activeFirebaseTarget = getActiveFirebaseTarget();
 
   // Direct JustWatch Search & Browse State
@@ -646,15 +755,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
   useEffect(() => {
     const numId = Number(tmdbIdInput);
-    const activeToken = imdbIdState || (numId > 0 ? String(numId) : '');
-    if (activeToken) {
-      setCinesrcInput(
-        mediaType === 'tv'
-          ? `https://embedmaster.link/tv/${activeToken}/1/1`
-          : `https://embedmaster.link/movie/${activeToken}`
-      );
-    }
-  }, [mediaType, tmdbIdInput, imdbIdState]);
+    const tmdb = numId > 0 ? numId : 157336;
+    setCinesrcInput(
+      mediaType === 'tv'
+        ? `https://vidly.pro/tv/${tmdb}/1/1`
+        : `https://vidly.pro/movie/${tmdb}`
+    );
+  }, [mediaType, tmdbIdInput]);
 
   const populateFormFromItem = (item: MediaItem) => {
     setEditingId(item.id);
@@ -662,12 +769,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setTmdbIdInput(String(item.tmdbId));
     const imdbMatch = (item.cinesrcEmbedUrl || '').match(/(tt\d{5,12})/i);
     setImdbIdState(imdbMatch?.[1] ? imdbMatch[1].toLowerCase() : '');
+    const numId = Number(item.tmdbId) || 157336;
     setCinesrcInput(
-      item.cinesrcEmbedUrl && item.cinesrcEmbedUrl.includes('embedmaster.link')
+      item.cinesrcEmbedUrl && item.cinesrcEmbedUrl.includes('vidly.pro')
         ? item.cinesrcEmbedUrl
         : item.mediaType === 'tv'
-        ? `https://embedmaster.link/tv/${item.tmdbId}/1/1`
-        : `https://embedmaster.link/movie/${item.tmdbId}`
+        ? `https://vidly.pro/tv/${numId}/1/1`
+        : `https://vidly.pro/movie/${numId}`
     );
     setJustWatchUrl(item.justWatchUrl || '');
     setTitle(item.title);
@@ -719,7 +827,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const handleCineSrcInputChange = (val: string) => {
     setCinesrcInput(val);
     const streamRegex =
-      /(?:https?:\/\/)?(?:www\.)?(?:embedmaster\.link|embedmaster\.com|vidlink\.pro|cinesrc\.st)(?:\/embed)?\/(movie|tv|series|show)\/(tt\d+|\d+)/i;
+      /(?:https?:\/\/)?(?:www\.)?(?:vidly\.pro|embedmaster\.link|embedmaster\.com|vidlink\.pro|cinesrc\.st)(?:\/embed)?\/(movie|tv|series|show)\/(tt\d+|\d+)/i;
     const match = val.trim().match(streamRegex);
     if (match) {
       const rawType = match[1].toLowerCase();
@@ -788,11 +896,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     }
     if (data.tmdbId || data.imdbId) {
       const detected = data.mediaType || mediaType;
-      const streamToken = data.imdbId || data.tmdbId;
+      const tmdb = Number(data.tmdbId) || 157336;
       setCinesrcInput(
         detected === 'tv'
-          ? `https://embedmaster.link/tv/${streamToken}/1/1`
-          : `https://embedmaster.link/movie/${streamToken}`
+          ? `https://vidly.pro/tv/${tmdb}/1/1`
+          : `https://vidly.pro/movie/${tmdb}`
       );
     }
   };
@@ -1083,7 +1191,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         : 0;
 
       setStatusMessage(
-        `Loaded "${data.title}" (${data.releaseYear}) — ${dirCount} Director(s), ${castCount} Cast Members with Photos, Verified Stream & Episodes!`
+        `Loaded "${data.title}" (${data.releaseYear}) — ${dirCount} Director(s), ${castCount} Cast Members with Photos, Embed Stream & Episodes!`
       );
     } catch {
       setErrorMessage('Network error while extracting from JustWatch.');
@@ -1271,17 +1379,47 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     try {
       await persistMediaItemToFirestore(draftItem, serializedCredits);
       setStatusMessage(
-        `Successfully published "${draftItem.title}" to Cloud Firestore!`
+        `Successfully ${editingId ? 'updated' : 'published'} "${draftItem.title}" in Cloud Firestore!`
       );
       resetForm();
     } catch (error) {
-      handleFirestoreError(
-        error,
-        editingId ? OperationType.UPDATE : OperationType.CREATE,
-        `catalog/${draftItem.id}`
+      console.error('Failed to save media item to Firestore:', error);
+      setStatusMessage(
+        `Failed to save "${draftItem.title}": ${
+          error instanceof Error ? error.message : String(error)
+        }`
       );
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const [isClearingAll, setIsClearingAll] = useState<boolean>(false);
+  const [confirmingClearAll, setConfirmingClearAll] = useState<boolean>(false);
+
+  const handleClearEntireCatalog = async () => {
+    if (!currentUser || !isAdmin) return;
+    setIsClearingAll(true);
+    setConfirmingClearAll(false);
+    try {
+      const snap = await getDocs(collection(db, 'catalog'));
+      const batchPromises = snap.docs.map((docSnap) =>
+        deleteDoc(doc(db, 'catalog', docSnap.id)).catch(() => {})
+      );
+      await Promise.all(batchPromises);
+      setStatusMessage(
+        `Successfully removed all ${snap.size} movies and TV shows from the catalog.`
+      );
+      resetForm();
+    } catch (error) {
+      console.error('Failed to clear entire catalog:', error);
+      setStatusMessage(
+        `Failed to clear catalog: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    } finally {
+      setIsClearingAll(false);
     }
   };
 
@@ -1295,7 +1433,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       setStatusMessage(`Removed "${itemTitle}" from catalog.`);
       if (editingId === itemId) resetForm();
     } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `catalog/${itemId}`);
+      console.error('Failed to delete media item from Firestore:', error);
+      setStatusMessage(
+        `Failed to delete "${itemTitle}": ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
     }
   };
 
@@ -1318,7 +1461,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.22 }}
-          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-3 sm:p-6 overflow-y-auto"
+          data-admin-studio="true"
+          className="fixed inset-0 z-50 bg-black/85 backdrop-blur-md flex items-center justify-center p-2 sm:p-5 overflow-y-auto"
           role="dialog"
           aria-modal="true"
           aria-labelledby="admin-studio-title"
@@ -1328,119 +1472,205 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
             animate={{ opacity: 1, scale: 1, y: 0 }}
             exit={{ opacity: 0, scale: 0.95, y: 12 }}
             transition={{ type: 'spring', stiffness: 320, damping: 28 }}
-            className="w-full max-w-6xl rounded-3xl bg-[#161220] border border-white/15 shadow-2xl overflow-hidden my-auto flex flex-col max-h-[92vh]"
+            className="w-full max-w-6xl rounded-3xl bg-[#0F1117] border border-[#292C35] shadow-2xl overflow-hidden my-auto flex flex-col max-h-[92vh]"
           >
-            {/* Modal Header (Uses Attached Logo Without App Name Beside/Below It) */}
-            <div className="p-4 sm:p-6 border-b border-white/10 flex flex-wrap items-center justify-between gap-4 bg-[#1C1729]">
-              <div className="flex items-center gap-4 min-w-0">
-                <div className="h-10 sm:h-11 w-28 sm:w-32 overflow-hidden flex items-center justify-center shrink-0">
-                  <img
-                    src={LOGO_ASSET_URL}
-                    alt="Brand Logo"
-                    className="w-full h-full object-contain scale-[1.55] select-none pointer-events-none"
-                  />
+            {/* Tier 1: Modal Identity & Global Utility Actions */}
+            <div className="px-4 py-3.5 sm:px-6 sm:py-4 border-b border-[#292C35] bg-[#14161D] flex flex-col gap-3">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
+                  <div className="h-9 sm:h-10 flex items-center justify-center shrink-0">
+                    <img
+                      src={LOGO_ASSET_URL}
+                      alt="ZappyFun Logo"
+                      className="h-9 sm:h-10 w-auto max-w-[136px] object-contain select-none pointer-events-none"
+                    />
+                  </div>
+                  <div className="min-w-0 border-l border-[#292C35] pl-3 sm:pl-4">
+                    <h2
+                      id="admin-studio-title"
+                      className="text-sm sm:text-lg font-bold text-white font-display truncate"
+                    >
+                      Admin Studio — Catalog &amp; Support Center
+                    </h2>
+                    <p className="text-[11px] sm:text-xs text-[#A7A9B4] truncate">
+                      {isAdmin
+                        ? `Admin: ${currentUser?.email} · DB: ${ACTIVE_FIREBASE_PROJECT_ID}`
+                        : `Restricted to ${ADMIN_EMAIL}`}
+                    </p>
+                  </div>
                 </div>
-                <div className="min-w-0 border-l border-white/15 pl-4">
-                  <h2
-                    id="admin-studio-title"
-                    className="text-base sm:text-lg font-bold text-white font-display truncate"
+
+                {/* Global Utility Toolbar + Close Button */}
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  {isAdmin && onLaunchVisualEditor && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        onClose();
+                        onLaunchVisualEditor();
+                      }}
+                      className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                    >
+                      <Sparkles className="w-3.5 h-3.5 text-[#FFC400] shrink-0" />
+                      <span>Live UI Editor</span>
+                    </button>
+                  )}
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      navigator.clipboard?.writeText(
+                        ZAPPYFUN_FIRESTORE_RULES_SNIPPET
+                      );
+                      setRulesCopied(true);
+                      setShowRulesDrawer((prev) => !prev);
+                      setStatusMessage(
+                        'Copied updated Firestore Security Rules to clipboard! Paste them into Firebase Console -> Firestore Database -> Rules.'
+                      );
+                      setTimeout(() => setRulesCopied(false), 3000);
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-xs font-bold text-[#FFC400] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
                   >
-                    Admin Studio — Catalog & Support Center
-                  </h2>
-                  <p className="text-xs text-zinc-400 truncate">
-                    {isAdmin
-                      ? `Authenticated Admin: ${currentUser?.email} · Project: ${ACTIVE_FIREBASE_PROJECT_ID}`
-                      : `Restricted to ${ADMIN_EMAIL}`}
-                  </p>
+                    <Copy className="w-3.5 h-3.5 shrink-0" />
+                    <span>
+                      {rulesCopied
+                        ? 'Rules Copied!'
+                        : showRulesDrawer
+                          ? 'Hide Security Rules'
+                          : 'Security Rules'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const nextTarget =
+                        activeFirebaseTarget === 'zappyfun'
+                          ? 'default'
+                          : 'zappyfun';
+                      setActiveFirebaseTarget(nextTarget);
+                      window.location.reload();
+                    }}
+                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                  >
+                    <Database className="w-3.5 h-3.5 text-[#FFC400] shrink-0" />
+                    <span>
+                      {activeFirebaseTarget === 'zappyfun'
+                        ? 'DB: zappyfun (Switch)'
+                        : 'Switch to zappyfun'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={onClose}
+                    className="h-9 w-9 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-[#A7A9B4] hover:text-white flex items-center justify-center cursor-pointer shrink-0 transition-colors"
+                    aria-label="Close Admin Studio"
+                  >
+                    <X className="w-4 h-4" />
+                  </button>
                 </div>
               </div>
 
-              <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    navigator.clipboard?.writeText(
-                      ZAPPYFUN_FIRESTORE_RULES_SNIPPET
-                    );
-                    setRulesCopied(true);
-                    setStatusMessage(
-                      'Copied Firestore Security Rules to clipboard! Paste them into Firebase Console -> Firestore Database -> Rules.'
-                    );
-                    setTimeout(() => setRulesCopied(false), 3000);
-                  }}
-                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#B892FF]/20 hover:bg-[#B892FF]/30 border border-[#B892FF]/50 text-xs font-bold text-[#B892FF] flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Copy className="w-3.5 h-3.5" />
-                  <span>
-                    {rulesCopied ? 'Rules Copied!' : 'Copy Security Rules'}
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => {
-                    const nextTarget =
-                      activeFirebaseTarget === 'zappyfun'
-                        ? 'default'
-                        : 'zappyfun';
-                    setActiveFirebaseTarget(nextTarget);
-                    window.location.reload();
-                  }}
-                  className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/20 text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer"
-                >
-                  <Database className="w-3.5 h-3.5 text-[#E50000]" />
-                  <span>
-                    {activeFirebaseTarget === 'zappyfun'
-                      ? 'Using: zappyfun (Switch Back)'
-                      : 'Switch to zappyfun'}
-                  </span>
-                </button>
-
-                {isAdmin && (
-                  <div className="flex items-center gap-1 p-1 rounded-xl bg-[#110E17] border border-white/10">
+              {/* Tier 2: Dedicated Navigation Tab Bar */}
+              {isAdmin && (
+                <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-[#292C35]/80">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
                       onClick={() => setActiveAdminTab('catalog')}
-                      className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                         activeAdminTab === 'catalog'
-                          ? 'bg-[#E50000] text-white'
-                          : 'text-zinc-400 hover:text-white'
+                          ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
+                          : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
                       }`}
                     >
-                      <Film className="w-3.5 h-3.5" />
-                      <span>Catalog ({catalog.length})</span>
+                      <Film className="w-3.5 h-3.5 shrink-0" />
+                      <span>Catalog Management ({catalog.length})</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => setActiveAdminTab('support')}
-                      className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
+                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
                         activeAdminTab === 'support'
-                          ? 'bg-[#E50000] text-white'
-                          : 'text-zinc-400 hover:text-white'
+                          ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
+                          : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
                       }`}
                     >
-                      <MessageSquare className="w-3.5 h-3.5" />
+                      <MessageSquare className="w-3.5 h-3.5 shrink-0" />
                       <span>Support Inbox ({supportMessages.length})</span>
                       {openSupportCount > 0 && (
-                        <span className="px-1.5 py-0.5 rounded-full bg-white text-[#E50000] text-[10px] font-extrabold">
+                        <span className="px-1.5 py-0.5 rounded-md bg-[#08090D] text-[#FFC400] text-[10px] font-extrabold">
                           {openSupportCount}
                         </span>
                       )}
                     </button>
-                  </div>
-                )}
 
-                <button
-                  type="button"
-                  onClick={onClose}
-                  className="min-h-[40px] min-w-[40px] rounded-xl bg-white/[0.06] border border-white/10 text-zinc-300 hover:text-white flex items-center justify-center cursor-pointer shrink-0"
-                  aria-label="Close Admin Studio"
-                >
-                  <X className="w-4 h-4" />
-                </button>
-              </div>
+                    <button
+                      type="button"
+                      onClick={() => setActiveAdminTab('legal')}
+                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                        activeAdminTab === 'legal'
+                          ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
+                          : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
+                      }`}
+                    >
+                      <FileText className="w-3.5 h-3.5 shrink-0" />
+                      <span>Legal &amp; Policies</span>
+                    </button>
+                  </div>
+
+                  <span className="text-[11px] text-[#747784] font-mono-tabular hidden sm:inline">
+                    Active Cloud DB: {ACTIVE_FIREBASE_PROJECT_ID}
+                  </span>
+                </div>
+              )}
             </div>
+
+            {/* Expandable Firestore Security Rules Drawer */}
+            {showRulesDrawer && (
+              <div className="mx-4 sm:mx-6 mt-4 rounded-2xl bg-[#14161D] border border-[#FFC400]/50 p-4 space-y-2.5 shrink-0">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="text-xs text-[#D4D6DF]">
+                    <span className="font-bold text-[#FFC400]">
+                      Updated Firestore Security Rules ({ACTIVE_FIREBASE_PROJECT_ID})
+                    </span>{' '}
+                    — Paste into{' '}
+                    <strong className="text-white">
+                      Firebase Console → Firestore Database → Rules
+                    </strong>{' '}
+                    and click <strong className="text-white">Publish</strong>.
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        navigator.clipboard?.writeText(
+                          ZAPPYFUN_FIRESTORE_RULES_SNIPPET
+                        );
+                        setRulesCopied(true);
+                        setTimeout(() => setRulesCopied(false), 3000);
+                      }}
+                      className="px-3 py-1 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                    >
+                      <Copy className="w-3 h-3" />
+                      <span>{rulesCopied ? 'Copied!' : 'Copy Code'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setShowRulesDrawer(false)}
+                      className="px-2.5 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-[#A7A9B4] hover:text-white cursor-pointer"
+                    >
+                      Close
+                    </button>
+                  </div>
+                </div>
+                <pre className="p-3 rounded-xl bg-[#08090D] border border-[#292C35] text-[11px] text-[#D4D6DF] font-mono overflow-x-auto max-h-48 select-all">
+                  {ZAPPYFUN_FIRESTORE_RULES_SNIPPET}
+                </pre>
+              </div>
+            )}
 
             {/* Status / Error Banner */}
             {(statusMessage || errorMessage) && (
@@ -1450,14 +1680,14 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                 className={`mx-4 sm:mx-6 mt-4 px-4 py-3 rounded-xl border text-xs flex items-center justify-between gap-3 shrink-0 ${
                   errorMessage
                     ? 'bg-red-500/10 border-red-500/30 text-red-200'
-                    : 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200'
+                    : 'bg-[#FFC400]/10 border-[#FFC400]/40 text-white'
                 }`}
               >
                 <div className="flex items-center gap-2">
                   {errorMessage ? (
                     <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
                   ) : (
-                    <CheckCircle2 className="w-4 h-4 shrink-0 text-emerald-400" />
+                    <CheckCircle2 className="w-4 h-4 shrink-0 text-[#FFC400]" />
                   )}
                   <span>{errorMessage || statusMessage}</span>
                 </div>
@@ -1467,7 +1697,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     setErrorMessage(null);
                     setStatusMessage(null);
                   }}
-                  className="text-zinc-400 hover:text-white cursor-pointer"
+                  className="text-[#A7A9B4] hover:text-white cursor-pointer"
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
@@ -1477,18 +1707,18 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
             {/* Modal Body */}
             <div className="p-4 sm:p-6 overflow-y-auto space-y-6 flex-1">
               {!isAdmin ? (
-                <div className="rounded-3xl bg-[#1C1729] border border-white/10 p-8 sm:p-10 text-center max-w-xl mx-auto my-6 space-y-5">
-                  <div className="w-16 h-16 rounded-2xl bg-[#E50000]/15 border border-[#E50000]/40 flex items-center justify-center mx-auto text-[#E50000]">
+                <div className="rounded-3xl bg-[#14161D] border border-[#292C35] p-8 sm:p-10 text-center max-w-xl mx-auto my-6 space-y-5">
+                  <div className="w-16 h-16 rounded-2xl bg-[#FFC400]/15 border border-[#FFC400]/40 flex items-center justify-center mx-auto text-[#FFC400]">
                     <ShieldCheck className="w-8 h-8" />
                   </div>
                   <h3 className="text-xl sm:text-2xl font-bold text-white font-display">
                     Admin Panel Access Restricted
                   </h3>
-                  <p className="text-xs sm:text-sm text-zinc-300 leading-relaxed">
-                    Only <strong className="text-[#E50000]">{ADMIN_EMAIL}</strong> has permission to manage the catalog and read user support messages.
+                  <p className="text-xs sm:text-sm text-[#A7A9B4] leading-relaxed">
+                    Only <strong className="text-[#FFC400]">{ADMIN_EMAIL}</strong> has permission to manage the catalog and read user support messages.
                   </p>
                   {currentUser && (
-                    <p className="text-xs text-amber-300 font-mono-tabular">
+                    <p className="text-xs text-[#FFC400] font-mono-tabular">
                       Currently signed in as: {currentUser.email}
                     </p>
                   )}
@@ -1504,7 +1734,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           );
                         }
                       }}
-                      className="min-h-[46px] px-6 py-3 rounded-2xl bg-[#E50000] text-white font-bold text-sm hover:bg-[#FF1A1A] transition-all flex items-center gap-2.5 cursor-pointer shadow-lg shadow-[#E50000]/25"
+                      className="min-h-[46px] px-6 py-3 rounded-2xl bg-[#FFC400] text-[#08090D] font-bold text-sm hover:bg-[#FFD54A] transition-all flex items-center gap-2.5 cursor-pointer shadow-lg shadow-[#FFC400]/20"
                     >
                       <LogIn className="w-4 h-4" />
                       <span>Sign in with Google ({ADMIN_EMAIL})</span>
@@ -1516,20 +1746,20 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     USER SUPPORT MESSAGES INBOX TAB
                 ========================================================= */
                 <div className="space-y-5">
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-white/10 pb-4">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#292C35] pb-4">
                     <div>
                       <h3 className="text-base sm:text-lg font-bold text-white font-display flex items-center gap-2">
-                        <MessageSquare className="w-5 h-5 text-[#E50000]" />
+                        <MessageSquare className="w-5 h-5 text-[#FFC400]" />
                         <span>
                           User Support Messages ({supportMessages.length})
                         </span>
                       </h3>
-                      <p className="text-xs text-zinc-400 mt-1">
+                      <p className="text-xs text-[#A7A9B4] mt-1">
                         Every message sent by users on the Support page appears here in real time.
                       </p>
                     </div>
 
-                    <div className="flex items-center gap-3 text-xs text-zinc-300 font-mono-tabular">
+                    <div className="flex items-center gap-3 text-xs text-[#A7A9B4] font-mono-tabular">
                       <span>Open: {openSupportCount}</span>
                       <span>·</span>
                       <span>
@@ -1539,12 +1769,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                   </div>
 
                   {supportMessages.length === 0 ? (
-                    <div className="rounded-2xl bg-[#1A1526] border border-white/10 p-10 text-center space-y-3">
-                      <MessageSquare className="w-10 h-10 text-zinc-500 mx-auto" />
+                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-10 text-center space-y-3">
+                      <MessageSquare className="w-10 h-10 text-[#747784] mx-auto" />
                       <p className="text-sm font-bold text-white">
                         No Support Messages Yet
                       </p>
-                      <p className="text-xs text-zinc-400 max-w-md mx-auto">
+                      <p className="text-xs text-[#A7A9B4] max-w-md mx-auto">
                         When users submit the contact form on the Support page, their message, email, and phone number will appear right here.
                       </p>
                     </div>
@@ -1557,8 +1787,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             key={msg.id}
                             className={`rounded-2xl border p-4 sm:p-5 space-y-3 transition-colors ${
                               isResolved
-                                ? 'bg-[#14111D] border-white/10 opacity-80'
-                                : 'bg-[#1C162B] border-[#E50000]/40'
+                                ? 'bg-[#08090D] border-[#292C35] opacity-80'
+                                : 'bg-[#14161D] border-[#FFC400]/50'
                             }`}
                           >
                             <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1568,20 +1798,20 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                     className={`text-xs font-bold uppercase tracking-wider ${
                                       isResolved
                                         ? 'text-emerald-400'
-                                        : 'text-[#E50000]'
+                                        : 'text-[#FFC400]'
                                     }`}
                                   >
                                     {isResolved ? 'Resolved' : 'New / Open'}
                                   </span>
-                                  <span className="text-zinc-500">·</span>
+                                  <span className="text-[#747784]">·</span>
                                   <h4 className="text-sm sm:text-base font-bold text-white">
                                     {msg.firstName} {msg.lastName}
                                   </h4>
                                 </div>
 
-                                <div className="flex flex-wrap items-center gap-4 text-xs text-zinc-300 pt-0.5">
+                                <div className="flex flex-wrap items-center gap-4 text-xs text-[#A7A9B4] pt-0.5">
                                   <span className="inline-flex items-center gap-1.5">
-                                    <Mail className="w-3.5 h-3.5 text-[#E50000]" />
+                                    <Mail className="w-3.5 h-3.5 text-[#FFC400]" />
                                     <a
                                       href={`mailto:${msg.email}`}
                                       className="hover:underline text-white"
@@ -1591,11 +1821,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                   </span>
                                   {msg.phone && (
                                     <span className="inline-flex items-center gap-1.5">
-                                      <Phone className="w-3.5 h-3.5 text-zinc-400" />
+                                      <Phone className="w-3.5 h-3.5 text-[#747784]" />
                                       <span>{msg.phone}</span>
                                     </span>
                                   )}
-                                  <span className="inline-flex items-center gap-1.5 text-zinc-400">
+                                  <span className="inline-flex items-center gap-1.5 text-[#747784]">
                                     <Clock className="w-3.5 h-3.5" />
                                     <span>
                                       {new Date(msg.createdAtMs).toLocaleString()}
@@ -1616,8 +1846,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                     }
                                     className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
                                       isResolved
-                                        ? 'bg-white/10 hover:bg-white/15 text-white'
-                                        : 'bg-emerald-500 hover:bg-emerald-400 text-black'
+                                        ? 'bg-[#252832] hover:bg-[#292C35] text-white'
+                                        : 'bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D]'
                                     }`}
                                   >
                                     <CheckCircle2 className="w-3.5 h-3.5" />
@@ -1641,7 +1871,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               </div>
                             </div>
 
-                            <div className="p-3.5 rounded-xl bg-[#110E17] border border-white/10 text-xs sm:text-sm text-zinc-200 whitespace-pre-wrap leading-relaxed">
+                            <div className="p-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white whitespace-pre-wrap leading-relaxed">
                               {msg.message}
                             </div>
                           </div>
@@ -1650,113 +1880,209 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </div>
                   )}
                 </div>
+              ) : activeAdminTab === 'legal' ? (
+                /* =========================================================
+                    LEGAL & POLICIES EDITOR TAB (Terms, Privacy, Cookie, Disclaimer, About, Contact)
+                ========================================================= */
+                <form
+                  onSubmit={handleSaveLegalToFirestore}
+                  className="space-y-5"
+                >
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#292C35] pb-4">
+                    <div>
+                      <h3 className="text-base sm:text-lg font-bold text-white font-display flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-[#FFC400]" />
+                        <span>
+                          Legal &amp; Policies Editor — Terms, Privacy &amp; Contact Info
+                        </span>
+                      </h3>
+                      <p className="text-xs text-[#A7A9B4] mt-1">
+                        Write and customize Terms of Use, Privacy Policy, Cookie Policy, Disclaimer, About page, and Official Contact Email. Changes update immediately across the entire app.
+                      </p>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={() => setLegalDraft(DEFAULT_LEGAL_PAGES)}
+                        className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#A7A9B4] hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5 text-[#FFC400]" />
+                        <span>Reset Defaults</span>
+                      </button>
+
+                      <button
+                        type="submit"
+                        disabled={isSavingLegal}
+                        className="min-h-[38px] px-5 py-1.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#FFC400]/20 transition-colors disabled:opacity-60"
+                      >
+                        {isSavingLegal ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Saving...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Save className="w-3.5 h-3.5" />
+                            <span>Save All Legal Pages</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Official Contact Email Configuration */}
+                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-2.5">
+                    <label className="block text-xs sm:text-sm font-bold text-white flex items-center gap-2">
+                      <Mail className="w-4 h-4 text-[#FFC400]" />
+                      <span>Official Contact Email (Displayed in Support, Footer &amp; Legal Modals)</span>
+                    </label>
+                    <input
+                      type="text"
+                      value={legalDraft.contactEmail}
+                      onChange={(e) =>
+                        setLegalDraft((prev) => ({
+                          ...prev,
+                          contactEmail: e.target.value,
+                        }))
+                      }
+                      placeholder="ContactZappyFun@gmail.com"
+                      className="w-full min-h-[42px] px-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
+                    />
+                  </div>
+
+                  {/* Legal Document Selector Pills */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(
+                      [
+                        { id: 'terms', label: 'Terms of Use' },
+                        { id: 'privacy', label: 'Privacy Policy' },
+                        { id: 'advertising', label: 'Cookie Policy' },
+                        { id: 'disclaimer', label: 'Disclaimer & DMCA' },
+                        { id: 'about', label: 'About ZappyFun' },
+                      ] as const
+                    ).map((docTab) => (
+                      <button
+                        key={docTab.id}
+                        type="button"
+                        onClick={() => setActiveLegalSection(docTab.id)}
+                        className={`min-h-[38px] px-4 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                          activeLegalSection === docTab.id
+                            ? 'bg-[#FFC400] text-[#08090D] shadow-md shadow-[#FFC400]/20'
+                            : 'bg-[#14161D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
+                        }`}
+                      >
+                        {docTab.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  {/* Active Legal Document Editor */}
+                  {(() => {
+                    const currentDoc =
+                      legalDraft[activeLegalSection] ||
+                      DEFAULT_LEGAL_PAGES[activeLegalSection];
+                    return (
+                      <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-6 space-y-4">
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                          <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold text-[#A7A9B4]">
+                              Page Title
+                            </label>
+                            <input
+                              type="text"
+                              value={currentDoc.title}
+                              onChange={(e) =>
+                                updateLegalSectionField(
+                                  activeLegalSection,
+                                  'title',
+                                  e.target.value
+                                )
+                              }
+                              className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white font-bold focus:outline-none focus:border-[#FFC400]"
+                            />
+                          </div>
+
+                          <div className="space-y-1.5">
+                            <label className="block text-xs font-semibold text-[#A7A9B4]">
+                              Subtitle / Short Summary
+                            </label>
+                            <input
+                              type="text"
+                              value={currentDoc.subtitle}
+                              onChange={(e) =>
+                                updateLegalSectionField(
+                                  activeLegalSection,
+                                  'subtitle',
+                                  e.target.value
+                                )
+                              }
+                              className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-[#FFC400] focus:outline-none focus:border-[#FFC400]"
+                            />
+                          </div>
+                        </div>
+
+                        <div className="space-y-1.5">
+                          <label className="block text-xs font-semibold text-[#A7A9B4]">
+                            Full Legal Content (Separate paragraphs with a blank line)
+                          </label>
+                          <textarea
+                            rows={10}
+                            value={currentDoc.body}
+                            onChange={(e) =>
+                              updateLegalSectionField(
+                                activeLegalSection,
+                                'body',
+                                e.target.value
+                              )
+                            }
+                            placeholder="Write your full policy or legal text here..."
+                            className="w-full p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white leading-relaxed focus:outline-none focus:border-[#FFC400]"
+                          />
+                        </div>
+
+                        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#292C35]">
+                          <span className="text-xs text-[#747784]">
+                            Changes are synced in real time via Cloud Firestore (`ui_config/legal_pages`).
+                          </span>
+                          <button
+                            type="submit"
+                            disabled={isSavingLegal}
+                            className="min-h-[42px] px-6 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 transition-colors disabled:opacity-60"
+                          >
+                            <Save className="w-4 h-4" />
+                            <span>
+                              {isSavingLegal
+                                ? 'Saving...'
+                                : `Save ${currentDoc.title}`}
+                            </span>
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })()}
+                </form>
               ) : (
                 /* =========================================================
                     CATALOG, MULTI-LINK BATCH IMPORTER & DIRECT JUSTWATCH TAB
                 ========================================================= */
                 <div className="space-y-6">
-                  {/* TOP ROW: Live UI Builder + Firebase Project Switcher (`zappyfun`) */}
-                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-                    <div className="lg:col-span-7 rounded-2xl bg-gradient-to-r from-[#2D1E4A] via-[#211838] to-[#1A1429] border border-[#FF8A3D]/40 p-4 sm:p-5 flex flex-col sm:flex-row sm:items-center justify-between gap-4 shadow-lg">
-                      <div className="space-y-1">
-                        <h3 className="text-sm sm:text-base font-bold text-white font-display">
-                          Live UI Builder — Edit, Resize, Move, or Delete Any Element
-                        </h3>
-                        <p className="text-xs text-zinc-300">
-                          Click any button, banner, card, or section on the screen to resize, move, recolor, or remove it permanently.
-                        </p>
-                      </div>
-
-                      {onLaunchVisualEditor && (
-                        <button
-                          type="button"
-                          onClick={() => {
-                            onClose();
-                            onLaunchVisualEditor();
-                          }}
-                          className="min-h-[42px] px-4 py-2 rounded-xl bg-[#FF8A3D] hover:bg-[#FF9E5E] text-[#110E17] font-bold text-xs transition-all flex items-center justify-center gap-2 shrink-0 cursor-pointer shadow-lg shadow-[#FF8A3D]/25"
-                        >
-                          <Sparkles className="w-4 h-4" />
-                          <span>Launch UI Editor</span>
-                        </button>
-                      )}
-                    </div>
-
-                    {/* Firebase Project Switcher & Security Rules Copy Helper */}
-                    <div className="lg:col-span-5 rounded-2xl bg-[#1A1526] border border-white/15 p-4 sm:p-5 flex flex-col justify-between gap-3">
-                      <div className="flex items-start justify-between gap-2">
-                        <div className="space-y-0.5">
-                          <div className="flex items-center gap-2">
-                            <Database className="w-4 h-4 text-[#E50000]" />
-                            <h3 className="text-xs sm:text-sm font-bold text-white font-display">
-                              Firebase Project: {ACTIVE_FIREBASE_PROJECT_ID}
-                            </h3>
-                          </div>
-                          <p className="text-[11px] text-zinc-400">
-                            {activeFirebaseTarget === 'zappyfun'
-                              ? 'Connected to zappyfun (Auto-migrating data from previous DB)'
-                              : 'After enabling Firestore & Google Auth in zappyfun Console, click Switch below.'}
-                          </p>
-                        </div>
-                      </div>
-
-                      <div className="flex flex-wrap items-center gap-2">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            navigator.clipboard?.writeText(
-                              ZAPPYFUN_FIRESTORE_RULES_SNIPPET
-                            );
-                            setRulesCopied(true);
-                            setTimeout(() => setRulesCopied(false), 2500);
-                          }}
-                          className="min-h-[36px] px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <Copy className="w-3.5 h-3.5 text-[#B892FF]" />
-                          <span>
-                            {rulesCopied
-                              ? 'Rules Copied!'
-                              : 'Copy Security Rules'}
-                          </span>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const nextTarget =
-                              activeFirebaseTarget === 'zappyfun'
-                                ? 'default'
-                                : 'zappyfun';
-                            setActiveFirebaseTarget(nextTarget);
-                            window.location.reload();
-                          }}
-                          className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
-                        >
-                          <span>
-                            {activeFirebaseTarget === 'zappyfun'
-                              ? 'Switch Back to Previous DB'
-                              : 'Switch to zappyfun Project'}
-                          </span>
-                        </button>
-                      </div>
-                    </div>
-                  </div>
 
                   {/* HERO BANNER 8-MOVIE DAILY CYCLE (24h Batch Rotation / 28h Movie Tenure) */}
                   {heroBatchInfo && (
-                    <div className="rounded-2xl bg-[#1A1526] border border-[#E50000]/35 p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
                       <div className="space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
-                          <Clock className="w-4 h-4 text-[#E50000]" />
+                          <Clock className="w-4 h-4 text-[#FFC400]" />
                           <h3 className="text-xs sm:text-sm font-bold text-white font-display">
                             Hero Banner 8-Movie Daily Cycle — Batch #{heroBatchInfo.activeBatchNumber} of {heroBatchInfo.totalBatches} ({heroBatchInfo.currentHeroMovies.length} Movies Active)
                           </h3>
                         </div>
-                        <p className="text-xs text-zinc-300">
+                        <p className="text-xs text-[#A7A9B4]">
                           Shows 8 movies for 24 hours (with a 28-hour spotlight tenure window per movie), then automatically rotates to the next 8 movies (Next rotation in ~{heroBatchInfo.hoursUntilNextBatch}h).
                         </p>
                         {heroBatchInfo.currentHeroMovies.length > 0 && (
-                          <p className="text-[11px] text-[#B892FF] truncate max-w-3xl">
+                          <p className="text-[11px] text-[#FFC400] truncate max-w-3xl">
                             Current 8 Hero Movies:{' '}
                             {heroBatchInfo.currentHeroMovies
                               .map((m, idx) => `${idx + 1}. ${m.title}`)
@@ -1770,7 +2096,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           <button
                             type="button"
                             onClick={() => onResetHeroCycleNow()}
-                            className="min-h-[36px] px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-semibold text-white cursor-pointer"
+                            className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-white cursor-pointer"
                           >
                             Restart 24h Cycle Now
                           </button>
@@ -1779,7 +2105,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           <button
                             type="button"
                             onClick={() => onAdvanceHeroBatch()}
-                            className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs font-bold cursor-pointer"
+                            className="min-h-[36px] px-3.5 py-1.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
                           >
                             Rotate Next 8 Movies Now
                           </button>
@@ -1791,22 +2117,22 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                   {/* =========================================================
                       MULTI-JUSTWATCH LINK BATCH IMPORTER (UP TO 100 COMMA-SEPARATED LINKS)
                   ========================================================= */}
-                  <div className="rounded-2xl bg-gradient-to-br from-[#231B36] via-[#1B142C] to-[#141022] border-2 border-[#B892FF]/45 p-4 sm:p-6 space-y-4 shadow-xl">
+                  <div className="rounded-2xl bg-[#14161D] border border-[#FFC400]/45 p-4 sm:p-6 space-y-4 shadow-xl">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2">
-                          <Layers className="w-4 h-4 text-[#B892FF]" />
+                          <Layers className="w-4 h-4 text-[#FFC400]" />
                           <h3 className="text-sm sm:text-base font-bold text-white font-display">
                             Multi-Link JustWatch Batch Importer (Up to 100 Comma-Separated Links at Once)
                           </h3>
                         </div>
-                        <p className="text-xs text-zinc-300">
-                          Paste up to 100 JustWatch movie or TV show links separated by commas (<code className="text-[#B892FF]">,</code>) or new lines to extract and publish them all in one go.
+                        <p className="text-xs text-[#A7A9B4]">
+                          Paste up to 100 JustWatch movie or TV show links separated by commas (<code className="text-[#FFC400]">,</code>) or new lines to extract and publish them all in one go.
                         </p>
                       </div>
 
                       <div className="flex items-center gap-3 text-xs font-mono-tabular">
-                        <span className="text-[#B892FF] font-bold">
+                        <span className="text-[#FFC400] font-bold">
                           {parsedMultiLinks.length} / 100 links detected
                         </span>
                         {multiLinksInput && (
@@ -1817,7 +2143,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               setMultiLinksInput('');
                               setBatchResults([]);
                             }}
-                            className="text-zinc-400 hover:text-white underline cursor-pointer"
+                            className="text-[#A7A9B4] hover:text-white underline cursor-pointer"
                           >
                             Clear All
                           </button>
@@ -1831,12 +2157,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       disabled={isBatchRunning}
                       onChange={(e) => setMultiLinksInput(e.target.value)}
                       placeholder="Paste up to 100 comma-separated JustWatch URLs here, e.g.:&#10;https://www.justwatch.com/in/movie/interstellar, https://www.justwatch.com/in/tv-show/breaking-bad, https://www.justwatch.com/in/movie/dune-part-two"
-                      className="w-full p-3.5 rounded-xl bg-[#110E17] border border-white/15 text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#B892FF] font-mono-tabular leading-relaxed"
+                      className="w-full p-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400] font-mono-tabular leading-relaxed"
                     />
 
                     <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-[11px] text-zinc-400">
-                        Automatically extracts Title, Year, Synopsis, Poster, Backdrop, Cast Photos, Verified Stream & Seasons/Episodes for every link.
+                      <div className="text-[11px] text-[#747784]">
+                        Automatically extracts Title, Year, Synopsis, Poster, Backdrop, Cast Photos, Verified Stream &amp; Seasons/Episodes for every link.
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2.5">
@@ -1859,9 +2185,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               type="button"
                               disabled={parsedMultiLinks.length === 0}
                               onClick={() => handleRunMultiLinkBatch(false)}
-                              className="min-h-[42px] px-4 py-2 rounded-xl bg-[#B892FF]/20 hover:bg-[#B892FF]/30 border border-[#B892FF]/45 text-xs font-bold text-[#B892FF] flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
+                              className="min-h-[42px] px-4 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
                             >
-                              <Eye className="w-4 h-4" />
+                              <Eye className="w-4 h-4 text-[#FFC400]" />
                               <span>
                                 Extract All ({parsedMultiLinks.length}) for Preview
                               </span>
@@ -1871,11 +2197,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               type="button"
                               disabled={parsedMultiLinks.length === 0}
                               onClick={() => handleRunMultiLinkBatch(true)}
-                              className="min-h-[42px] px-5 py-2 rounded-xl bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#E50000]/25 transition-colors disabled:opacity-50"
+                              className="min-h-[42px] px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 transition-colors disabled:opacity-50"
                             >
                               <Sparkles className="w-4 h-4" />
                               <span>
-                                Extract & Publish All ({parsedMultiLinks.length}) to App
+                                Extract &amp; Publish All ({parsedMultiLinks.length}) to App
                               </span>
                             </button>
                           </>
@@ -1885,11 +2211,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                     {/* Batch Progress & Per-Link Results Queue */}
                     {batchResults.length > 0 && (
-                      <div className="pt-3 border-t border-white/10 space-y-3">
+                      <div className="pt-3 border-t border-[#292C35] space-y-3">
                         <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
                           <div className="flex items-center gap-2">
                             {isBatchRunning && (
-                              <Loader2 className="w-4 h-4 animate-spin text-[#E50000]" />
+                              <Loader2 className="w-4 h-4 animate-spin text-[#FFC400]" />
                             )}
                             <span className="font-bold text-white">
                               Batch Progress: {batchCompletedCount} / {batchTotalCount} processed
@@ -1900,7 +2226,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             <button
                               type="button"
                               onClick={handlePublishAllExtractedBatch}
-                              className="min-h-[34px] px-4 py-1.5 rounded-xl bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer"
+                              className="min-h-[34px] px-4 py-1.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer"
                             >
                               <Plus className="w-3.5 h-3.5" />
                               <span>
@@ -1911,9 +2237,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         </div>
 
                         {/* Progress Bar */}
-                        <div className="w-full h-2 rounded-full bg-[#110E17] overflow-hidden border border-white/10">
+                        <div className="w-full h-2 rounded-full bg-[#08090D] overflow-hidden border border-[#292C35]">
                           <div
-                            className="h-full bg-[#E50000] transition-all duration-300"
+                            className="h-full bg-[#FFC400] transition-all duration-300"
                             style={{
                               width: `${
                                 batchTotalCount > 0
@@ -1934,7 +2260,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             return (
                               <div
                                 key={`${entry.index}-${entry.rawInput}`}
-                                className="rounded-xl bg-[#110E17] border border-white/10 p-2.5 flex items-center justify-between gap-2.5"
+                                className="rounded-xl bg-[#08090D] border border-[#292C35] p-2.5 flex items-center justify-between gap-2.5"
                               >
                                 <div className="flex items-center gap-2.5 min-w-0">
                                   {draft?.posterUrl ? (
@@ -1942,10 +2268,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                       src={draft.posterUrl}
                                       alt={draft.title}
                                       referrerPolicy="no-referrer"
-                                      className="w-10 h-14 rounded-lg object-cover border border-white/10 shrink-0 bg-black"
+                                      className="w-10 h-14 rounded-lg object-cover border border-[#292C35] shrink-0 bg-black"
                                     />
                                   ) : (
-                                    <div className="w-10 h-14 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center text-[10px] font-mono-tabular text-zinc-400 shrink-0">
+                                    <div className="w-10 h-14 rounded-lg bg-[#14161D] border border-[#292C35] flex items-center justify-center text-[10px] font-mono-tabular text-[#747784] shrink-0">
                                       #{entry.index + 1}
                                     </div>
                                   )}
@@ -1956,20 +2282,20 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                         ? `${draft.title} (${draft.releaseYear})`
                                         : entry.rawInput}
                                     </p>
-                                    <p className="text-[11px] text-zinc-400 truncate font-mono-tabular">
+                                    <p className="text-[11px] text-[#A7A9B4] truncate font-mono-tabular">
                                       {entry.status === 'published' && (
                                         <span className="text-emerald-400 font-bold">
                                           Published to App ✓
                                         </span>
                                       )}
                                       {entry.status === 'extracted' && (
-                                        <span className="text-[#B892FF] font-bold">
+                                        <span className="text-[#FFC400] font-bold">
                                           Extracted · Ready to Preview/Publish
                                         </span>
                                       )}
                                       {entry.status === 'extracting' && (
-                                        <span className="text-amber-300">
-                                          Extracting metadata & stream...
+                                        <span className="text-[#FFD54A]">
+                                          Extracting metadata &amp; stream...
                                         </span>
                                       )}
                                       {entry.status === 'pending' && (
@@ -1998,7 +2324,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                           setShowLivePreview(true);
                                         }
                                       }}
-                                      className="px-2 py-1 rounded-lg bg-[#B892FF]/20 hover:bg-[#B892FF]/30 text-[#B892FF] text-[10px] font-bold cursor-pointer"
+                                      className="px-2 py-1 rounded-lg bg-[#252832] hover:bg-[#FFC400] text-white hover:text-[#08090D] text-[10px] font-bold cursor-pointer transition-colors"
                                       title="Preview this item"
                                     >
                                       Preview
@@ -2016,23 +2342,23 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                   {/* =========================================================
                       DIRECT JUSTWATCH CATALOG SEARCH, SELECT, PREVIEW & 1-CLICK PUBLISH
                   ========================================================= */}
-                  <div className="rounded-2xl bg-gradient-to-br from-[#1F1833] to-[#141022] border border-[#E50000]/35 p-4 sm:p-6 space-y-4 shadow-xl">
+                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-6 space-y-4 shadow-xl">
                     <div className="flex flex-wrap items-center justify-between gap-3">
                       <div className="space-y-0.5">
                         <div className="flex items-center gap-2">
-                          <Globe className="w-4 h-4 text-[#E50000]" />
+                          <Globe className="w-4 h-4 text-[#FFC400]" />
                           <h3 className="text-sm sm:text-base font-bold text-white font-display">
-                            Direct JustWatch Catalog — Search, Preview & Publish in 1 Click
+                            Direct JustWatch Catalog — Search, Preview &amp; Publish in 1 Click
                           </h3>
                         </div>
-                        <p className="text-xs text-zinc-400">
-                          Browse trending Movies & TV Shows on JustWatch or search any title directly below to preview or publish immediately.
+                        <p className="text-xs text-[#A7A9B4]">
+                          Browse trending Movies &amp; TV Shows on JustWatch or search any title directly below to preview or publish immediately.
                         </p>
                       </div>
 
                       {/* Type & Country Filters */}
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="inline-flex items-center p-1 rounded-xl bg-[#110E17] border border-white/10">
+                        <div className="inline-flex items-center p-1 rounded-xl bg-[#08090D] border border-[#292C35]">
                           {(
                             [
                               { id: 'ALL', label: 'All' },
@@ -2046,8 +2372,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               onClick={() => setJwTypeFilter(tab.id)}
                               className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
                                 jwTypeFilter === tab.id
-                                  ? 'bg-[#E50000] text-white'
-                                  : 'text-zinc-400 hover:text-white'
+                                  ? 'bg-[#FFC400] text-[#08090D]'
+                                  : 'text-[#A7A9B4] hover:text-white'
                               }`}
                             >
                               {tab.label}
@@ -2061,7 +2387,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             setJwCountry(e.target.value as 'IN' | 'US' | 'GB')
                           }
                           aria-label="JustWatch Region"
-                          className="h-8 px-2.5 rounded-xl bg-[#110E17] border border-white/10 text-xs font-semibold text-white cursor-pointer"
+                          className="h-8 px-2.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-semibold text-white cursor-pointer"
                         >
                           <option value="IN">India (IN)</option>
                           <option value="US">Global (US)</option>
@@ -2072,19 +2398,19 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                     {/* Live JustWatch Search Bar */}
                     <div className="relative">
-                      <Search className="w-4 h-4 text-zinc-400 absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
+                      <Search className="w-4 h-4 text-[#747784] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
                       <input
                         type="text"
                         value={jwSearchQuery}
                         onChange={(e) => setJwSearchQuery(e.target.value)}
                         placeholder="Search any Movie or TV Series directly on JustWatch (e.g. Breaking Bad, Stranger Things, Mirzapur, Dune, Interstellar)..."
-                        className="w-full min-h-[44px] pl-10 pr-24 rounded-xl bg-[#110E17] border border-white/15 text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#E50000]"
+                        className="w-full min-h-[44px] pl-10 pr-24 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
                       />
                       {jwSearchQuery && (
                         <button
                           type="button"
                           onClick={() => setJwSearchQuery('')}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-zinc-400 hover:text-white cursor-pointer"
+                          className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#A7A9B4] hover:text-white cursor-pointer"
                         >
                           Clear
                         </button>
@@ -2093,14 +2419,14 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                     {/* JustWatch Results Grid */}
                     {isLoadingJwBrowse ? (
-                      <div className="py-10 flex flex-col items-center justify-center gap-2 text-zinc-400">
-                        <Loader2 className="w-6 h-6 animate-spin text-[#E50000]" />
+                      <div className="py-10 flex flex-col items-center justify-center gap-2 text-[#A7A9B4]">
+                        <Loader2 className="w-6 h-6 animate-spin text-[#FFC400]" />
                         <span className="text-xs font-medium">
                           Fetching live titles from JustWatch...
                         </span>
                       </div>
                     ) : jwResults.length === 0 ? (
-                      <div className="py-8 text-center text-xs text-zinc-400">
+                      <div className="py-8 text-center text-xs text-[#747784]">
                         No JustWatch titles matched &ldquo;{jwSearchQuery}&rdquo;. Try another search term.
                       </div>
                     ) : (
@@ -2122,36 +2448,30 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           return (
                             <div
                               key={cardKey}
-                              className="rounded-xl bg-[#110E17] border border-white/10 hover:border-[#B892FF]/50 p-2.5 flex flex-col justify-between gap-2.5 transition-colors"
+                              className="rounded-xl bg-[#08090D] border border-[#292C35] hover:border-[#FFC400]/60 p-2.5 flex flex-col justify-between gap-2.5 transition-colors"
                             >
                               <div className="flex gap-2.5 min-w-0">
                                 <img
                                   src={card.posterUrl || card.backdropUrl}
                                   alt={card.title}
                                   referrerPolicy="no-referrer"
-                                  className="w-14 h-20 rounded-lg object-cover border border-white/10 shrink-0 bg-black"
+                                  className="w-14 h-20 rounded-lg object-cover border border-[#292C35] shrink-0 bg-black"
                                 />
                                 <div className="min-w-0 flex-1 space-y-1">
                                   <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-mono-tabular">
-                                    <span
-                                      className={`font-extrabold uppercase ${
-                                        card.mediaType === 'tv'
-                                          ? 'text-[#B892FF]'
-                                          : 'text-[#E50000]'
-                                      }`}
-                                    >
+                                    <span className="font-extrabold uppercase text-[#FFC400]">
                                       {card.mediaType === 'tv'
                                         ? 'TV SERIES'
                                         : 'MOVIE'}
                                     </span>
-                                    <span className="text-zinc-500">·</span>
-                                    <span className="text-zinc-400">
+                                    <span className="text-[#747784]">·</span>
+                                    <span className="text-[#A7A9B4]">
                                       {card.releaseYear}
                                     </span>
                                     {card.imdbScore && (
                                       <>
-                                        <span className="text-zinc-500">·</span>
-                                        <span className="text-amber-400 font-bold">
+                                        <span className="text-[#747784]">·</span>
+                                        <span className="text-[#FFC400] font-bold">
                                           ★ {card.imdbScore.toFixed(1)}
                                         </span>
                                       </>
@@ -2165,48 +2485,50 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                     {card.title}
                                   </p>
 
-                                  <p className="text-[10px] text-zinc-400 truncate">
+                                  <p className="text-[10px] text-[#747784] truncate">
                                     {card.genres.slice(0, 3).join(' · ')}
                                   </p>
                                 </div>
                               </div>
 
-                              <div className="grid grid-cols-3 gap-1.5 pt-1 border-t border-white/10">
-                                <button
-                                  type="button"
-                                  disabled={isExtractingJw}
-                                  onClick={() =>
-                                    handleExtractFromJustWatch(
-                                      card.justWatchUrl,
-                                      card.title,
-                                      card.mediaType,
-                                      false
-                                    )
-                                  }
-                                  className="min-h-[32px] px-2 py-1 rounded-lg bg-white/[0.07] hover:bg-white/[0.14] text-[11px] font-bold text-white flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                                  title="Load full details & cast photos into editor"
-                                >
-                                  <Edit3 className="w-3 h-3" />
-                                  <span>Select</span>
-                                </button>
+                              <div className="space-y-1.5 pt-2 border-t border-[#292C35]">
+                                <div className="grid grid-cols-2 gap-1.5">
+                                  <button
+                                    type="button"
+                                    disabled={isExtractingJw}
+                                    onClick={() =>
+                                      handleExtractFromJustWatch(
+                                        card.justWatchUrl,
+                                        card.title,
+                                        card.mediaType,
+                                        false
+                                      )
+                                    }
+                                    className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-[11px] font-bold text-white flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                                    title="Load full details & cast photos into editor"
+                                  >
+                                    <Edit3 className="w-3 h-3 shrink-0" />
+                                    <span>Select</span>
+                                  </button>
 
-                                <button
-                                  type="button"
-                                  disabled={isExtractingJw}
-                                  onClick={() =>
-                                    handleExtractFromJustWatch(
-                                      card.justWatchUrl,
-                                      card.title,
-                                      card.mediaType,
-                                      true
-                                    )
-                                  }
-                                  className="min-h-[32px] px-2 py-1 rounded-lg bg-[#B892FF]/20 hover:bg-[#B892FF]/30 border border-[#B892FF]/40 text-[11px] font-bold text-[#B892FF] flex items-center justify-center gap-1 cursor-pointer transition-colors"
-                                  title="Preview player & episodes before publishing"
-                                >
-                                  <Eye className="w-3 h-3" />
-                                  <span>Preview</span>
-                                </button>
+                                  <button
+                                    type="button"
+                                    disabled={isExtractingJw}
+                                    onClick={() =>
+                                      handleExtractFromJustWatch(
+                                        card.justWatchUrl,
+                                        card.title,
+                                        card.mediaType,
+                                        true
+                                      )
+                                    }
+                                    className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-[11px] font-bold text-[#FFC400] flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                                    title="Preview player & episodes before publishing"
+                                  >
+                                    <Eye className="w-3 h-3 shrink-0" />
+                                    <span>Preview</span>
+                                  </button>
+                                </div>
 
                                 <button
                                   type="button"
@@ -2214,24 +2536,27 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                   onClick={() =>
                                     handleDirectPublishFromJustWatchCard(card)
                                   }
-                                  className={`min-h-[32px] px-2 py-1 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition-colors ${
+                                  className={`w-full min-h-[34px] px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
                                     alreadyInCatalog
                                       ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30'
-                                      : 'bg-[#E50000] hover:bg-[#FF1A1A] text-white'
+                                      : 'bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D]'
                                   }`}
                                   title="Directly extract and publish to app"
                                 >
                                   {isPublishingThis ? (
-                                    <Loader2 className="w-3 h-3 animate-spin" />
+                                    <>
+                                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
+                                      <span>Publishing...</span>
+                                    </>
                                   ) : alreadyInCatalog ? (
                                     <>
-                                      <CheckCircle2 className="w-3 h-3" />
-                                      <span>Update</span>
+                                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                      <span>Update in App</span>
                                     </>
                                   ) : (
                                     <>
-                                      <Plus className="w-3 h-3" />
-                                      <span>Publish</span>
+                                      <Plus className="w-3.5 h-3.5 shrink-0" />
+                                      <span>1-Click Publish</span>
                                     </>
                                   )}
                                 </button>
@@ -2244,16 +2569,16 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                   </div>
 
                   {/* STEP 1B: Paste Single JustWatch URL to Load Into Editor */}
-                  <div className="rounded-2xl bg-gradient-to-br from-[#231B36] to-[#181326] border border-[#B892FF]/30 p-4 sm:p-5 space-y-3">
+                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <div className="flex items-center gap-2">
-                        <Wand2 className="w-4 h-4 text-[#B892FF]" />
+                        <Wand2 className="w-4 h-4 text-[#FFC400]" />
                         <h3 className="text-sm sm:text-base font-bold text-white font-display">
                           Or Paste a Single JustWatch URL to Edit Before Publishing
                         </h3>
                       </div>
-                      <span className="text-[11px] text-[#38BDF8] font-mono-tabular">
-                        Title · Year · Cast & Director Photos · Verified Episodes
+                      <span className="text-[11px] text-[#A7A9B4] font-mono-tabular">
+                        Title · Year · Cast &amp; Director Photos · Verified Episodes
                       </span>
                     </div>
 
@@ -2273,13 +2598,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           }
                         }}
                         placeholder="https://www.justwatch.com/in/movie/interstellar (or paste multiple links)"
-                        className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#110E17] border border-white/15 text-xs sm:text-sm text-white placeholder:text-zinc-500 focus:outline-none focus:border-[#B892FF] font-mono-tabular"
+                        className="flex-1 min-h-[44px] px-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400] font-mono-tabular"
                       />
                       <button
                         type="button"
                         disabled={isExtractingJw}
                         onClick={() => handleExtractFromJustWatch()}
-                        className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#B892FF] text-[#110E17] font-bold text-xs sm:text-sm hover:bg-[#C9ABFF] transition-colors flex items-center justify-center gap-2 shrink-0 cursor-pointer disabled:opacity-60"
+                        className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#FFC400] text-[#08090D] font-bold text-xs sm:text-sm hover:bg-[#FFD54A] transition-colors flex items-center justify-center gap-2 shrink-0 cursor-pointer disabled:opacity-60"
                       >
                         {isExtractingJw ? (
                           <>
@@ -2303,14 +2628,14 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     <motion.div
                       initial={{ opacity: 0, y: 10 }}
                       animate={{ opacity: 1, y: 0 }}
-                      className="rounded-2xl bg-[#110E17] border-2 border-[#B892FF] p-4 sm:p-6 space-y-5 shadow-2xl"
+                      className="rounded-2xl bg-[#08090D] border-2 border-[#FFC400] p-4 sm:p-6 space-y-5 shadow-2xl"
                     >
-                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-white/10 pb-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#292C35] pb-4">
                         <div className="flex items-center gap-2.5">
-                          <span className="text-xs font-extrabold uppercase text-[#B892FF]">
+                          <span className="text-xs font-extrabold uppercase text-[#FFC400]">
                             Live Pre-Publish Preview
                           </span>
-                          <span className="text-zinc-500">·</span>
+                          <span className="text-[#747784]">·</span>
                           <h3 className="text-base sm:text-lg font-bold text-white font-display">
                             {currentDraftPreviewItem.title} (
                             {currentDraftPreviewItem.releaseYear})
@@ -2325,9 +2650,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                 onClose();
                                 onPreviewDraftInApp(currentDraftPreviewItem);
                               }}
-                              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer"
+                              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer"
                             >
-                              <ExternalLink className="w-3.5 h-3.5 text-[#B892FF]" />
+                              <ExternalLink className="w-3.5 h-3.5 text-[#FFC400]" />
                               <span>Open Full-Page App Preview</span>
                             </button>
                           )}
@@ -2336,7 +2661,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             type="button"
                             disabled={isSaving}
                             onClick={() => handleSaveToFirestore()}
-                            className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[#E50000] hover:bg-[#FF1A1A] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#E50000]/25"
+                            className="min-h-[38px] px-4 py-1.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#FFC400]/20"
                           >
                             {isSaving ? (
                               <Loader2 className="w-3.5 h-3.5 animate-spin" />
@@ -2349,7 +2674,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           <button
                             type="button"
                             onClick={() => setShowLivePreview(false)}
-                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 text-xs text-zinc-300 cursor-pointer"
+                            className="min-h-[38px] px-3 py-1.5 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-xs text-[#A7A9B4] cursor-pointer"
                           >
                             Close Preview
                           </button>
@@ -2358,12 +2683,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                       {/* Season & Episode Selector for Series Preview */}
                       {currentDraftPreviewItem.mediaType === 'tv' && (
-                        <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-[#1A1526] border border-white/10">
-                          <span className="text-xs font-bold text-[#B892FF] uppercase">
+                        <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-[#14161D] border border-[#292C35]">
+                          <span className="text-xs font-bold text-[#FFC400] uppercase">
                             Test Series Episodes:
                           </span>
                           <div className="flex items-center gap-2">
-                            <label className="text-xs text-zinc-400">
+                            <label className="text-xs text-[#A7A9B4]">
                               Season:
                             </label>
                             <select
@@ -2372,7 +2697,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                 setPreviewSeason(Number(e.target.value));
                                 setPreviewEpisode(1);
                               }}
-                              className="px-2.5 py-1 rounded-lg bg-[#110E17] border border-white/15 text-xs text-white font-bold"
+                              className="px-2.5 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-white font-bold"
                             >
                               {Array.from(
                                 {
@@ -2391,7 +2716,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           </div>
 
                           <div className="flex items-center gap-2">
-                            <label className="text-xs text-zinc-400">
+                            <label className="text-xs text-[#A7A9B4]">
                               Episode:
                             </label>
                             <select
@@ -2399,7 +2724,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               onChange={(e) =>
                                 setPreviewEpisode(Number(e.target.value))
                               }
-                              className="px-2.5 py-1 rounded-lg bg-[#110E17] border border-white/15 text-xs text-white font-bold"
+                              className="px-2.5 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-white font-bold"
                             >
                               {Array.from(
                                 {
@@ -2432,8 +2757,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       />
 
                       {/* Banner & Metadata Card Preview */}
-                      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 p-4 rounded-xl bg-[#1A1526] border border-white/10 items-center">
-                        <div className="md:col-span-5 aspect-video rounded-xl overflow-hidden border border-white/10 bg-black relative">
+                      <div className="grid grid-cols-1 md:grid-cols-12 gap-4 p-4 rounded-xl bg-[#14161D] border border-[#292C35] items-center">
+                        <div className="md:col-span-5 aspect-video rounded-xl overflow-hidden border border-[#292C35] bg-black relative">
                           <img
                             src={
                               currentDraftPreviewItem.backdropUrl ||
@@ -2446,8 +2771,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         </div>
 
                         <div className="md:col-span-7 space-y-2">
-                          <div className="flex flex-wrap items-center gap-2 text-xs text-zinc-300">
-                            <span className="text-[#E50000] font-bold uppercase">
+                          <div className="flex flex-wrap items-center gap-2 text-xs text-[#A7A9B4]">
+                            <span className="text-[#FFC400] font-bold uppercase">
                               {currentDraftPreviewItem.mediaType === 'tv'
                                 ? 'Series'
                                 : 'Movie'}
@@ -2466,10 +2791,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           <h4 className="text-lg font-bold text-white font-display">
                             {currentDraftPreviewItem.title}
                           </h4>
-                          <p className="text-xs text-zinc-300 line-clamp-3 leading-relaxed">
+                          <p className="text-xs text-[#A7A9B4] line-clamp-3 leading-relaxed">
                             {currentDraftPreviewItem.synopsis}
                           </p>
-                          <p className="text-[11px] text-zinc-400">
+                          <p className="text-[11px] text-[#747784]">
                             <strong className="text-white">Director:</strong>{' '}
                             {currentDraftPreviewItem.directorOrCreator} ·{' '}
                             <strong className="text-white">Cast:</strong>{' '}
@@ -2482,15 +2807,15 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </motion.div>
                   )}
 
-                  {/* STEP 2: EmbedMaster Stream + Movie/Show Form */}
+                  {/* STEP 2: Vidly.pro Stream + Movie/Show Form */}
                   <form
                     ref={formRef}
                     onSubmit={handleSaveToFirestore}
-                    className="rounded-2xl bg-[#1A1526] border border-white/10 p-4 sm:p-5 space-y-5"
+                    className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-5"
                   >
-                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-white/10 pb-3">
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#292C35] pb-3">
                       <h3 className="text-sm sm:text-base font-bold text-white font-display flex items-center gap-2">
-                        <Plus className="w-4 h-4 text-[#B892FF]" />
+                        <Plus className="w-4 h-4 text-[#FFC400]" />
                         <span>
                           {editingId
                             ? `Editing: ${title || editingId}`
@@ -2506,7 +2831,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               setPreviewEpisode(1);
                               setShowLivePreview((prev) => !prev);
                             }}
-                            className="px-3 py-1.5 rounded-lg bg-[#B892FF]/20 hover:bg-[#B892FF]/30 border border-[#B892FF]/40 text-xs font-bold text-[#B892FF] flex items-center gap-1.5 cursor-pointer"
+                            className="px-3 py-1.5 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#FFC400]/50 text-xs font-bold text-[#FFC400] flex items-center gap-1.5 cursor-pointer"
                           >
                             <Eye className="w-3.5 h-3.5" />
                             <span>
@@ -2520,18 +2845,18 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           <button
                             type="button"
                             onClick={resetForm}
-                            className="text-xs text-zinc-400 hover:text-white underline cursor-pointer"
+                            className="text-xs text-[#A7A9B4] hover:text-white underline cursor-pointer"
                           >
-                            Cancel Edit & Create New
+                            Cancel Edit &amp; Create New
                           </button>
                         )}
                       </div>
                     </div>
 
                     {/* Stream Endpoint Row */}
-                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5 p-3.5 rounded-xl bg-[#120E1A] border border-white/10">
+                    <div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5 p-3.5 rounded-xl bg-[#08090D] border border-[#292C35]">
                       <div className="sm:col-span-3">
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Content Type
                         </label>
                         <select
@@ -2541,7 +2866,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             setMediaType(next);
                             setMaturityRating(next === 'tv' ? 'TV-14' : 'PG-13');
                           }}
-                          className="w-full min-h-[42px] px-3 rounded-xl bg-[#1A1625] border border-white/10 text-xs text-white font-semibold"
+                          className="w-full min-h-[42px] px-3 rounded-xl bg-[#14161D] border border-[#292C35] text-xs text-white font-semibold"
                         >
                           <option value="movie">Movie</option>
                           <option value="tv">TV Series</option>
@@ -2549,7 +2874,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       </div>
 
                       <div className="sm:col-span-3">
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Catalog Code (Auto-extracted)
                         </label>
                         <input
@@ -2558,12 +2883,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           value={tmdbIdInput}
                           onChange={(e) => setTmdbIdInput(e.target.value)}
                           placeholder="Auto-filled"
-                          className="w-full min-h-[42px] px-3 rounded-xl bg-[#1A1625] border border-white/10 text-xs text-white font-mono-tabular"
+                          className="w-full min-h-[42px] px-3 rounded-xl bg-[#14161D] border border-[#292C35] text-xs text-white font-mono-tabular"
                         />
                       </div>
 
                       <div className="sm:col-span-6">
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Stream Endpoint (Auto-configured)
                         </label>
                         <input
@@ -2574,7 +2899,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             handleCineSrcInputChange(e.target.value)
                           }
                           placeholder="Auto-configured on select/extract"
-                          className="w-full min-h-[42px] px-3 rounded-xl bg-[#1A1625] border border-[#B892FF]/40 text-xs text-[#B892FF] font-mono-tabular"
+                          className="w-full min-h-[42px] px-3 rounded-xl bg-[#14161D] border border-[#FFC400]/40 text-xs text-[#FFC400] font-mono-tabular"
                         />
                       </div>
                     </div>
@@ -2582,7 +2907,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     {/* Title, Year, Duration, Rating, Seasons/Episodes */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
                       <div className="sm:col-span-2">
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Title
                         </label>
                         <input
@@ -2591,12 +2916,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           value={title}
                           onChange={(e) => setTitle(e.target.value)}
                           placeholder="e.g. Interstellar"
-                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white"
+                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white focus:outline-none focus:border-[#FFC400]"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Release Year
                         </label>
                         <input
@@ -2605,12 +2930,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           max={2100}
                           value={releaseYear}
                           onChange={(e) => setReleaseYear(e.target.value)}
-                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white font-mono-tabular"
+                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
                         />
                       </div>
 
                       <div>
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Runtime (Minutes)
                         </label>
                         <input
@@ -2619,14 +2944,14 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           max={1000}
                           value={durationMinutes}
                           onChange={(e) => setDurationMinutes(e.target.value)}
-                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white font-mono-tabular"
+                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
                         />
                       </div>
 
                       {mediaType === 'tv' && (
                         <>
                           <div>
-                            <label className="block text-xs text-zinc-400 mb-1">
+                            <label className="block text-xs text-[#A7A9B4] mb-1">
                               Total Aired Seasons
                             </label>
                             <input
@@ -2635,11 +2960,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               max={100}
                               value={seasonsCount}
                               onChange={(e) => setSeasonsCount(e.target.value)}
-                              className="w-full min-h-[40px] px-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white font-mono-tabular"
+                              className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
                             />
                           </div>
                           <div>
-                            <label className="block text-xs text-zinc-400 mb-1">
+                            <label className="block text-xs text-[#A7A9B4] mb-1">
                               Episodes in Season 1
                             </label>
                             <input
@@ -2648,48 +2973,48 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               max={500}
                               value={episodesCount}
                               onChange={(e) => setEpisodesCount(e.target.value)}
-                              className="w-full min-h-[40px] px-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white font-mono-tabular"
+                              className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
                             />
                           </div>
                         </>
                       )}
 
                       <div>
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Director / Creator
                         </label>
                         <input
                           type="text"
                           value={directorOrCreator}
                           onChange={(e) => setDirectorOrCreator(e.target.value)}
-                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white"
+                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white focus:outline-none focus:border-[#FFC400]"
                         />
                       </div>
 
                       <div className="sm:col-span-2 lg:col-span-3">
-                        <label className="block text-xs text-zinc-400 mb-1">
+                        <label className="block text-xs text-[#A7A9B4] mb-1">
                           Cast Names (Comma-separated, auto-extracted from JustWatch)
                         </label>
                         <input
                           type="text"
                           value={castInput}
                           onChange={(e) => setCastInput(e.target.value)}
-                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white"
+                          className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white focus:outline-none focus:border-[#FFC400]"
                         />
                       </div>
                     </div>
 
                     {/* Extracted Director & Cast Portrait Gallery */}
                     {credits.length > 0 && (
-                      <div className="p-4 rounded-2xl bg-[#120E1A] border border-[#B892FF]/25 space-y-3">
+                      <div className="p-4 rounded-2xl bg-[#08090D] border border-[#292C35] space-y-3">
                         <div className="flex items-center justify-between gap-2">
                           <h4 className="text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-                            <Users className="w-4 h-4 text-[#B892FF]" />
+                            <Users className="w-4 h-4 text-[#FFC400]" />
                             <span>
-                              Extracted Cast & Director Profiles with Photos ({credits.length})
+                              Extracted Cast &amp; Director Profiles with Photos ({credits.length})
                             </span>
                           </h4>
-                          <span className="text-[11px] text-[#B892FF] font-mono-tabular">
+                          <span className="text-[11px] text-[#FFC400] font-mono-tabular">
                             Saved to Cloud Firestore
                           </span>
                         </div>
@@ -2698,29 +3023,23 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           {credits.map((person, idx) => (
                             <div
                               key={`${person.name}-${idx}`}
-                              className="rounded-xl bg-[#1A1526] border border-white/10 p-2 flex items-center gap-2.5 min-w-0"
+                              className="rounded-xl bg-[#14161D] border border-[#292C35] p-2 flex items-center gap-2.5 min-w-0"
                             >
                               <img
                                 src={person.imageUrl}
                                 alt={person.name}
                                 referrerPolicy="no-referrer"
-                                className="w-10 h-12 rounded-lg object-cover border border-white/15 shrink-0 bg-[#110E17]"
+                                className="w-10 h-12 rounded-lg object-cover border border-[#292C35] shrink-0 bg-[#08090D]"
                               />
                               <div className="min-w-0 flex-1">
-                                <span
-                                  className={`block text-[9px] font-bold uppercase tracking-wider font-mono-tabular ${
-                                    person.role === 'DIRECTOR'
-                                      ? 'text-[#FF8A3D]'
-                                      : 'text-[#B892FF]'
-                                  }`}
-                                >
+                                <span className="block text-[9px] font-bold uppercase tracking-wider font-mono-tabular text-[#FFC400]">
                                   {person.role}
                                 </span>
                                 <p className="text-xs font-bold text-white truncate">
                                   {person.name}
                                 </p>
                                 {person.characterName && (
-                                  <p className="text-[10px] text-zinc-400 truncate">
+                                  <p className="text-[10px] text-[#747784] truncate">
                                     {person.characterName}
                                   </p>
                                 )}
@@ -2733,7 +3052,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                     {/* Synopsis */}
                     <div>
-                      <label className="block text-xs text-zinc-400 mb-1">
+                      <label className="block text-xs text-[#A7A9B4] mb-1">
                         Synopsis / Description
                       </label>
                       <textarea
@@ -2741,15 +3060,15 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         value={synopsis}
                         onChange={(e) => setSynopsis(e.target.value)}
                         placeholder="Plot overview (auto-filled when you select or extract from JustWatch)..."
-                        className="w-full p-3 rounded-xl bg-[#110E17] border border-white/10 text-xs text-white"
+                        className="w-full p-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white focus:outline-none focus:border-[#FFC400]"
                       />
                     </div>
 
                     {/* JustWatch Extracted Banner/Backdrop & Poster URLs + Live Visual Preview */}
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-3.5 rounded-xl bg-[#120E1A] border border-white/10">
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 p-3.5 rounded-xl bg-[#08090D] border border-[#292C35]">
                       <div className="space-y-2">
-                        <label className="block text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-                          <ImageIcon className="w-3.5 h-3.5 text-[#B892FF]" />
+                        <label className="block text-xs font-semibold text-[#A7A9B4] flex items-center gap-1.5">
+                          <ImageIcon className="w-3.5 h-3.5 text-[#FFC400]" />
                           <span>
                             Banner / Backdrop Image URL (Auto-filled from JustWatch)
                           </span>
@@ -2759,10 +3078,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           value={backdropUrl}
                           onChange={(e) => setBackdropUrl(e.target.value)}
                           placeholder="https://images.justwatch.com/backdrop/..."
-                          className="w-full min-h-[38px] px-3 rounded-xl bg-[#1A1625] border border-white/10 text-xs text-white font-mono-tabular"
+                          className="w-full min-h-[38px] px-3 rounded-xl bg-[#14161D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
                         />
                         {backdropUrl && (
-                          <div className="aspect-video w-full rounded-xl overflow-hidden border border-white/15 bg-black">
+                          <div className="aspect-video w-full rounded-xl overflow-hidden border border-[#292C35] bg-black">
                             <img
                               src={backdropUrl}
                               alt="Backdrop preview"
@@ -2773,7 +3092,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         )}
                         {extraBackdrops.length > 1 && (
                           <div className="space-y-1 pt-1">
-                            <span className="text-[10px] text-zinc-400">
+                            <span className="text-[10px] text-[#747784]">
                               Click another JustWatch backdrop to switch:
                             </span>
                             <div className="flex gap-2 overflow-x-auto pb-1">
@@ -2784,8 +3103,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                   onClick={() => setBackdropUrl(bUrl)}
                                   className={`h-11 w-20 rounded-lg overflow-hidden border shrink-0 cursor-pointer ${
                                     backdropUrl === bUrl
-                                      ? 'border-[#B892FF] ring-2 ring-[#B892FF]/40'
-                                      : 'border-white/15 opacity-70 hover:opacity-100'
+                                      ? 'border-[#FFC400] ring-2 ring-[#FFC400]/40'
+                                      : 'border-[#292C35] opacity-70 hover:opacity-100'
                                   }`}
                                 >
                                   <img
@@ -2802,8 +3121,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       </div>
 
                       <div className="space-y-2">
-                        <label className="block text-xs font-semibold text-zinc-300 flex items-center gap-1.5">
-                          <ImageIcon className="w-3.5 h-3.5 text-[#B892FF]" />
+                        <label className="block text-xs font-semibold text-[#A7A9B4] flex items-center gap-1.5">
+                          <ImageIcon className="w-3.5 h-3.5 text-[#FFC400]" />
                           <span>
                             Poster Image URL (Auto-filled from JustWatch)
                           </span>
@@ -2813,10 +3132,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           value={posterUrl}
                           onChange={(e) => setPosterUrl(e.target.value)}
                           placeholder="https://images.justwatch.com/poster/..."
-                          className="w-full min-h-[38px] px-3 rounded-xl bg-[#1A1625] border border-white/10 text-xs text-white font-mono-tabular"
+                          className="w-full min-h-[38px] px-3 rounded-xl bg-[#14161D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
                         />
                         {posterUrl && (
-                          <div className="h-36 w-28 rounded-xl overflow-hidden border border-white/15 bg-black">
+                          <div className="h-36 w-28 rounded-xl overflow-hidden border border-[#292C35] bg-black">
                             <img
                               src={posterUrl}
                               alt="Poster preview"
@@ -2831,7 +3150,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     {/* Genre Selection & Featured Toggle */}
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                       <div className="space-y-1.5">
-                        <span className="block text-xs text-zinc-400">
+                        <span className="block text-xs text-[#A7A9B4]">
                           Genres (Auto-selected from JustWatch, up to 6):
                         </span>
                         <div className="flex flex-wrap gap-1.5">
@@ -2844,8 +3163,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                 onClick={() => toggleGenre(g)}
                                 className={`px-3 py-1 rounded-lg text-xs font-medium transition-colors cursor-pointer ${
                                   active
-                                    ? 'bg-[#B892FF] text-[#110E17] font-bold'
-                                    : 'bg-[#110E17] border border-white/10 text-zinc-400 hover:text-white'
+                                    ? 'bg-[#FFC400] text-[#08090D] font-bold'
+                                    : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
                                 }`}
                               >
                                 {g}
@@ -2855,12 +3174,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         </div>
                       </div>
 
-                      <label className="flex items-center gap-2.5 text-xs text-zinc-200 cursor-pointer shrink-0">
+                      <label className="flex items-center gap-2.5 text-xs text-white cursor-pointer shrink-0">
                         <input
                           type="checkbox"
                           checked={featured}
                           onChange={(e) => setFeatured(e.target.checked)}
-                          className="w-4 h-4 accent-[#B892FF]"
+                          className="w-4 h-4 accent-[#FFC400]"
                         />
                         <span>Feature in Hero Spotlight Banner</span>
                       </label>
@@ -2881,10 +3200,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           setPreviewEpisode(1);
                           setShowLivePreview(true);
                         }}
-                        className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#110E17] hover:bg-white/10 border border-[#B892FF]/50 text-[#B892FF] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
+                        className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-[#FFC400] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
                       >
                         <Eye className="w-4 h-4" />
-                        <span>Preview Player & Layout</span>
+                        <span>Preview Player &amp; Layout</span>
                       </button>
 
                       {onPreviewDraftInApp && (
@@ -2903,9 +3222,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               onPreviewDraftInApp(draft);
                             }
                           }}
-                          className="min-h-[44px] px-5 py-2.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
+                          className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-white font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
                         >
-                          <ExternalLink className="w-4 h-4 text-[#B892FF]" />
+                          <ExternalLink className="w-4 h-4 text-[#FFC400]" />
                           <span>Full-Page App Preview</span>
                         </button>
                       )}
@@ -2913,7 +3232,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       <button
                         type="submit"
                         disabled={isSaving}
-                        className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#E50000] hover:bg-[#FF1A1A] text-white font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-[#E50000]/25 disabled:opacity-60"
+                        className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-[#FFC400]/20 disabled:opacity-60"
                       >
                         {isSaving ? (
                           <>
@@ -2936,12 +3255,57 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                   {/* Published Firestore Catalog List */}
                   <div className="space-y-3">
-                    <h3 className="text-sm font-bold text-white font-display">
-                      Published Movies & TV Shows in Cloud Firestore ({catalog.length})
-                    </h3>
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <h3 className="text-sm font-bold text-white font-display">
+                        Published Movies &amp; TV Shows in Cloud Firestore ({catalog.length})
+                      </h3>
+                      {catalog.length > 0 && (
+                        confirmingClearAll ? (
+                          <div className="flex items-center gap-2">
+                            <span className="text-xs text-red-300 font-semibold">
+                              Confirm remove all {catalog.length} titles?
+                            </span>
+                            <button
+                              type="button"
+                              disabled={isClearingAll}
+                              onClick={handleClearEntireCatalog}
+                              className="min-h-[32px] px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
+                            >
+                              Yes, Remove All
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmingClearAll(false)}
+                              className="min-h-[32px] px-3 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-[#A7A9B4] hover:text-white cursor-pointer"
+                            >
+                              Cancel
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            disabled={isClearingAll}
+                            onClick={() => setConfirmingClearAll(true)}
+                            className="min-h-[32px] px-3 py-1.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                          >
+                            {isClearingAll ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Removing All Titles...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Remove Every Movie &amp; TV Show</span>
+                              </>
+                            )}
+                          </button>
+                        )
+                      )}
+                    </div>
 
                     {catalog.length === 0 ? (
-                      <div className="rounded-2xl bg-[#1A1526] border border-white/10 p-6 text-center text-xs text-zinc-400">
+                      <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-6 text-center text-xs text-[#747784]">
                         Your catalog is currently empty. Select any Movie or TV Show from the JustWatch browser above or paste up to 100 links to publish!
                       </div>
                     ) : (
@@ -2949,17 +3313,17 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         {catalog.map((item) => (
                           <div
                             key={item.id}
-                            className="rounded-2xl bg-[#1A1526] border border-white/10 p-3 flex items-center justify-between gap-3"
+                            className="rounded-2xl bg-[#14161D] border border-[#292C35] p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                           >
-                            <div className="flex items-center gap-3 min-w-0">
+                            <div className="flex items-center gap-3 min-w-0 flex-1">
                               <img
                                 src={item.backdropUrl || item.posterUrl}
                                 alt={item.title}
                                 referrerPolicy="no-referrer"
-                                className="w-20 h-12 rounded-lg object-cover border border-white/10 shrink-0 bg-black"
+                                className="w-20 h-12 rounded-lg object-cover border border-[#292C35] shrink-0 bg-black"
                               />
-                              <div className="min-w-0">
-                                <div className="flex items-center gap-1.5 text-[11px] font-mono-tabular text-[#38BDF8]">
+                              <div className="min-w-0 flex-1">
+                                <div className="flex items-center gap-1.5 text-[11px] font-mono-tabular text-[#FFC400]">
                                   {item.mediaType === 'tv' ? (
                                     <Tv className="w-3 h-3 shrink-0" />
                                   ) : (
@@ -2976,13 +3340,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                 <p className="text-xs sm:text-sm font-bold text-white truncate">
                                   {item.title}
                                 </p>
-                                <p className="text-[10px] text-emerald-400 truncate font-mono-tabular">
+                                <p className="text-[10px] text-[#A7A9B4] truncate font-mono-tabular">
                                   {item.genres.join(' · ')}
                                 </p>
                               </div>
                             </div>
 
-                            <div className="flex items-center gap-1.5 shrink-0">
+                            <div className="flex items-center justify-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#292C35]/60">
                               {onSelectMediaToWatch && (
                                 <button
                                   type="button"
@@ -2990,27 +3354,28 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                     onClose();
                                     onSelectMediaToWatch(item);
                                   }}
-                                  className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-[#B892FF] text-[#110E17] text-xs font-bold flex items-center gap-1 cursor-pointer"
+                                  className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
                                   title="Watch Stream"
                                 >
-                                  <Play className="w-3 h-3 fill-current" />
+                                  <Play className="w-3 h-3 fill-current shrink-0" />
                                   <span>Play</span>
                                 </button>
                               )}
                               <button
                                 type="button"
                                 onClick={() => populateFormFromItem(item)}
-                                className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-white/[0.06] hover:bg-white/[0.12] text-xs text-zinc-200 flex items-center gap-1 cursor-pointer"
+                                className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
                                 title="Edit"
                               >
-                                <Edit3 className="w-3 h-3" />
+                                <Edit3 className="w-3 h-3 shrink-0" />
+                                <span>Edit</span>
                               </button>
                               <button
                                 type="button"
                                 onClick={() =>
                                   handleDeleteFromFirestore(item.id, item.title)
                                 }
-                                className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-xs text-red-300 flex items-center gap-1 cursor-pointer"
+                                className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-xs text-red-300 flex items-center justify-center cursor-pointer transition-colors shrink-0"
                                 title="Delete"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
