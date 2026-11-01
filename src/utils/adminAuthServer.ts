@@ -1,13 +1,14 @@
 import { initializeApp, getApps, App as AdminApp } from 'firebase-admin/app';
 import { getAuth, DecodedIdToken } from 'firebase-admin/auth';
 import type express from 'express';
+import { isEmailRegisteredOnServer } from '../server/registeredUsers.js';
 
 const ALLOWED_ADMIN_EMAILS = new Set([
   'pawarayushai1@gmail.com',
   'admin@zappy.app',
 ]);
 
-const SUPPORTED_FIREBASE_PROJECT_IDS = ['aibharix', 'zappyfun'] as const;
+const SUPPORTED_FIREBASE_PROJECT_IDS = ['zappyfun'] as const;
 
 function getOrInitAdminApps(): AdminApp[] {
   const existing = getApps();
@@ -38,7 +39,7 @@ export type TokenVerifierFn = (
 /**
  * Default verifier using the official Firebase Admin SDK getAuth().verifyIdToken().
  * Checks cryptographic RS256 signature, expiration, audience, and issuer against
- * the configured Firebase projects ('aibharix' and 'zappyfun').
+ * the configured Firebase project ('zappyfun').
  */
 export async function defaultFirebaseAdminTokenVerifier(
   idToken: string
@@ -51,7 +52,7 @@ export async function defaultFirebaseAdminTokenVerifier(
         return decoded;
       }
     } catch {
-      // Try next configured project if token belongs to secondary project
+      // Continue verification
     }
   }
   return null;
@@ -70,33 +71,39 @@ export async function verifyAdminRequest(
   | { authorized: false; statusCode: 401 | 403; error: string }
 > {
   const authHeader = req.headers.authorization;
-  if (
-    !authHeader ||
-    typeof authHeader !== 'string' ||
-    !authHeader.toLowerCase().startsWith('bearer ')
-  ) {
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return {
       authorized: false,
       statusCode: 401,
-      error: 'Missing or malformed Authorization Bearer token.',
+      error: 'Unauthorized: Missing or malformed Authorization header.',
     };
   }
 
-  const rawToken = authHeader.slice(7).trim();
-  if (!rawToken) {
+  const token = authHeader.slice(7).trim();
+  if (!token) {
     return {
       authorized: false,
       statusCode: 401,
-      error: 'Empty Authorization Bearer token.',
+      error: 'Unauthorized: Empty bearer token.',
     };
   }
 
-  const decoded = await verifier(rawToken);
+  let decoded: DecodedIdToken | null = null;
+  try {
+    decoded = await verifier(token);
+  } catch (err) {
+    console.warn(
+      'Admin token verification threw error:',
+      err instanceof Error ? err.message : String(err)
+    );
+    decoded = null;
+  }
+
   if (!decoded || !decoded.uid) {
     return {
       authorized: false,
       statusCode: 401,
-      error: 'Invalid or expired Firebase ID token.',
+      error: 'Unauthorized: Invalid, expired, or untrusted Firebase ID token.',
     };
   }
 
@@ -119,7 +126,69 @@ export async function verifyAdminRequest(
       uid: decoded.uid,
       email,
       emailVerified: true,
-      projectId: String(decoded.aud || 'aibharix'),
+      projectId: String(decoded.aud || 'zappyfun'),
     },
   };
 }
+
+export interface ServerEmailCheckResult {
+  registered: boolean | null;
+  hasPassword?: boolean;
+  providers?: string[];
+  isGithubOnly?: boolean;
+  error?: string;
+}
+
+/**
+ * Checks whether an email address is already registered in Firebase Authentication.
+ * Returns { registered: true, hasPassword, isGithubOnly } if user found,
+ * { registered: false } if not found,
+ * or { registered: null } if server lacks service account credentials (delegating to client SDK).
+ */
+export async function checkEmailRegisteredOnServer(
+  email: string
+): Promise<ServerEmailCheckResult> {
+  const cleanEmail = (email || '').trim().toLowerCase();
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    return { registered: false };
+  }
+
+  // Fast check: Known registered user emails (including admin, test users, and signed-up accounts)
+  if (isEmailRegisteredOnServer(cleanEmail)) {
+    return { registered: true, hasPassword: true, providers: ['password'] };
+  }
+
+  try {
+    const adminApps = getOrInitAdminApps();
+    for (const adminApp of adminApps) {
+      try {
+        const user = await getAuth(adminApp).getUserByEmail(cleanEmail);
+        if (user && user.uid) {
+          const providers = (user.providerData || []).map((p) => p.providerId);
+          const hasPassword =
+            providers.includes('password') || user.passwordHash !== undefined;
+          const isGithubOnly =
+            providers.includes('github.com') && !hasPassword;
+
+          return {
+            registered: true,
+            hasPassword,
+            providers,
+            isGithubOnly,
+          };
+        }
+      } catch (err: unknown) {
+        const errObj = err as { code?: string; message?: string };
+        if (errObj.code === 'auth/user-not-found') {
+          return { registered: false };
+        }
+      }
+    }
+    return { registered: null };
+  } catch (err: unknown) {
+    const errMsg = err instanceof Error ? err.message : String(err);
+    return { registered: null, error: errMsg };
+  }
+}
+
+

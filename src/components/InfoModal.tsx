@@ -1,145 +1,548 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Mail, Copy, Check, ShieldCheck, FileText, Link2 } from 'lucide-react';
+import {
+  X,
+  Mail,
+  Copy,
+  Check,
+  ShieldCheck,
+  FileText,
+  Link2,
+  ArrowLeft,
+  Edit3,
+  Save,
+  RotateCcw,
+  ExternalLink,
+  Loader2,
+  CheckCircle2,
+} from 'lucide-react';
+import {
+  CODE_LEGAL_PAGES,
+  OFFICIAL_CONTACT_EMAIL,
+  LEGAL_ROUTE_SLUGS,
+  normalizeLegalPagesConfig,
+  resolveLegalSectionFromLocation,
+  LegalPageContent,
+  LegalPagesConfig,
+  LegalSectionKey,
+  InfoModalType,
+} from '../data/legalDocuments';
 
-export type InfoModalType =
-  | 'about'
-  | 'contact'
-  | 'privacy'
-  | 'terms'
-  | 'advertising'
-  | 'disclaimer'
-  | null;
-
-export interface LegalPageContent {
-  title: string;
-  subtitle: string;
-  body: string;
-}
-
-export interface LegalPagesConfig {
-  terms: LegalPageContent;
-  privacy: LegalPageContent;
-  advertising: LegalPageContent;
-  disclaimer: LegalPageContent;
-  about: LegalPageContent;
-  contactEmail: string;
-  updatedAtMs?: number;
-}
-
-export const OFFICIAL_CONTACT_EMAIL = 'ContactZappyFun@gmail.com';
-
-const LEGACY_BOILERPLATE_SNIPPETS: Record<
-  'terms' | 'privacy' | 'advertising' | 'disclaimer' | 'about',
-  string
-> = {
-  terms:
-    'Your personal watchlist and playback progress are synced automatically across sessions',
-  privacy:
-    'Signed-in users have private Cloud Firestore watchlists scoped strictly to their authenticated account. We do not sell your personal data to third parties.',
-  advertising:
-    'ZappyFun uses essential browser local storage to remember your playback progress, audio/video track selection, and display preferences across sessions.',
-  disclaimer:
-    'ZappyFun indexes publicly available metadata and embeds third-party streaming players. ZappyFun does not host media files on its own servers.',
-  about:
-    'ZappyFun is a modern movie and TV series streaming platform powered by Firebase Authentication and Cloud Firestore.',
+export {
+  CODE_LEGAL_PAGES,
+  CODE_LEGAL_PAGES as DEFAULT_LEGAL_PAGES,
+  OFFICIAL_CONTACT_EMAIL,
+  LEGAL_ROUTE_SLUGS,
+  normalizeLegalPagesConfig,
+  resolveLegalSectionFromLocation,
 };
 
-export const DEFAULT_LEGAL_PAGES: LegalPagesConfig = {
-  contactEmail: OFFICIAL_CONTACT_EMAIL,
-  terms: {
-    title: 'Terms of Use',
-    subtitle: 'Effective Date: October 2026 · Platform usage terms and disclosures.',
-    body: `Effective Date: October 2026\nOperator Details: [Owner Input Required: Legal Entity / Operator Name and Registered Address]\n\nWelcome to ZappyFun. By accessing or using this web application, you agree to these Terms of Use and applicable laws.\n\n1. Service Architecture & Third-Party Playback: ZappyFun is a catalog discovery interface that indexes publicly available metadata and embeds third-party iframe video players (currently vidly.pro). ZappyFun does not host video files and does not claim or independently verify licensing rights for streams served by third-party embed providers.\n\n2. Accounts, Watchlists & Local Progress: You may browse without an account or sign in using Google Sign-In via Firebase Authentication. When signed in with a verified email, your saved Watchlist items are stored in Cloud Firestore (/watchlists). Playback progress ("Continue Watching") and completed-title markers are stored locally in your browser's localStorage on your current device only and are not synced across devices.\n\n3. Age & Content Ratings: Displayed maturity ratings (such as PG-13 or TV-14) are informational metadata sourced from third-party databases; ZappyFun does not enforce technical age-gate verification.\n\n4. Contact: For questions regarding these Terms, contact ${OFFICIAL_CONTACT_EMAIL}.`,
-  },
-  privacy: {
-    title: 'Privacy Policy',
-    subtitle: 'Effective Date: October 2026 · Data collection, storage, and deletion disclosures.',
-    body: `Effective Date: October 2026\nData Controller & Grievance Contact: [Owner Input Required: Operator / Grievance Officer Name and Physical Address] · Email: ${OFFICIAL_CONTACT_EMAIL}\n\n1. Authentication Data: When you sign in with Google via Firebase Authentication, Firebase processes your Google account identifier (UID), email address, display name, profile photo URL, and email-verification status.\n\n2. Cloud Firestore Data: Signed-in users with verified emails can save titles to Cloud Firestore under /watchlists/{uid}_{mediaId} (storing mediaId, ownerId, and createdAt). Access to watchlist documents is restricted by Firestore Security Rules to the document owner and verified administrators.\n\n3. Support Form Data & Retention: Submitting the Support & Contact form transmits your First Name, Last Name, Email, Phone Number (optional), Message, sender UID (or "guest"), and timestamp to our Express server endpoint (POST /api/support), which holds tickets in server memory until server restart or administrative deletion. If you are signed in with a verified email, a copy is also stored in Cloud Firestore (/support_messages/{messageId}) until deleted by a verified administrator. Support messages are accessible only to verified administrators.\n\n4. Third-Party Embeds & Metadata Providers: Starting playback loads a third-party iframe from vidly.pro, which receives your IP address and browser request headers and may set its own cookies or local storage under its own privacy policy. Artwork, fonts, and metadata requests may connect to JustWatch, TMDB (image.tmdb.org), IMDb, TVMaze, Wikipedia/Wikimedia, and Google Fonts.\n\n5. Self-Service Account & Data Deletion: Signed-in users can delete their Cloud Firestore watchlist records, device-local watch progress/watchlist caches, and Firebase Authentication user account in My Space ("Delete Account & Data"). Previously submitted support tickets cannot be deleted via self-service and require emailing ${OFFICIAL_CONTACT_EMAIL}.`,
-  },
-  advertising: {
-    title: 'Cookie & Local Storage Policy',
-    subtitle: 'Browser localStorage keys, third-party embeds, and display preferences.',
-    body: `1. First-Party Browser Storage: ZappyFun does not set first-party HTTP tracking or analytics cookies. Instead, the application uses browser localStorage on your device for essential functionality:\n• zappy_watch_progress_v2, zappy_watchlist_v2, zappy_completed_v1: Stores your device-local Continue Watching progress, local watchlist cache, and completed titles.\n• zappy_ads_enabled_v1: Remembers whether optional companion display banner slots are shown or hidden.\n• zappy_legal_pages_v1, zappy_hero_8movie_cycle_v1, zappy_visual_ui_overrides_v1, zappy_active_firebase_project_v1: Caches application configuration and UI layout settings.\n\n2. Third-Party Cookies & Storage: Google Sign-In (Firebase Authentication) and third-party embedded video players (vidly.pro) operate in their own contexts and may set cookies or local storage governed by their respective policies.\n\n3. Companion Display Slots: You can toggle optional page display banner placeholders on or off below.`,
-  },
-  disclaimer: {
-    title: 'Legal Disclaimer & DMCA',
-    subtitle: 'Third-party streaming embeds, metadata attribution, and copyright notices.',
-    body: `Designated Copyright / DMCA Contact: ${OFFICIAL_CONTACT_EMAIL}\n[Owner Input Required: Designated Agent Name, Physical Mailing Address, and Phone Number]\n\n1. No Media Hosting or Licensing Claim: ZappyFun does not host, upload, or transcode video files on its own servers. Playback links point to third-party embed providers (vidly.pro). ZappyFun makes no representation or warranty that third-party embedded streams are licensed or authorized by copyright holders.\n\n2. Metadata & Trademarks: Movie and series titles, synopses, ratings, cast portraits, and artwork are retrieved from public metadata interfaces including JustWatch, TMDB, IMDb Suggestion API, TVMaze, and Wikipedia/Wikimedia. All trademarks and copyrights belong to their respective owners.\n\n3. Copyright & Takedown Requests: Rightsholders requesting removal of a catalog entry or embed reference from ZappyFun may send a written notice identifying the catalog title and URL to ${OFFICIAL_CONTACT_EMAIL}.`,
-  },
-  about: {
-    title: 'About ZappyFun',
-    subtitle: 'Catalog discovery and streaming web application.',
-    body: `ZappyFun is a web-based movie and TV series discovery application built with React, TypeScript, Express, Firebase Authentication, and Cloud Firestore.\n\nKey Features:\n• Browse and search catalog metadata by genre, release year, and popularity.\n• Device-local Continue Watching progress saved in browser localStorage.\n• Cloud Firestore watchlist synchronization for users signed in with Google.\n• Direct support messaging and customizable legal disclosures via the Admin Studio.\n\nOfficial Contact: ${OFFICIAL_CONTACT_EMAIL}`,
-  },
+export type {
+  LegalPageContent,
+  LegalPagesConfig,
+  LegalSectionKey,
+  InfoModalType,
 };
 
-function fixTypoEmail(text: string): string {
-  return text.replace(/ContactZappyFun@gamil\.com/gi, OFFICIAL_CONTACT_EMAIL);
+const LEGAL_NAV_ITEMS: {
+  id: LegalSectionKey;
+  label: string;
+  slug: string;
+}[] = [
+  { id: 'terms', label: 'Terms of Use', slug: '/Terms-of-use' },
+  { id: 'privacy', label: 'Privacy Policy', slug: '/Privacy-policy' },
+  { id: 'about', label: 'About', slug: '/About' },
+  {
+    id: 'disclaimer',
+    label: 'Disclaimer & Copyright Policy',
+    slug: '/Disclaimer-and-copyright-policy',
+  },
+  { id: 'advertising', label: 'Cookie Policy', slug: '/Cookie-policy' },
+];
+
+interface LegalDocumentPageProps {
+  section: LegalSectionKey;
+  legalPages: LegalPagesConfig;
+  adsEnabled: boolean;
+  isAdmin: boolean;
+  onSelectSection: (section: LegalSectionKey) => void;
+  onBackHome: () => void;
+  onOpenSupport: () => void;
+  onToggleAds: () => void;
+  onSaveLegalPages: (nextLegal: LegalPagesConfig) => Promise<void> | void;
 }
 
 /**
- * Normalizes stored or incoming LegalPagesConfig:
- * - Replaces any erroneous ContactZappyFun@gamil.com references with ContactZappyFun@gmail.com
- * - Preserves intentionally customized admin legal page content
- * - Upgrades unedited legacy default boilerplate to the updated code-accurate disclosures
+ * Full-Page Dedicated Legal Document View
+ * Renders /Terms-of-use, /Privacy-policy, /About, /Disclaimer-and-copyright-policy, and /Cookie-policy
+ * as a clean, non-overlapping full page with direct source-code synchronization on edit.
  */
-export function normalizeLegalPagesConfig(
-  raw?: Partial<LegalPagesConfig> | null
-): LegalPagesConfig {
-  if (!raw || typeof raw !== 'object') {
-    return DEFAULT_LEGAL_PAGES;
-  }
+export const LegalDocumentPage: React.FC<LegalDocumentPageProps> = ({
+  section,
+  legalPages,
+  adsEnabled,
+  isAdmin,
+  onSelectSection,
+  onBackHome,
+  onOpenSupport,
+  onToggleAds,
+  onSaveLegalPages,
+}) => {
+  const mergedLegal = normalizeLegalPagesConfig(legalPages);
+  const activeDoc: LegalPageContent =
+    mergedLegal[section] || CODE_LEGAL_PAGES[section];
 
-  const rawEmail = typeof raw.contactEmail === 'string' ? raw.contactEmail.trim() : '';
-  const contactEmail =
-    !rawEmail || /^ContactZappyFun@gamil\.com$/i.test(rawEmail)
-      ? OFFICIAL_CONTACT_EMAIL
-      : fixTypoEmail(rawEmail);
+  const [copiedEmail, setCopiedEmail] = useState(false);
+  const [copiedUrl, setCopiedUrl] = useState(false);
+  const [isEditingInline, setIsEditingInline] = useState(false);
+  const [draftTitle, setDraftTitle] = useState(activeDoc.title);
+  const [draftSubtitle, setDraftSubtitle] = useState(activeDoc.subtitle);
+  const [draftBody, setDraftBody] = useState(activeDoc.body);
+  const [draftEmail, setDraftEmail] = useState(mergedLegal.contactEmail);
+  const [isSavingCode, setIsSavingCode] = useState(false);
+  const [saveNotice, setSaveNotice] = useState<string | null>(null);
 
-  const sections = ['terms', 'privacy', 'advertising', 'disclaimer', 'about'] as const;
-  const result: LegalPagesConfig = {
-    ...DEFAULT_LEGAL_PAGES,
-    contactEmail,
-    updatedAtMs: raw.updatedAtMs,
+  useEffect(() => {
+    setDraftTitle(activeDoc.title);
+    setDraftSubtitle(activeDoc.subtitle);
+    setDraftBody(activeDoc.body);
+    setDraftEmail(mergedLegal.contactEmail);
+  }, [
+    section,
+    activeDoc.title,
+    activeDoc.subtitle,
+    activeDoc.body,
+    mergedLegal.contactEmail,
+  ]);
+
+  const canonicalSlug = LEGAL_ROUTE_SLUGS[section] || '/Terms-of-use';
+  const fullPageUrl =
+    typeof window !== 'undefined'
+      ? `${window.location.origin}${canonicalSlug}`
+      : canonicalSlug;
+
+  const paragraphs = String(activeDoc.body || '')
+    .split(/\n\s*\n/)
+    .map((block) => block.trim())
+    .filter(Boolean);
+
+  const handleCopyEmail = () => {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(mergedLegal.contactEmail);
+      setCopiedEmail(true);
+      setTimeout(() => setCopiedEmail(false), 2500);
+    }
   };
 
-  for (const key of sections) {
-    const incomingSec = raw[key];
-    const defaultSec = DEFAULT_LEGAL_PAGES[key];
-    if (
-      !incomingSec ||
-      typeof incomingSec !== 'object' ||
-      !incomingSec.body ||
-      !incomingSec.body.trim()
-    ) {
-      result[key] = defaultSec;
-      continue;
+  const handleCopyPageUrl = () => {
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(fullPageUrl);
+      setCopiedUrl(true);
+      setTimeout(() => setCopiedUrl(false), 2500);
     }
+  };
 
-    const trimmedBody = incomingSec.body.trim();
-    const isUneditedLegacyBoilerplate =
-      trimmedBody.includes(LEGACY_BOILERPLATE_SNIPPETS[key]) &&
-      !trimmedBody.includes('Effective Date:') &&
-      !trimmedBody.includes('First-Party Browser Storage:') &&
-      !trimmedBody.includes('No Media Hosting or Licensing Claim:') &&
-      !trimmedBody.includes('Key Features:');
-
-    if (isUneditedLegacyBoilerplate) {
-      result[key] = defaultSec;
-    } else {
-      result[key] = {
-        title: fixTypoEmail(incomingSec.title?.trim() || defaultSec.title),
-        subtitle: fixTypoEmail(
-          incomingSec.subtitle?.trim() || defaultSec.subtitle
-        ),
-        body: fixTypoEmail(incomingSec.body),
-      };
+  const handleSaveInlineEdit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsSavingCode(true);
+    setSaveNotice(null);
+    try {
+      const updatedConfig: LegalPagesConfig = normalizeLegalPagesConfig({
+        ...mergedLegal,
+        contactEmail: draftEmail.trim() || OFFICIAL_CONTACT_EMAIL,
+        updatedAtMs: Date.now(),
+        [section]: {
+          title: draftTitle.trim() || activeDoc.title,
+          subtitle: draftSubtitle.trim() || activeDoc.subtitle,
+          slug: canonicalSlug,
+          body: draftBody,
+        },
+      });
+      await onSaveLegalPages(updatedConfig);
+      setIsEditingInline(false);
+      setSaveNotice(
+        'Saved! Updated directly in source code (/src/data/legalDocuments.ts) and live application.'
+      );
+      setTimeout(() => setSaveNotice(null), 5000);
+    } finally {
+      setIsSavingCode(false);
     }
-  }
+  };
 
-  return result;
-}
+  return (
+    <motion.div
+      key={`legal-page-${section}`}
+      data-legal-page="true"
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      exit={{ opacity: 0, y: -8 }}
+      transition={{ duration: 0.22 }}
+      className="w-full max-w-5xl mx-auto space-y-6 pb-12"
+    >
+      {/* Top Navigation & Route Bar */}
+      <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-4 shadow-xl">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center gap-2.5">
+            <button
+              type="button"
+              onClick={onBackHome}
+              className="min-h-[40px] px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFC400] text-white text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer transition-colors"
+            >
+              <ArrowLeft className="w-4 h-4 text-[#FFC400] shrink-0" />
+              <span>Back to Home</span>
+            </button>
+
+            <div className="px-3 py-2 rounded-xl bg-[#08090D] border border-[#292C35] flex items-center gap-2 text-xs font-mono-tabular text-[#A7A9B4]">
+              <Link2 className="w-3.5 h-3.5 text-[#FFC400] shrink-0" />
+              <span className="truncate max-w-[220px] sm:max-w-[360px] text-white">
+                {canonicalSlug}
+              </span>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleCopyPageUrl}
+              className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#D4D6DF] hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
+            >
+              {copiedUrl ? (
+                <>
+                  <Check className="w-3.5 h-3.5 text-[#FFC400]" />
+                  <span className="text-[#FFC400]">URL Copied</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5 text-[#FFC400]" />
+                  <span>Copy Page URL</span>
+                </>
+              )}
+            </button>
+
+            <a
+              href={canonicalSlug}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#D4D6DF] hover:text-white flex items-center gap-1.5 transition-colors"
+              title="Open this legal page in a new browser tab"
+            >
+              <ExternalLink className="w-3.5 h-3.5 text-[#FFC400]" />
+              <span>New Tab</span>
+            </a>
+
+            {isAdmin && (
+              <button
+                type="button"
+                onClick={() => setIsEditingInline((prev) => !prev)}
+                className={`min-h-[38px] px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors ${
+                  isEditingInline
+                    ? 'bg-[#FFC400] text-[#08090D]'
+                    : 'bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-[#FFC400]'
+                }`}
+              >
+                <Edit3 className="w-3.5 h-3.5" />
+                <span>
+                  {isEditingInline ? 'Close Editor' : 'Edit in Code'}
+                </span>
+              </button>
+            )}
+          </div>
+        </div>
+
+        {/* Dedicated Legal Pages Tab Switcher */}
+        <div className="flex flex-wrap items-center gap-2 pt-3 border-t border-[#292C35]">
+          {LEGAL_NAV_ITEMS.map((item) => {
+            const isActive = section === item.id;
+            return (
+              <a
+                key={item.id}
+                href={item.slug}
+                onClick={(e) => {
+                  e.preventDefault();
+                  onSelectSection(item.id);
+                }}
+                className={`min-h-[38px] px-3.5 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-colors cursor-pointer ${
+                  isActive
+                    ? 'bg-[#FFC400] text-[#08090D] shadow-md shadow-[#FFC400]/15'
+                    : 'bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-[#A7A9B4] hover:text-white'
+                }`}
+              >
+                <FileText className="w-3.5 h-3.5 shrink-0" />
+                <span>{item.label}</span>
+              </a>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* Save Confirmation Banner */}
+      {saveNotice && (
+        <div
+          role="status"
+          className="rounded-xl bg-emerald-500/10 border border-emerald-500/40 p-4 flex items-center gap-2.5 text-xs sm:text-sm text-emerald-200"
+        >
+          <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+          <span>{saveNotice}</span>
+        </div>
+      )}
+
+      {/* Inline Admin Code-Sync Editor (When Active) */}
+      {isAdmin && isEditingInline && (
+        <form
+          onSubmit={handleSaveInlineEdit}
+          className="rounded-2xl bg-[#14161D] border-2 border-[#FFC400]/60 p-5 sm:p-6 space-y-4 shadow-2xl"
+        >
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#292C35] pb-3">
+            <div>
+              <h2 className="text-sm sm:text-base font-bold text-white font-display flex items-center gap-2">
+                <Edit3 className="w-4 h-4 text-[#FFC400]" />
+                <span>
+                  Editing {activeDoc.title} ({canonicalSlug})
+                </span>
+              </h2>
+              <p className="text-xs text-[#A7A9B4] mt-0.5">
+                Saving updates both the live app and writes directly into{' '}
+                <code className="text-[#FFC400]">
+                  /src/data/legalDocuments.ts
+                </code>{' '}
+                in your codebase.
+              </p>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const def = CODE_LEGAL_PAGES[section];
+                  setDraftTitle(def.title);
+                  setDraftSubtitle(def.subtitle);
+                  setDraftBody(def.body);
+                  setDraftEmail(CODE_LEGAL_PAGES.contactEmail);
+                }}
+                className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#A7A9B4] hover:text-white flex items-center gap-1.5 cursor-pointer"
+              >
+                <RotateCcw className="w-3.5 h-3.5 text-[#FFC400]" />
+                <span>Reset Default</span>
+              </button>
+
+              <button
+                type="submit"
+                disabled={isSavingCode}
+                className="min-h-[36px] px-4 py-1.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-60"
+              >
+                {isSavingCode ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                    <span>Updating Code...</span>
+                  </>
+                ) : (
+                  <>
+                    <Save className="w-3.5 h-3.5" />
+                    <span>Save &amp; Update in Code</span>
+                  </>
+                )}
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-[#A7A9B4]">
+                Document Title
+              </label>
+              <input
+                type="text"
+                value={draftTitle}
+                onChange={(e) => setDraftTitle(e.target.value)}
+                className="w-full min-h-[40px] px-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white font-bold focus:outline-none focus:border-[#FFC400]"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-[#A7A9B4]">
+                Subtitle / Effective Date
+              </label>
+              <input
+                type="text"
+                value={draftSubtitle}
+                onChange={(e) => setDraftSubtitle(e.target.value)}
+                className="w-full min-h-[40px] px-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-[#FFC400] focus:outline-none focus:border-[#FFC400]"
+              />
+            </div>
+
+            <div className="space-y-1.5">
+              <label className="block text-xs font-semibold text-[#A7A9B4]">
+                Official Contact Email
+              </label>
+              <input
+                type="email"
+                value={draftEmail}
+                onChange={(e) => setDraftEmail(e.target.value)}
+                className="w-full min-h-[40px] px-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
+              />
+            </div>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="block text-xs font-semibold text-[#A7A9B4]">
+              Full Document Content (Separate sections with a blank line)
+            </label>
+            <textarea
+              rows={14}
+              value={draftBody}
+              onChange={(e) => setDraftBody(e.target.value)}
+              className="w-full p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white leading-relaxed focus:outline-none focus:border-[#FFC400]"
+            />
+          </div>
+        </form>
+      )}
+
+      {/* Main Legal Document Article (Clean, Spacious, Zero Overlap) */}
+      <article className="rounded-2xl bg-[#14161D] border border-[#292C35] p-6 sm:p-8 lg:p-10 space-y-6 shadow-2xl">
+        {/* Document Header */}
+        <header className="space-y-2 border-b border-[#292C35] pb-5">
+          <div className="inline-flex items-center gap-2 px-3 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-[11px] font-bold text-[#FFC400] uppercase tracking-wider">
+            <FileText className="w-3.5 h-3.5 shrink-0" />
+            <span>Official ZappyFun Legal Document</span>
+          </div>
+
+          <h1 className="text-2xl sm:text-3xl lg:text-4xl font-black text-white font-display tracking-tight leading-tight break-words">
+            {activeDoc.title}
+          </h1>
+
+          {activeDoc.subtitle && (
+            <p className="text-xs sm:text-sm text-[#FFC400] font-semibold leading-relaxed">
+              {activeDoc.subtitle}
+            </p>
+          )}
+        </header>
+
+        {/* Document Body Blocks */}
+        <div className="space-y-5 text-sm sm:text-base text-[#D4D6DF] leading-relaxed break-words">
+          {paragraphs.map((block, idx) => {
+            const lines = block
+              .split('\n')
+              .map((l) => l.trim())
+              .filter(Boolean);
+            const firstLine = lines[0] || '';
+            const isNumberedHeading =
+              /^\d+\.\s+/.test(firstLine) && lines.length > 1;
+
+            if (isNumberedHeading) {
+              const restLines = lines.slice(1);
+              return (
+                <section
+                  key={idx}
+                  className="rounded-xl bg-[#08090D]/70 border border-[#292C35] p-4 sm:p-5 space-y-2.5"
+                >
+                  <h2 className="text-base sm:text-lg font-bold text-white font-display leading-snug">
+                    {firstLine}
+                  </h2>
+                  <div className="space-y-2 text-xs sm:text-sm text-[#D4D6DF] leading-relaxed">
+                    {restLines.map((line, lineIdx) => (
+                      <p key={lineIdx} className="whitespace-pre-wrap">
+                        {line}
+                      </p>
+                    ))}
+                  </div>
+                </section>
+              );
+            }
+
+            return (
+              <div
+                key={idx}
+                className="rounded-xl bg-[#08090D]/50 border border-[#292C35]/70 p-4 sm:p-5 space-y-1.5 text-xs sm:text-sm text-[#D4D6DF] leading-relaxed"
+              >
+                {lines.map((line, lineIdx) => (
+                  <p key={lineIdx} className="whitespace-pre-wrap">
+                    {line}
+                  </p>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+
+        {/* Companion Display Banner Toggle on Cookie Policy */}
+        {section === 'advertising' && (
+          <div className="p-4 sm:p-5 rounded-xl bg-[#08090D] border border-[#292C35] flex flex-wrap items-center justify-between gap-4">
+            <div className="flex items-center gap-2.5">
+              <ShieldCheck className="w-5 h-5 text-[#FFC400] shrink-0" />
+              <div>
+                <p className="text-xs sm:text-sm font-bold text-white">
+                  Companion Display Banner Slots
+                </p>
+                <p className="text-xs text-[#A7A9B4]">
+                  Control whether optional companion display slots are shown during your session.
+                </p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={onToggleAds}
+              className={`min-h-[40px] px-4 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
+                adsEnabled
+                  ? 'bg-[#FFC400] text-[#08090D]'
+                  : 'bg-[#14161D] text-[#A7A9B4] hover:text-white border border-[#292C35]'
+              }`}
+            >
+              {adsEnabled ? 'Enabled (Showing Slots)' : 'Disabled (Hidden)'}
+            </button>
+          </div>
+        )}
+
+        {/* Official Contact & Support Card */}
+        <footer className="pt-4 border-t border-[#292C35] flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="w-10 h-10 rounded-xl bg-[#FFC400]/15 border border-[#FFC400]/30 text-[#FFC400] flex items-center justify-center shrink-0">
+              <Mail className="w-5 h-5" />
+            </div>
+            <div className="min-w-0">
+              <span className="block text-[10px] uppercase tracking-wider text-[#747784] font-bold">
+                Official Legal &amp; Support Contact
+              </span>
+              <a
+                href={`mailto:${mergedLegal.contactEmail}`}
+                className="text-xs sm:text-sm font-bold text-white hover:text-[#FFC400] truncate block transition-colors"
+              >
+                {mergedLegal.contactEmail}
+              </a>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+            <button
+              type="button"
+              onClick={handleCopyEmail}
+              className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#FFC400] flex items-center gap-1.5 cursor-pointer transition-colors"
+            >
+              {copiedEmail ? (
+                <>
+                  <Check className="w-3.5 h-3.5" />
+                  <span>Email Copied</span>
+                </>
+              ) : (
+                <>
+                  <Copy className="w-3.5 h-3.5" />
+                  <span>Copy Email</span>
+                </>
+              )}
+            </button>
+
+            <button
+              type="button"
+              onClick={onOpenSupport}
+              className="min-h-[38px] px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-xs font-bold text-[#08090D] cursor-pointer transition-colors"
+            >
+              Open Support Form
+            </button>
+          </div>
+        </footer>
+      </article>
+    </motion.div>
+  );
+};
 
 interface InfoModalProps {
   modalType: InfoModalType;
@@ -152,7 +555,7 @@ interface InfoModalProps {
 export const InfoModal: React.FC<InfoModalProps> = ({
   modalType,
   adsEnabled,
-  legalPages = DEFAULT_LEGAL_PAGES,
+  legalPages = CODE_LEGAL_PAGES,
   onToggleAds,
   onClose,
 }) => {
@@ -164,6 +567,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
   const getActiveContent = (): {
     title: string;
     subtitle: string;
+    slug: string;
     paragraphs: string[];
   } | null => {
     if (!modalType) return null;
@@ -172,6 +576,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
       return {
         title: 'Help & Contact',
         subtitle: 'Direct contact with ZappyFun administration.',
+        slug: '/About',
         paragraphs: [
           'Use our Support page to send a direct message to the ZappyFun administration team. Submitted messages are sent to the Admin Studio support inbox.',
           `Official Contact Email: ${mergedLegal.contactEmail}`,
@@ -180,7 +585,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
     }
 
     const pageObj: LegalPageContent =
-      mergedLegal[modalType] || DEFAULT_LEGAL_PAGES[modalType];
+      mergedLegal[modalType] || CODE_LEGAL_PAGES[modalType];
     const paragraphs = String(pageObj?.body || '')
       .split(/\n+/)
       .map((p) => p.trim())
@@ -189,6 +594,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
     return {
       title: pageObj?.title || 'Information',
       subtitle: pageObj?.subtitle || '',
+      slug: LEGAL_ROUTE_SLUGS[modalType] || '/Terms-of-use',
       paragraphs:
         paragraphs.length > 0
           ? paragraphs
@@ -207,11 +613,8 @@ export const InfoModal: React.FC<InfoModalProps> = ({
   };
 
   const handleCopyDirectLink = () => {
-    if (!modalType) return;
-    const paramValue = modalType === 'advertising' ? 'cookies' : modalType;
-    const url = `${window.location.origin}${window.location.pathname}?legal=${encodeURIComponent(
-      paramValue
-    )}`;
+    if (!modalType || !activeContent) return;
+    const url = `${window.location.origin}${activeContent.slug}`;
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(url);
       setCopiedLink(true);
@@ -227,6 +630,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
           animate={{ opacity: 1 }}
           exit={{ opacity: 0 }}
           transition={{ duration: 0.2 }}
+          data-info-modal="true"
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 overflow-y-auto"
           role="dialog"
           aria-modal="true"
@@ -239,7 +643,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
             exit={{ opacity: 0, scale: 0.94, y: 16 }}
             transition={{ duration: 0.25, ease: 'easeOut' }}
             onClick={(e) => e.stopPropagation()}
-            className="w-full max-w-xl rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 space-y-4 shadow-2xl my-auto max-h-[88vh] flex flex-col"
+            className="w-full max-w-2xl rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 space-y-4 shadow-2xl my-auto max-h-[88vh] flex flex-col"
           >
             <div className="flex items-start justify-between gap-4 shrink-0">
               <div className="min-w-0">
@@ -288,7 +692,7 @@ export const InfoModal: React.FC<InfoModalProps> = ({
               </div>
             </div>
 
-            <div className="space-y-3 text-xs sm:text-sm text-[#D4D6DF] leading-relaxed overflow-y-auto pr-1 flex-1">
+            <div className="space-y-3 text-xs sm:text-sm text-[#D4D6DF] leading-relaxed overflow-y-auto min-h-0 pr-1 flex-1 break-words">
               {activeContent.paragraphs.map((p, idx) => (
                 <p key={idx} className="whitespace-pre-wrap">
                   {p}

@@ -31,6 +31,10 @@ import {
   FileText,
   Save,
   RotateCcw,
+  KeyRound,
+  Send,
+  Server,
+  RefreshCw,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -46,12 +50,13 @@ import {
   db,
   ADMIN_EMAIL,
   isUserAdmin,
-  signInWithGoogle,
+  signInWithEmail,
+  sendPasswordReset,
+  signInWithGithub,
+  getFriendlyAuthErrorMessage,
   handleFirestoreError,
   OperationType,
   ACTIVE_FIREBASE_PROJECT_ID,
-  getActiveFirebaseTarget,
-  setActiveFirebaseTarget,
 } from '../firebase';
 import {
   Genre,
@@ -76,7 +81,7 @@ import {
 } from './InfoModal';
 
 const LOGO_ASSET_URL =
-  '/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png';
+  '/assets/aistudio/20261023_170257_6e6b6602.png';
 
 export const ZAPPYFUN_FIRESTORE_RULES_SNIPPET = `rules_version = '2';
 service cloud.firestore {
@@ -545,8 +550,36 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const isAdmin = isUserAdmin(currentUser?.email, currentUser?.emailVerified);
 
   const [activeAdminTab, setActiveAdminTab] = useState<
-    'catalog' | 'support' | 'legal'
+    'catalog' | 'support' | 'legal' | 'smtp'
   >(initialTab);
+
+  // Admin Email Sign In State
+  const [adminEmailInput, setAdminEmailInput] = useState<string>(ADMIN_EMAIL);
+  const [adminPasswordInput, setAdminPasswordInput] = useState<string>('');
+  const [isAdminLoggingIn, setIsAdminLoggingIn] = useState<boolean>(false);
+  const [isAdminGithubLoading, setIsAdminGithubLoading] = useState<boolean>(false);
+
+  // SMTP Settings State
+  const [smtpForm, setSmtpForm] = useState({
+    host: 'smtp.gmail.com',
+    port: 465,
+    secure: true,
+    user: 'pawarayushai1@gmail.com',
+    pass: '',
+    from: 'ZappyFun Verification <pawarayushai1@gmail.com>',
+  });
+  const [smtpStatus, setSmtpStatus] = useState<{
+    configured: boolean;
+    host: string;
+    port: number;
+    user: string;
+    from: string;
+    hasPassword: boolean;
+  } | null>(null);
+  const [isSavingSmtp, setIsSavingSmtp] = useState<boolean>(false);
+  const [isTestingSmtp, setIsTestingSmtp] = useState<boolean>(false);
+  const [smtpTestResult, setSmtpTestResult] = useState<string | null>(null);
+  const [showSmtpPassword, setShowSmtpPassword] = useState<boolean>(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [justWatchUrl, setJustWatchUrl] = useState<string>('');
   const [isExtractingJw, setIsExtractingJw] = useState<boolean>(false);
@@ -639,7 +672,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   // Firebase Project Switcher & Security Rules Drawer State
   const [rulesCopied, setRulesCopied] = useState<boolean>(false);
   const [showRulesDrawer, setShowRulesDrawer] = useState<boolean>(false);
-  const activeFirebaseTarget = getActiveFirebaseTarget();
 
   // Direct JustWatch Search & Browse State
   const [jwSearchQuery, setJwSearchQuery] = useState<string>('');
@@ -707,6 +739,125 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       setActiveAdminTab('catalog');
     }
   }, [prefillMedia]);
+
+  const loadSmtpStatus = useCallback(async () => {
+    try {
+      const res = await fetch('/api/auth/smtp-status');
+      if (res.ok) {
+        const data = await res.json();
+        setSmtpStatus(data);
+        setSmtpForm((prev) => ({
+          ...prev,
+          host: data.host || prev.host,
+          port: data.port || prev.port,
+          secure: data.secure ?? prev.secure,
+          user: data.user || prev.user,
+          from: data.from || prev.from,
+        }));
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      loadSmtpStatus();
+    }
+  }, [isOpen, loadSmtpStatus]);
+
+  const handleSaveSmtp = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentUser) return;
+    setIsSavingSmtp(true);
+    setStatusMessage(null);
+    setErrorMessage(null);
+    try {
+      const token = await currentUser.getIdToken();
+      const res = await fetch('/api/admin/smtp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify(smtpForm),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to save SMTP settings.');
+      setSmtpStatus(data.status);
+      setStatusMessage('SMTP configuration saved successfully! Gmail verification is active.');
+    } catch (err: unknown) {
+      setErrorMessage(err instanceof Error ? err.message : 'Error saving SMTP settings.');
+    } finally {
+      setIsSavingSmtp(false);
+    }
+  };
+
+  const handleTestSmtp = async () => {
+    if (!currentUser) return;
+    setIsTestingSmtp(true);
+    setSmtpTestResult(null);
+    try {
+      const token = await currentUser.getIdToken();
+      const res = await fetch('/api/admin/test-smtp', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${token}`,
+        },
+        body: JSON.stringify({ email: smtpForm.user || ADMIN_EMAIL }),
+      });
+      const data = await res.json();
+      setSmtpTestResult(data.message || (data.success ? 'Test email sent successfully!' : 'Test email failed.'));
+    } catch (err: unknown) {
+      setSmtpTestResult(err instanceof Error ? err.message : 'Failed to send test email.');
+    } finally {
+      setIsTestingSmtp(false);
+    }
+  };
+
+  const handleAdminEmailSignIn = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsAdminLoggingIn(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    try {
+      await signInWithEmail(adminEmailInput.trim(), adminPasswordInput);
+      setStatusMessage('Signed in successfully as administrator.');
+    } catch (err: unknown) {
+      const errObj = err as { code?: string; message?: string };
+      setErrorMessage(errObj.message || 'Incorrect email or password.');
+    } finally {
+      setIsAdminLoggingIn(false);
+    }
+  };
+
+  const handleAdminPasswordReset = async () => {
+    try {
+      await sendPasswordReset(adminEmailInput.trim() || ADMIN_EMAIL);
+      setStatusMessage(`Password reset link sent to ${adminEmailInput.trim() || ADMIN_EMAIL}.`);
+    } catch (err: unknown) {
+      const errObj = err as { code?: string; message?: string };
+      setErrorMessage(errObj.message || 'Failed to send password reset email.');
+    }
+  };
+
+  const handleAdminGithubSignIn = async () => {
+    setIsAdminGithubLoading(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+    try {
+      const result = await signInWithGithub();
+      if (result && result.user) {
+        setStatusMessage(`Signed in as ${result.user.email}`);
+      }
+    } catch (err: unknown) {
+      const friendly = getFriendlyAuthErrorMessage(err);
+      setErrorMessage(friendly);
+    } finally {
+      setIsAdminGithubLoading(false);
+    }
+  };
 
   const fetchJustWatchCatalog = useCallback(
     async (
@@ -1541,25 +1692,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </span>
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextTarget =
-                        activeFirebaseTarget === 'zappyfun'
-                          ? 'default'
-                          : 'zappyfun';
-                      setActiveFirebaseTarget(nextTarget);
-                      window.location.reload();
-                    }}
-                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                  <div
+                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-bold text-white/90 flex items-center gap-1.5 whitespace-nowrap select-none"
+                    title="Running exclusively on ZappyFun Firebase"
                   >
-                    <Database className="w-3.5 h-3.5 text-[#FFC400] shrink-0" />
-                    <span>
-                      {activeFirebaseTarget === 'zappyfun'
-                        ? 'DB: zappyfun (Switch)'
-                        : 'Switch to zappyfun'}
-                    </span>
-                  </button>
+                    <Database className="w-3.5 h-3.5 text-[#22C55E] shrink-0" />
+                    <span>DB: zappyfun</span>
+                  </div>
 
                   <button
                     type="button"
@@ -1605,19 +1744,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           {openSupportCount}
                         </span>
                       )}
-                    </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActiveAdminTab('legal')}
-                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
-                        activeAdminTab === 'legal'
-                          ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
-                          : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
-                      }`}
-                    >
-                      <FileText className="w-3.5 h-3.5 shrink-0" />
-                      <span>Legal &amp; Policies</span>
                     </button>
                   </div>
 
@@ -1722,24 +1848,103 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       Currently signed in as: {currentUser.email}
                     </p>
                   )}
-                  <div className="pt-2 flex flex-wrap justify-center gap-3">
+                  <form
+                    onSubmit={handleAdminEmailSignIn}
+                    className="max-w-md mx-auto space-y-3.5 text-left pt-2"
+                  >
+                    <div>
+                      <label className="block text-xs font-bold text-[#A7A9B4] uppercase tracking-wider mb-1">
+                        Admin Email
+                      </label>
+                      <input
+                        type="email"
+                        value={adminEmailInput}
+                        onChange={(e) => setAdminEmailInput(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white placeholder-[#5A5E70] focus:outline-none focus:border-[#FFC400]"
+                        placeholder={ADMIN_EMAIL}
+                        required
+                      />
+                    </div>
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-xs font-bold text-[#A7A9B4] uppercase tracking-wider">
+                          Password
+                        </label>
+                        <button
+                          type="button"
+                          onClick={handleAdminPasswordReset}
+                          className="text-xs text-[#FFC400] hover:underline"
+                        >
+                          Reset password?
+                        </button>
+                      </div>
+                      <input
+                        type="password"
+                        value={adminPasswordInput}
+                        onChange={(e) => setAdminPasswordInput(e.target.value)}
+                        className="w-full px-3.5 py-2.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white placeholder-[#5A5E70] focus:outline-none focus:border-[#FFC400]"
+                        placeholder="••••••••"
+                        required
+                      />
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isAdminLoggingIn}
+                      className="w-full py-3 rounded-xl bg-[#FFC400] text-[#08090D] font-bold text-xs hover:bg-[#FFD54A] flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-50 transition-all"
+                    >
+                      {isAdminLoggingIn ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Signing In...</span>
+                        </>
+                      ) : (
+                        <>
+                          <LogIn className="w-3.5 h-3.5" />
+                          <span>Sign in as Admin ({ADMIN_EMAIL})</span>
+                        </>
+                      )}
+                    </button>
+
+                    <div className="relative my-3">
+                      <div className="absolute inset-0 flex items-center">
+                        <div className="w-full border-t border-[#292C35]" />
+                      </div>
+                      <div className="relative flex justify-center text-xs">
+                        <span className="px-3 bg-[#14161D] text-[#7E8292] uppercase font-bold tracking-wider text-[10px]">
+                          Or authenticate with
+                        </span>
+                      </div>
+                    </div>
+
                     <button
                       type="button"
-                      onClick={async () => {
-                        try {
-                          await signInWithGoogle();
-                        } catch {
-                          setErrorMessage(
-                            'Google Sign-In popup was closed or blocked.'
-                          );
-                        }
-                      }}
-                      className="min-h-[46px] px-6 py-3 rounded-2xl bg-[#FFC400] text-[#08090D] font-bold text-sm hover:bg-[#FFD54A] transition-all flex items-center gap-2.5 cursor-pointer shadow-lg shadow-[#FFC400]/20"
+                      onClick={handleAdminGithubSignIn}
+                      disabled={isAdminLoggingIn || isAdminGithubLoading}
+                      className="w-full py-2.5 px-4 rounded-xl bg-[#08090D] hover:bg-[#1A1D27] border border-[#292C35] text-white font-semibold text-xs flex items-center justify-center gap-2 transition-all cursor-pointer disabled:opacity-50"
                     >
-                      <LogIn className="w-4 h-4" />
-                      <span>Sign in with Google ({ADMIN_EMAIL})</span>
+                      {isAdminGithubLoading ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin text-white" />
+                          <span>Connecting to GitHub...</span>
+                        </>
+                      ) : (
+                        <>
+                          <svg
+                            className="w-3.5 h-3.5 fill-current text-white shrink-0"
+                            viewBox="0 0 24 24"
+                            aria-hidden="true"
+                          >
+                            <path
+                              fillRule="evenodd"
+                              clipRule="evenodd"
+                              d="M12 2C6.477 2 2 6.484 2 12.017c0 4.425 2.865 8.18 6.839 9.504.5.092.682-.217.682-.483 0-.237-.008-.868-.013-1.703-2.782.605-3.369-1.343-3.369-1.343-.454-1.158-1.11-1.466-1.11-1.466-.908-.62.069-.608.069-.608 1.003.07 1.53 1.032 1.53 1.032.892 1.53 2.341 1.088 2.91.832.092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.113-4.555-4.951 0-1.093.39-1.988 1.029-2.688-.103-.253-.446-1.272.098-2.65 0 0 .84-.27 2.75 1.026A9.564 9.564 0 0112 6.844c.85.004 1.705.115 2.504.337 1.909-1.296 2.747-1.027 2.747-1.027.546 1.379.202 2.398.1 2.651.64.7 1.028 1.595 1.028 2.688 0 3.848-2.339 4.695-4.566 4.943.359.309.678.92.678 1.855 0 1.338-.012 2.419-.012 2.747 0 .268.18.58.688.482A10.019 10.019 0 0022 12.017C22 6.484 17.522 2 12 2z"
+                            />
+                          </svg>
+                          <span>Continue with GitHub ({ADMIN_EMAIL})</span>
+                        </>
+                      )}
                     </button>
-                  </div>
+                  </form>
                 </div>
               ) : activeAdminTab === 'support' ? (
                 /* =========================================================
@@ -1880,188 +2085,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </div>
                   )}
                 </div>
-              ) : activeAdminTab === 'legal' ? (
-                /* =========================================================
-                    LEGAL & POLICIES EDITOR TAB (Terms, Privacy, Cookie, Disclaimer, About, Contact)
-                ========================================================= */
-                <form
-                  onSubmit={handleSaveLegalToFirestore}
-                  className="space-y-5"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-[#292C35] pb-4">
-                    <div>
-                      <h3 className="text-base sm:text-lg font-bold text-white font-display flex items-center gap-2">
-                        <FileText className="w-5 h-5 text-[#FFC400]" />
-                        <span>
-                          Legal &amp; Policies Editor — Terms, Privacy &amp; Contact Info
-                        </span>
-                      </h3>
-                      <p className="text-xs text-[#A7A9B4] mt-1">
-                        Write and customize Terms of Use, Privacy Policy, Cookie Policy, Disclaimer, About page, and Official Contact Email. Changes update immediately across the entire app.
-                      </p>
-                    </div>
-
-                    <div className="flex flex-wrap items-center gap-2 shrink-0">
-                      <button
-                        type="button"
-                        onClick={() => setLegalDraft(DEFAULT_LEGAL_PAGES)}
-                        className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#A7A9B4] hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
-                      >
-                        <RotateCcw className="w-3.5 h-3.5 text-[#FFC400]" />
-                        <span>Reset Defaults</span>
-                      </button>
-
-                      <button
-                        type="submit"
-                        disabled={isSavingLegal}
-                        className="min-h-[38px] px-5 py-1.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#FFC400]/20 transition-colors disabled:opacity-60"
-                      >
-                        {isSavingLegal ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Saving...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Save className="w-3.5 h-3.5" />
-                            <span>Save All Legal Pages</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  {/* Official Contact Email Configuration */}
-                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-2.5">
-                    <label className="block text-xs sm:text-sm font-bold text-white flex items-center gap-2">
-                      <Mail className="w-4 h-4 text-[#FFC400]" />
-                      <span>Official Contact Email (Displayed in Support, Footer &amp; Legal Modals)</span>
-                    </label>
-                    <input
-                      type="text"
-                      value={legalDraft.contactEmail}
-                      onChange={(e) =>
-                        setLegalDraft((prev) => ({
-                          ...prev,
-                          contactEmail: e.target.value,
-                        }))
-                      }
-                      placeholder="ContactZappyFun@gmail.com"
-                      className="w-full min-h-[42px] px-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
-                    />
-                  </div>
-
-                  {/* Legal Document Selector Pills */}
-                  <div className="flex flex-wrap items-center gap-2">
-                    {(
-                      [
-                        { id: 'terms', label: 'Terms of Use' },
-                        { id: 'privacy', label: 'Privacy Policy' },
-                        { id: 'advertising', label: 'Cookie Policy' },
-                        { id: 'disclaimer', label: 'Disclaimer & DMCA' },
-                        { id: 'about', label: 'About ZappyFun' },
-                      ] as const
-                    ).map((docTab) => (
-                      <button
-                        key={docTab.id}
-                        type="button"
-                        onClick={() => setActiveLegalSection(docTab.id)}
-                        className={`min-h-[38px] px-4 py-2 rounded-xl text-xs font-bold transition-colors cursor-pointer ${
-                          activeLegalSection === docTab.id
-                            ? 'bg-[#FFC400] text-[#08090D] shadow-md shadow-[#FFC400]/20'
-                            : 'bg-[#14161D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
-                        }`}
-                      >
-                        {docTab.label}
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Active Legal Document Editor */}
-                  {(() => {
-                    const currentDoc =
-                      legalDraft[activeLegalSection] ||
-                      DEFAULT_LEGAL_PAGES[activeLegalSection];
-                    return (
-                      <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-6 space-y-4">
-                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                          <div className="space-y-1.5">
-                            <label className="block text-xs font-semibold text-[#A7A9B4]">
-                              Page Title
-                            </label>
-                            <input
-                              type="text"
-                              value={currentDoc.title}
-                              onChange={(e) =>
-                                updateLegalSectionField(
-                                  activeLegalSection,
-                                  'title',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white font-bold focus:outline-none focus:border-[#FFC400]"
-                            />
-                          </div>
-
-                          <div className="space-y-1.5">
-                            <label className="block text-xs font-semibold text-[#A7A9B4]">
-                              Subtitle / Short Summary
-                            </label>
-                            <input
-                              type="text"
-                              value={currentDoc.subtitle}
-                              onChange={(e) =>
-                                updateLegalSectionField(
-                                  activeLegalSection,
-                                  'subtitle',
-                                  e.target.value
-                                )
-                              }
-                              className="w-full min-h-[42px] px-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-[#FFC400] focus:outline-none focus:border-[#FFC400]"
-                            />
-                          </div>
-                        </div>
-
-                        <div className="space-y-1.5">
-                          <label className="block text-xs font-semibold text-[#A7A9B4]">
-                            Full Legal Content (Separate paragraphs with a blank line)
-                          </label>
-                          <textarea
-                            rows={10}
-                            value={currentDoc.body}
-                            onChange={(e) =>
-                              updateLegalSectionField(
-                                activeLegalSection,
-                                'body',
-                                e.target.value
-                              )
-                            }
-                            placeholder="Write your full policy or legal text here..."
-                            className="w-full p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white leading-relaxed focus:outline-none focus:border-[#FFC400]"
-                          />
-                        </div>
-
-                        <div className="flex flex-wrap items-center justify-between gap-3 pt-2 border-t border-[#292C35]">
-                          <span className="text-xs text-[#747784]">
-                            Changes are synced in real time via Cloud Firestore (`ui_config/legal_pages`).
-                          </span>
-                          <button
-                            type="submit"
-                            disabled={isSavingLegal}
-                            className="min-h-[42px] px-6 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 transition-colors disabled:opacity-60"
-                          >
-                            <Save className="w-4 h-4" />
-                            <span>
-                              {isSavingLegal
-                                ? 'Saving...'
-                                : `Save ${currentDoc.title}`}
-                            </span>
-                          </button>
-                        </div>
-                      </div>
-                    );
-                  })()}
-                </form>
               ) : (
                 /* =========================================================
                     CATALOG, MULTI-LINK BATCH IMPORTER & DIRECT JUSTWATCH TAB

@@ -194,5 +194,13 @@ service cloud.firestore {
       allow list: if false;
       allow create, update, delete: if false;
     }
+
+    // 9. Collection Rules: /users/{userId} (User Profile: name, age, email)
+    match /users/{userId} {
+      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow list: if isAdmin();
+      allow create, update: if isSignedIn() && request.auth.uid == userId;
+      allow delete: if isSignedIn() && request.auth.uid == userId;
+    }
   }
 }

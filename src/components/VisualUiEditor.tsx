@@ -64,7 +64,24 @@ export interface ElementUiOverride {
 
 export type UiOverridesMap = Record<string, ElementUiOverride>;
 
-const LOCAL_UI_OVERRIDES_KEY = 'zappy_visual_ui_overrides_v1';
+const LOCAL_UI_OVERRIDES_KEY = 'zappy_visual_ui_overrides_v3';
+const LEGACY_UI_OVERRIDES_KEYS = [
+  'zappy_visual_ui_overrides_v1',
+  'zappy_visual_ui_overrides_v2',
+];
+
+const LAYOUT_CONTAINER_TAGS = new Set([
+  'main',
+  'section',
+  'article',
+  'aside',
+  'header',
+  'footer',
+  'nav',
+  'form',
+  'ul',
+  'ol',
+]);
 
 /**
  * Generates a deterministic CSS selector path for any DOM element outside the Visual Editor UI.
@@ -101,7 +118,9 @@ export function getStableElementSelector(el: HTMLElement): string {
       (child) =>
         child.tagName === current!.tagName &&
         !child.hasAttribute('data-zappy-editor') &&
-        !child.hasAttribute('data-admin-studio')
+        !child.hasAttribute('data-admin-studio') &&
+        !child.hasAttribute('data-legal-page') &&
+        !child.hasAttribute('data-info-modal')
     );
 
     if (siblings.length <= 1) {
@@ -133,24 +152,41 @@ export function getElementReadableLabel(el: HTMLElement): string {
 }
 
 /**
- * Builds the global <style> sheet for all active ElementUiOverrides
- * Strictly excludes [data-admin-studio="true"] and [data-zappy-editor="true"] so Admin Studio buttons are never displaced.
+ * Builds the global <style> sheet for all active ElementUiOverrides.
+ * Strictly excludes [data-admin-studio="true"], [data-zappy-editor="true"],
+ * [data-legal-page="true"], and [data-info-modal="true"] so modals, legal pages,
+ * and Admin Studio elements are never displaced or collapsed.
  */
 function buildOverridesCss(overrides: UiOverridesMap): string {
   const rules: string[] = [];
 
   for (const item of Object.values(overrides)) {
     if (!item || !item.selector) continue;
+    const tagLower = (item.tagName || '').toLowerCase();
+    const isLayoutContainer =
+      LAYOUT_CONTAINER_TAGS.has(tagLower) ||
+      item.selector === '#root > div' ||
+      item.selector === '#root > div > main' ||
+      item.selector === '#root > div > main > div';
+
     const decls: string[] = [];
 
-    if (item.hidden) {
+    if (item.hidden && !isLayoutContainer) {
       decls.push('display: none !important;');
     }
-    if (typeof item.widthPx === 'number' && item.widthPx > 0) {
+    if (
+      !isLayoutContainer &&
+      typeof item.widthPx === 'number' &&
+      item.widthPx > 0
+    ) {
       decls.push(`width: ${item.widthPx}px !important;`);
       decls.push(`max-width: none !important;`);
     }
-    if (typeof item.heightPx === 'number' && item.heightPx > 0) {
+    if (
+      !isLayoutContainer &&
+      typeof item.heightPx === 'number' &&
+      item.heightPx > 0
+    ) {
       decls.push(`height: ${item.heightPx}px !important;`);
       decls.push(`min-height: ${item.heightPx}px !important;`);
     }
@@ -158,7 +194,7 @@ function buildOverridesCss(overrides: UiOverridesMap): string {
     const tx = item.translateX || 0;
     const ty = item.translateY || 0;
     const sc = item.scale ?? 1;
-    if (tx !== 0 || ty !== 0 || sc !== 1) {
+    if (!isLayoutContainer && (tx !== 0 || ty !== 0 || sc !== 1)) {
       decls.push(
         `transform: translate(${tx}px, ${ty}px) scale(${sc}) !important;`
       );
@@ -205,7 +241,7 @@ function buildOverridesCss(overrides: UiOverridesMap): string {
     }
 
     if (decls.length > 0) {
-      const safeSelector = `${item.selector}:not([data-admin-studio="true"] *):not([data-zappy-editor="true"] *)`;
+      const safeSelector = `${item.selector}:not([data-admin-studio="true"]):not([data-admin-studio="true"] *):not([data-zappy-editor="true"]):not([data-zappy-editor="true"] *):not([data-legal-page="true"]):not([data-legal-page="true"] *):not([data-info-modal="true"]):not([data-info-modal="true"] *)`;
       rules.push(`${safeSelector} { ${decls.join(' ')} }`);
     }
   }
@@ -214,7 +250,7 @@ function buildOverridesCss(overrides: UiOverridesMap): string {
 }
 
 /**
- * Applies customText overrides directly to matching DOM nodes
+ * Applies customText overrides directly to matching leaf DOM nodes without destroying child trees.
  */
 function applyDomTextOverrides(overrides: UiOverridesMap) {
   for (const item of Object.values(overrides)) {
@@ -225,12 +261,14 @@ function applyDomTextOverrides(overrides: UiOverridesMap) {
         if (
           node.hasAttribute('data-zappy-editor') ||
           node.closest('[data-zappy-editor="true"]') ||
-          node.closest('[data-admin-studio="true"]')
+          node.closest('[data-admin-studio="true"]') ||
+          node.closest('[data-legal-page="true"]') ||
+          node.closest('[data-info-modal="true"]')
         ) {
           return;
         }
         const textSpan = node.querySelector('span');
-        if (textSpan && textSpan.children.length === 0) {
+        if (textSpan && textSpan.children.length === 0 && node.children.length <= 2) {
           if (textSpan.textContent !== item.customText) {
             textSpan.textContent = item.customText!;
           }
@@ -244,9 +282,8 @@ function applyDomTextOverrides(overrides: UiOverridesMap) {
           );
           if (textNode) {
             textNode.textContent = item.customText!;
-          } else if (node.innerText !== item.customText) {
-            node.innerText = item.customText!;
           }
+          // Never set node.innerText on a parent container with child elements!
         }
       });
     } catch {
@@ -284,6 +321,9 @@ export const VisualUiEditor: React.FC<VisualUiEditorProps> = ({
 
   const [overrides, setOverrides] = useState<UiOverridesMap>(() => {
     try {
+      for (const oldKey of LEGACY_UI_OVERRIDES_KEYS) {
+        localStorage.removeItem(oldKey);
+      }
       const cached = localStorage.getItem(LOCAL_UI_OVERRIDES_KEY);
       return cached ? JSON.parse(cached) : {};
     } catch {
@@ -325,7 +365,7 @@ export const VisualUiEditor: React.FC<VisualUiEditorProps> = ({
     tagName: string;
   } | null>(null);
 
-  // 1. Subscribe to Cloud Firestore /ui_config/global
+  // 1. Subscribe to Cloud Firestore /ui_config/global (using overridesV3Json to avoid corrupted legacy positional rules)
   useEffect(() => {
     const docRef = doc(db, 'ui_config', 'global');
     const unsubscribe = onSnapshot(
@@ -333,9 +373,9 @@ export const VisualUiEditor: React.FC<VisualUiEditorProps> = ({
       (snap) => {
         if (snap.exists()) {
           const data = snap.data();
-          if (typeof data.overridesJson === 'string') {
+          if (typeof data.overridesV3Json === 'string') {
             try {
-              const parsed = JSON.parse(data.overridesJson);
+              const parsed = JSON.parse(data.overridesV3Json);
               if (parsed && typeof parsed === 'object') {
                 setOverrides(parsed);
                 localStorage.setItem(
@@ -625,7 +665,8 @@ export const VisualUiEditor: React.FC<VisualUiEditorProps> = ({
       const serialized = JSON.stringify(overrides);
       await setDoc(doc(db, 'ui_config', 'global'), {
         id: 'global',
-        overridesJson: serialized.slice(0, 49500),
+        overridesV3Json: serialized.slice(0, 49500),
+        overridesJson: '{}',
         authorUid: currentUser.uid,
         updatedAt: serverTimestamp(),
       });

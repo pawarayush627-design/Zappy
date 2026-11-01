@@ -181,7 +181,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
               whileTap={{ scale: 0.96 }}
               type="button"
               onClick={() => onPlayMedia(hero)}
-              className="min-h-[42px] sm:min-h-[46px] px-5 sm:px-6 py-2 sm:py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm transition-colors flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/25"
+              className="min-h-[42px] sm:min-h-[46px] px-5 sm:px-6 py-2 sm:py-2.5 rounded-xl bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] hover:brightness-110 text-white font-bold text-xs sm:text-sm transition-all flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FF5A36]/30"
             >
               <Play className="w-4 h-4 fill-current shrink-0" />
               <span>Play Now</span>
@@ -189,7 +189,7 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
           </div>
 
           {heroPool.length > 1 && (
-            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#08090D]/75 backdrop-blur-md border border-[#292C35]">
+            <div className="flex items-center gap-1.5 px-2.5 py-1.5 rounded-full bg-[#050505]/85 backdrop-blur-md border border-[#231E30]">
               {heroPool.map((item, idx) => {
                 const isActive = idx === safeIndex;
                 return (
@@ -206,8 +206,8 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
                     <span
                       className={`h-1.5 rounded-full transition-all duration-300 ${
                         isActive
-                          ? 'w-5 bg-[#FFC400]'
-                          : 'w-1.5 bg-[#292C35] hover:bg-[#747784]'
+                          ? 'w-6 bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B]'
+                          : 'w-1.5 bg-[#231E30] hover:bg-[#7A7686]'
                       }`}
                     />
                   </button>

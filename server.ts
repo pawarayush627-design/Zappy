@@ -1,4 +1,5 @@
 import express from 'express';
+import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
@@ -7,6 +8,11 @@ import { SAMPLE_CATALOG } from './src/data/catalog.ts';
 import {
   INITIAL_AUTHORIZED_VIDEO_ASSETS,
 } from './src/data/videoSources.ts';
+import {
+  CODE_LEGAL_PAGES,
+  LegalPagesConfig,
+  normalizeLegalPagesConfig,
+} from './src/data/legalDocuments.ts';
 import {
   AuthorizedVideoAsset,
   Genre,
@@ -20,12 +26,55 @@ import {
   createPosterDataUri,
   createBackdropDataUri,
 } from './src/utils/artworkGenerator.ts';
-import { verifyAdminRequest } from './src/utils/adminAuthServer.ts';
+import {
+  verifyAdminRequest,
+  checkEmailRegisteredOnServer,
+} from './src/utils/adminAuthServer.ts';
+import {
+  generateAndStoreOtp,
+  verifyOtp,
+  sendOtpEmail,
+  sendTestEmail,
+  getPublicSmtpStatus,
+  saveSmtpConfig,
+  validateRegistrationToken,
+  consumeRegistrationToken,
+} from './src/server/smtpService.ts';
+import { recordRegisteredEmail } from './src/server/registeredUsers.ts';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+let serverLegalPages: LegalPagesConfig = normalizeLegalPagesConfig(CODE_LEGAL_PAGES);
+
+function persistLegalPagesToSourceFile(nextConfig: LegalPagesConfig): boolean {
+  try {
+    const legalFilePath = path.join(__dirname, 'src', 'data', 'legalDocuments.ts');
+    if (!fs.existsSync(legalFilePath)) return false;
+    const currentSource = fs.readFileSync(legalFilePath, 'utf8');
+    const startMarker = 'export const CODE_LEGAL_PAGES: LegalPagesConfig = ';
+    const endMarker = '\nexport function fixTypoEmail';
+    const startIdx = currentSource.indexOf(startMarker);
+    const endIdx = currentSource.indexOf(endMarker);
+    if (startIdx === -1 || endIdx === -1 || endIdx <= startIdx) {
+      return false;
+    }
+
+    const serializedObject = JSON.stringify(nextConfig, null, 2);
+    const updatedSource =
+      currentSource.slice(0, startIdx) +
+      `${startMarker}${serializedObject};\n` +
+      currentSource.slice(endIdx);
+
+    fs.writeFileSync(legalFilePath, updatedSource, 'utf8');
+    return true;
+  } catch (err) {
+    console.warn('Could not write legalDocuments.ts to disk:', err);
+    return false;
+  }
+}
 
 let authorizedAssetsRegistry: AuthorizedVideoAsset[] = [
   ...INITIAL_AUTHORIZED_VIDEO_ASSETS,
@@ -1341,7 +1390,7 @@ async function resolveVerifiedMediaIdsAndSeasons(params: {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = Number(process.env.PORT) || 3000;
 
   app.use(express.json());
 
@@ -1980,6 +2029,226 @@ async function startServer() {
     res.json({ ok: true });
   });
 
+  /**
+   * GET /api/legal
+   * Returns the authoritative LegalPagesConfig from code/server state.
+   */
+  app.get('/api/legal', (_req, res) => {
+    res.json({ legalPages: serverLegalPages });
+  });
+
+  /**
+   * PUT / POST /api/legal
+   * Updates the LegalPagesConfig in memory AND writes the updated legal documents
+   * directly into /src/data/legalDocuments.ts so changes are persisted in source code.
+   */
+  const handleSaveLegalToCode = async (
+    req: express.Request,
+    res: express.Response
+  ) => {
+    try {
+      const incoming = req.body?.legalPages || req.body;
+      if (!incoming || typeof incoming !== 'object') {
+        res.status(400).json({ error: 'Invalid legalPages payload.' });
+        return;
+      }
+
+      const normalized = normalizeLegalPagesConfig({
+        ...serverLegalPages,
+        ...incoming,
+        updatedAtMs: Date.now(),
+      });
+
+      serverLegalPages = normalized;
+      const wroteToCode = persistLegalPagesToSourceFile(normalized);
+
+      res.json({
+        ok: true,
+        wroteToCode,
+        legalPages: serverLegalPages,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error:
+          'Failed to update legal documents in code: ' +
+          (err instanceof Error ? err.message : String(err)),
+      });
+    }
+  };
+
+  app.put('/api/legal', handleSaveLegalToCode);
+  app.post('/api/legal', handleSaveLegalToCode);
+
+  /**
+   * AUTH & EMAIL OTP ROUTES
+   */
+  // 1. Get SMTP Public Status (whether password is saved and ready to send via Gmail)
+  app.get('/api/auth/smtp-status', (_req, res) => {
+    res.json(getPublicSmtpStatus());
+  });
+
+  // 1.5. Check if email is already registered (secure server-side verification)
+  app.post('/api/auth/check-email', async (req, res) => {
+    try {
+      const email = req.body?.email;
+      if (!email || typeof email !== 'string' || !email.includes('@')) {
+        res.status(400).json({ error: 'Valid email address is required.' });
+        return;
+      }
+      const cleanEmail = email.trim().toLowerCase();
+      const status = await checkEmailRegisteredOnServer(cleanEmail);
+      res.json({
+        email: cleanEmail,
+        registered: status.registered,
+        hasPassword: status.hasPassword ?? (status.registered === true),
+        isGithubOnly: status.isGithubOnly ?? false,
+        providers: status.providers || [],
+        fallbackToClient: status.registered === null,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error:
+          'Failed to verify email status: ' +
+          (err instanceof Error ? err.message : String(err)),
+        fallbackToClient: true,
+      });
+    }
+  });
+
+  // 2. Request cryptographically secure 6-digit OTP for email verification
+  app.post('/api/auth/send-otp', async (req, res) => {
+    try {
+      const email = req.body?.email;
+      if (!email || typeof email !== 'string' || !email.includes('@')) {
+        res.status(400).json({ error: 'Valid email address is required.' });
+        return;
+      }
+      const cleanEmail = email.trim().toLowerCase();
+      const otp = generateAndStoreOtp(cleanEmail);
+      const result = await sendOtpEmail(cleanEmail, otp);
+      if (!result.success) {
+        res.status(500).json({
+          ok: false,
+          error:
+            result.error ||
+            'Failed to send verification code. Please check your email address.',
+        });
+        return;
+      }
+      res.json({
+        ok: true,
+        message: `6-digit verification code sent to ${cleanEmail}.`,
+      });
+    } catch (err) {
+      res.status(500).json({
+        error:
+          'Failed to send verification code: ' +
+          (err instanceof Error ? err.message : String(err)),
+      });
+    }
+  });
+
+  // 2.5 Record a confirmed registered or logged-in email
+  app.post('/api/auth/record-user', (req, res) => {
+    const email = req.body?.email;
+    if (email && typeof email === 'string' && email.includes('@')) {
+      recordRegisteredEmail(email.trim().toLowerCase());
+    }
+    res.json({ ok: true });
+  });
+
+  // 3. Verify 6-digit OTP and issue single-use registration authorization token
+  app.post('/api/auth/verify-otp', (req, res) => {
+    try {
+      const { email, otp } = req.body || {};
+      if (!email || !otp) {
+        res
+          .status(400)
+          .json({ valid: false, reason: 'Email and 6-digit code are required.' });
+        return;
+      }
+      const result = verifyOtp(String(email), String(otp));
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        valid: false,
+        reason: 'Verification error: ' + (err instanceof Error ? err.message : String(err)),
+      });
+    }
+  });
+
+  // 3.5 Validate registration authorization token before creating account
+  app.post('/api/auth/validate-registration-token', (req, res) => {
+    try {
+      const { email, registrationToken } = req.body || {};
+      if (!email || !registrationToken) {
+        res.status(400).json({
+          valid: false,
+          reason: 'Email and registration authorization token are required.',
+        });
+        return;
+      }
+      const result = validateRegistrationToken(String(registrationToken), String(email));
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        valid: false,
+        reason: 'Token validation error: ' + (err instanceof Error ? err.message : String(err)),
+      });
+    }
+  });
+
+  // 3.6 Atomically consume registration authorization token upon account creation
+  app.post('/api/auth/consume-registration-token', (req, res) => {
+    try {
+      const { email, registrationToken } = req.body || {};
+      if (!email || !registrationToken) {
+        res.status(400).json({
+          valid: false,
+          reason: 'Email and registration authorization token are required.',
+        });
+        return;
+      }
+      const result = consumeRegistrationToken(String(registrationToken), String(email));
+      if (result.valid) {
+        recordRegisteredEmail(String(email).trim().toLowerCase());
+      }
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({
+        valid: false,
+        reason: 'Token consumption error: ' + (err instanceof Error ? err.message : String(err)),
+      });
+    }
+  });
+
+  // 4. Update SMTP configuration (Admin protected)
+  app.post('/api/admin/smtp', async (req, res) => {
+    const authResult = await verifyAdminRequest(req);
+    if (!authResult.authorized) {
+      res.status(authResult.statusCode).json({ error: authResult.error });
+      return;
+    }
+    const body = req.body || {};
+    saveSmtpConfig(body);
+    res.json({
+      ok: true,
+      status: getPublicSmtpStatus(),
+    });
+  });
+
+  // 5. Test SMTP connection & send test email (Admin protected)
+  app.post('/api/admin/test-smtp', async (req, res) => {
+    const authResult = await verifyAdminRequest(req);
+    if (!authResult.authorized) {
+      res.status(authResult.statusCode).json({ error: authResult.error });
+      return;
+    }
+    const targetEmail = req.body?.email || authResult.admin.email;
+    const result = await sendTestEmail(targetEmail);
+    res.json(result);
+  });
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -1994,9 +2263,23 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  const server = app.listen(PORT, '0.0.0.0', () => {
     console.log(`ZAPPY server running on http://0.0.0.0:${PORT}`);
+  });
+
+  server.on('error', (err) => {
+    console.error('Server socket error:', err);
   });
 }
 
-startServer();
+process.on('unhandledRejection', (reason) => {
+  console.warn('Unhandled promise rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('Uncaught exception:', err);
+});
+
+startServer().catch((err) => {
+  console.error('Failed to start server:', err);
+});

@@ -29,8 +29,8 @@ function makeDecodedToken(
     sub: uid,
     email,
     email_verified: emailVerified,
-    aud: 'aibharix',
-    iss: 'https://securetoken.google.com/aibharix',
+    aud: 'zappyfun',
+    iss: 'https://securetoken.google.com/zappyfun',
     auth_time: Math.floor(Date.now() / 1000) - 60,
     iat: Math.floor(Date.now() / 1000) - 60,
     exp: Math.floor(Date.now() / 1000) + 3600,
@@ -276,10 +276,175 @@ async function runTests() {
     );
   }
 
-  console.log('\n🎉 All 9 security & compliance test suites passed!');
+  // 10. Verify 6-digit OTP lifecycle, single-use registration authorization tokens, and replay prevention
+  {
+    const {
+      generateAndStoreOtp,
+      verifyOtp,
+      validateRegistrationToken,
+      consumeRegistrationToken,
+    } = await import('../src/server/smtpService');
+    const testEmail = 'compliance-test@zappyfun.app';
+    const otp = generateAndStoreOtp(testEmail);
+    assert.strictEqual(typeof otp, 'string');
+    assert.strictEqual(otp.length, 6, 'OTP must be exactly 6 digits');
+    assert.ok(/^\d{6}$/.test(otp), 'OTP must be purely numeric');
+
+    // Wrong code rejected
+    const wrongAttempt = verifyOtp(testEmail, '000000');
+    assert.strictEqual(wrongAttempt.valid, false);
+
+    // Correct code accepted and issues registration authorization token
+    const validAttempt = verifyOtp(testEmail, otp);
+    assert.strictEqual(validAttempt.valid, true);
+    assert.ok(
+      validAttempt.registrationToken &&
+        validAttempt.registrationToken.startsWith('reg_'),
+      'verifyOtp must issue a valid registration authorization token'
+    );
+
+    // Replay attack rejected
+    const replayAttempt = verifyOtp(testEmail, otp);
+    assert.strictEqual(replayAttempt.valid, false, 'Consumed OTP must not be reusable');
+
+    // Registration authorization token validation & atomic single-use consumption
+    const regToken = validAttempt.registrationToken!;
+    const checkValidToken = validateRegistrationToken(regToken, testEmail);
+    assert.strictEqual(checkValidToken.valid, true);
+
+    const consumeToken = consumeRegistrationToken(regToken, testEmail);
+    assert.strictEqual(consumeToken.valid, true);
+
+    // Consumed token cannot be reused
+    const reUseToken = consumeRegistrationToken(regToken, testEmail);
+    assert.strictEqual(reUseToken.valid, false, 'Consumed registration token must not be reusable');
+
+    console.log(
+      '✅ Test 10 passed: 6-digit OTP generation, length validation, registration authorization token issuance & replay prevention verified'
+    );
+  }
+
+  // 11. Verify GitHub OAuth Provider, Redirect Result handlers, and Secret safety
+  {
+    const {
+      githubProvider,
+      signInWithGithubRedirect,
+      handleGithubRedirectResult,
+      signInWithGithub,
+      getFriendlyAuthErrorMessage,
+    } = await import('../src/firebase');
+
+    assert.ok(githubProvider, 'githubProvider must be initialized');
+    assert.strictEqual(githubProvider.providerId, 'github.com');
+    assert.strictEqual(typeof signInWithGithubRedirect, 'function');
+    assert.strictEqual(typeof handleGithubRedirectResult, 'function');
+    assert.strictEqual(typeof signInWithGithub, 'function');
+
+    // Friendly error messaging checks
+    assert.strictEqual(
+      getFriendlyAuthErrorMessage({ code: 'auth/popup-closed-by-user' }),
+      'GitHub sign-in was cancelled.'
+    );
+    assert.ok(
+      getFriendlyAuthErrorMessage({
+        code: 'auth/account-exists-with-different-credential',
+      }).includes('email and password')
+    );
+    assert.ok(
+      getFriendlyAuthErrorMessage({ code: 'auth/unauthorized-domain' }).includes(
+        'Authorized domains'
+      )
+    );
+
+    // Verify GitHub client secret is never hardcoded in client source files
+    const clientFiles = [
+      'src/firebase.ts',
+      'src/App.tsx',
+      'src/components/AuthModal.tsx',
+      'src/components/AdminStudioModal.tsx',
+    ];
+    for (const rel of clientFiles) {
+      const src = fs.readFileSync(path.resolve(process.cwd(), rel), 'utf8');
+      assert.ok(
+        !src.toLowerCase().includes('client_secret'),
+        `${rel} must not contain any client_secret references`
+      );
+    }
+
+    console.log(
+      '✅ Test 11 passed: GitHub OAuth provider, redirect result handlers, friendly error messages, and secret safety verified'
+    );
+  }
+
+  // 12. Verify Smart Email Auth Flow: Registered Email check, 6-Digit OTP & Create Account Page
+  {
+    const { checkEmailRegisteredOnServer } = await import(
+      '../src/utils/adminAuthServer'
+    );
+    assert.strictEqual(typeof checkEmailRegisteredOnServer, 'function');
+
+    const emptyCheck = await checkEmailRegisteredOnServer('');
+    assert.strictEqual(emptyCheck.registered, false);
+
+    const {
+      saveUserProfile,
+      getCachedUserProfile,
+      updateUserProfile,
+      checkEmailSignInMethods,
+    } = await import('../src/firebase');
+
+    assert.strictEqual(typeof saveUserProfile, 'function');
+    assert.strictEqual(typeof getCachedUserProfile, 'function');
+    assert.strictEqual(typeof updateUserProfile, 'function');
+    assert.strictEqual(typeof checkEmailSignInMethods, 'function');
+
+    // Verify AuthModal contains the required profile fields: Name, Password, and Age
+    const authModalSrc = fs.readFileSync(
+      path.resolve(process.cwd(), 'src/components/AuthModal.tsx'),
+      'utf8'
+    );
+    assert.ok(
+      authModalSrc.includes('CREATE_ACCOUNT'),
+      'AuthModal must have CREATE_ACCOUNT step'
+    );
+    assert.ok(
+      authModalSrc.includes('Full Name'),
+      'AuthModal must include Full Name input'
+    );
+    assert.ok(
+      authModalSrc.includes('Age'),
+      'AuthModal must include Age input'
+    );
+    assert.ok(
+      authModalSrc.includes('Password'),
+      'AuthModal must include password field'
+    );
+    assert.ok(
+      authModalSrc.includes('Confirm Password'),
+      'AuthModal must include Confirm Password field'
+    );
+    assert.ok(
+      authModalSrc.includes('/api/auth/check-email'),
+      'AuthModal must call check-email to separate existing users from new users'
+    );
+    assert.ok(
+      authModalSrc.includes('/api/auth/validate-registration-token'),
+      'AuthModal must validate registration authorization token on backend'
+    );
+
+    console.log(
+      '✅ Test 12 passed: Smart Email Auth redesign verified (backend account check, 6-digit OTP, registration tokens, and Create Account page)'
+    );
+  }
+
+  console.log('\n🎉 All 12 security & compliance test suites passed!');
 }
 
-runTests().catch((err) => {
-  console.error('❌ Test failed:', err);
-  process.exit(1);
-});
+runTests()
+  .then(() => {
+    process.exit(0);
+  })
+  .catch((err) => {
+    console.error('❌ Test failed:', err);
+    process.exit(1);
+  });

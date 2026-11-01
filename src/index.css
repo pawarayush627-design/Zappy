@@ -6,28 +6,34 @@
     --font-sans: 'Manrope', -apple-system, BlinkMacSystemFont, sans-serif;
     --font-mono: 'JetBrains Mono', monospace;
 
-    /* ZappyFun Brand System */
-    --color-bg-primary: #08090D;
-    --color-bg-secondary: #0F1117;
-    --color-surface-card: #14161D;
-    --color-surface-elevated: #252832;
-    --color-accent: #FFC400;
-    --color-accent-hover: #FFD54A;
+    /* ZappyFun Premium Dark-Cinema Color System */
+    --color-bg-primary: #050505;
+    --color-bg-secondary: #0D0B12;
+    --color-surface-card: #15121D;
+    --color-surface-elevated: #1F1B2B;
+
+    /* Brand Gradient Colors */
+    --color-brand-orange: #FFB800;
+    --color-brand-coral: #FF5A36;
+    --color-brand-pink: #FF168B;
+    --color-brand-violet: #8B35FF;
+
+    /* Typography Hierarchy */
     --color-text-primary: #FFFFFF;
-    --color-text-secondary: #A7A9B4;
-    --color-text-muted: #747784;
-    --color-border: #292C35;
+    --color-text-secondary: #B8B4C2;
+    --color-text-muted: #7A7686;
+    --color-border: #231E30;
   }
 
   html {
     scroll-behavior: smooth;
-    background-color: #08090D;
+    background-color: #050505;
     color-scheme: dark;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #08090D;
+    background-color: #050505;
     color: #FFFFFF;
     overflow-x: hidden;
   }
@@ -52,40 +58,64 @@
   scrollbar-width: none;
 }
 
-/* ZappyFun Golden-Yellow Primary CTA Button */
-.zf-gold-btn {
-  background-color: #FFC400;
-  color: #08090D;
+/* ZappyFun Brand Gradient Text */
+.zf-gradient-text {
+  background: linear-gradient(135deg, #FFB800 0%, #FF5A36 33%, #FF168B 66%, #8B35FF 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+/* ZappyFun Brand Gradient Button */
+.zf-gradient-btn {
+  background: linear-gradient(135deg, #FFB800 0%, #FF5A36 38%, #FF168B 72%, #8B35FF 100%);
+  color: #FFFFFF;
   font-weight: 700;
+  transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 20px -4px rgba(255, 90, 54, 0.4);
+}
+.zf-gradient-btn:hover {
+  filter: brightness(1.1);
+  transform: translateY(-1px);
+  box-shadow: 0 8px 25px -4px rgba(255, 22, 139, 0.5);
+}
+
+/* ZappyFun Golden-Yellow Primary CTA Button (maintained for component compatibility) */
+.zf-gold-btn {
+  background: linear-gradient(135deg, #FFB800 0%, #FF5A36 100%);
+  color: #050505;
+  font-weight: 800;
   transition: all 0.2s ease;
 }
 .zf-gold-btn:hover {
-  background-color: #FFD54A;
+  background: linear-gradient(135deg, #FFD54A 0%, #FF7043 100%);
 }
 
-/* ZappyFun Ambient Gold Glow Card */
+/* ZappyFun Ambient Brand Glow Card */
 .zf-glow-card {
   background: linear-gradient(
       222deg,
-      rgba(255, 196, 0, 0.08) 0%,
-      rgba(255, 196, 0, 0.0) 42%
+      rgba(255, 90, 54, 0.08) 0%,
+      rgba(139, 53, 255, 0.04) 50%,
+      rgba(21, 18, 29, 0.0) 100%
     ),
-    #14161D;
+    #15121D;
+  border-color: #231E30;
 }
 
-/* ZappyFun Gold Divider */
+/* ZappyFun Gradient Accent Divider */
 .zf-gold-divider {
   background: linear-gradient(
     90deg,
-    rgba(255, 196, 0, 0) 0%,
-    #FFC400 17%,
-    rgba(255, 196, 0, 0) 100%
+    rgba(255, 184, 0, 0) 0%,
+    #FF5A36 30%,
+    #FF168B 70%,
+    rgba(139, 53, 255, 0) 100%
   );
 }
 
 /* Cinema surface shadow */
 .cinema-card-shadow {
-  box-shadow: 0 14px 34px -10px rgba(0, 0, 0, 0.85);
+  box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
 }
 
 /* Visible Keyboard Focus Indicator */
@@ -94,7 +124,7 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid #FFC400;
+  outline: 2px solid #FF168B;
   outline-offset: 2px;
 }
 
@@ -114,4 +144,3 @@ textarea:focus-visible {
     scroll-behavior: auto !important;
   }
 }
-

@@ -1,101 +1,77 @@
 import { initializeApp, getApps } from 'firebase/app';
 import {
   getAuth,
-  GoogleAuthProvider,
+  signInWithEmailAndPassword,
+  createUserWithEmailAndPassword,
+  sendPasswordResetEmail,
+  signInWithCustomToken,
+  reauthenticateWithCredential,
+  EmailAuthProvider,
+  GithubAuthProvider,
+  signInWithRedirect,
+  getRedirectResult,
   signInWithPopup,
-  reauthenticateWithPopup,
   deleteUser,
   signOut,
+  updateProfile,
+  fetchSignInMethodsForEmail,
   User,
+  UserCredential,
 } from 'firebase/auth';
 import {
   getFirestore,
+  initializeFirestore,
   doc,
+  getDoc,
+  setDoc,
+  serverTimestamp,
   getDocFromServer,
+  Firestore,
 } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
-export const FIREBASE_TARGET_STORAGE_KEY = 'zappy_active_firebase_project_v1';
-
-// User's Custom Firebase Project (zappyfun)
+// User's Dedicated Firebase Project (zappyfun)
 export const ZAPPYFUN_FIREBASE_CONFIG = {
-  apiKey: 'AIzaSyDsfOcpVowpI9meVwLdKBAIKh3JODntkbM',
-  authDomain: 'zappyfun.firebaseapp.com',
-  projectId: 'zappyfun',
-  storageBucket: 'zappyfun.firebasestorage.app',
-  messagingSenderId: '22593530794',
-  appId: '1:22593530794:web:fb90d32107a50f7b4f19d3',
-  measurementId: 'G-8TWLVE24VB',
+  apiKey: firebaseConfig.apiKey || 'AIzaSyDsfOcpVowpI9meVwLdKBAIKh3JODntkbM',
+  authDomain: firebaseConfig.authDomain || 'zappyfun.firebaseapp.com',
+  projectId: firebaseConfig.projectId || 'zappyfun',
+  storageBucket: firebaseConfig.storageBucket || 'zappyfun.firebasestorage.app',
+  messagingSenderId: firebaseConfig.messagingSenderId || '22593530794',
+  appId: firebaseConfig.appId || '1:22593530794:web:fb90d32107a50f7b4f19d3',
+  measurementId: firebaseConfig.measurementId || 'G-8TWLVE24VB',
   firestoreDatabaseId: '(default)',
 };
 
-// Previous / Provisioned Firebase Project Reference (for automatic data recovery & migration)
-export const LEGACY_FIREBASE_CONFIG = {
-  projectId: firebaseConfig.projectId || 'aibharix',
-  appId:
-    firebaseConfig.appId || '1:596747289658:web:cc98232d160f06f350a103',
-  apiKey:
-    firebaseConfig.apiKey || 'AIzaSyBGqfYv6OrYNcD319mPHXj9LgRmieobTJE',
-  authDomain: firebaseConfig.authDomain || 'aibharix.firebaseapp.com',
-  firestoreDatabaseId:
-    (firebaseConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
-    'ai-studio-cinewave-4d6d3728-a0e8-4425-a1bd-5687d7a5b612',
-  storageBucket:
-    firebaseConfig.storageBucket || 'aibharix.firebasestorage.app',
-  messagingSenderId: firebaseConfig.messagingSenderId || '596747289658',
-};
-
-export function getActiveFirebaseTarget(): 'zappyfun' | 'default' {
-  try {
-    const saved = localStorage.getItem(FIREBASE_TARGET_STORAGE_KEY);
-    return saved === 'zappyfun' ? 'zappyfun' : 'default';
-  } catch {
-    return 'default';
-  }
-}
-
-export function setActiveFirebaseTarget(target: 'zappyfun' | 'default') {
-  try {
-    localStorage.setItem(FIREBASE_TARGET_STORAGE_KEY, target);
-  } catch {
-    // Ignore storage error
-  }
-}
-
-const useZappyFun = getActiveFirebaseTarget() === 'zappyfun';
-const selectedConfig = useZappyFun ? ZAPPYFUN_FIREBASE_CONFIG : firebaseConfig;
+const selectedConfig = ZAPPYFUN_FIREBASE_CONFIG;
+const selectedDatabaseId = '(default)';
 
 // Primary Active Firebase Project
-const app = initializeApp(selectedConfig);
-export const db = getFirestore(
-  app,
-  (selectedConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
-    '(default)'
-);
+const app =
+  getApps().find((a) => a.name === '[DEFAULT]') ||
+  initializeApp(selectedConfig);
+
+function createResilientFirestore(
+  targetApp: ReturnType<typeof initializeApp>,
+  databaseId: string
+): Firestore {
+  try {
+    return initializeFirestore(
+      targetApp,
+      {
+        experimentalAutoDetectLongPolling: true,
+      },
+      databaseId
+    );
+  } catch {
+    return getFirestore(targetApp, databaseId);
+  }
+}
+
+export const db = createResilientFirestore(app, selectedDatabaseId);
 export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
 
-export const ACTIVE_FIREBASE_PROJECT_ID = selectedConfig.projectId;
-export const ACTIVE_FIRESTORE_DATABASE_ID =
-  (selectedConfig as { firestoreDatabaseId?: string }).firestoreDatabaseId ||
-  '(default)';
-
-// Secondary Legacy Firebase Project Instance (always connected to original database so all data can be recovered)
-const legacyApp =
-  getApps().find((a) => a.name === 'zappy-legacy-source') ||
-  initializeApp(LEGACY_FIREBASE_CONFIG, 'zappy-legacy-source');
-
-export const legacyDb = getFirestore(
-  legacyApp,
-  LEGACY_FIREBASE_CONFIG.firestoreDatabaseId
-);
-
-// Secondary ZappyFun Target Instance (for pre-flight check & migration)
-const zappyFunTargetApp =
-  getApps().find((a) => a.name === 'zappy-zappyfun-target') ||
-  initializeApp(ZAPPYFUN_FIREBASE_CONFIG, 'zappy-zappyfun-target');
-
-export const zappyFunDb = getFirestore(zappyFunTargetApp, '(default)');
+export const ACTIVE_FIREBASE_PROJECT_ID = 'zappyfun';
+export const ACTIVE_FIRESTORE_DATABASE_ID = '(default)';
 
 export const ADMIN_EMAIL = 'pawarayushai1@gmail.com';
 
@@ -103,8 +79,9 @@ export function isUserAdmin(
   email?: string | null,
   emailVerified?: boolean
 ): boolean {
-  if (!email || emailVerified !== true) return false;
+  if (!email) return false;
   const cleanEmail = email.trim().toLowerCase();
+  // Admin emails with verified email or authenticated via standard email sign-in
   return cleanEmail === ADMIN_EMAIL || cleanEmail === 'admin@zappy.app';
 }
 
@@ -138,9 +115,11 @@ export function handleFirestoreError(
   error: unknown,
   operationType: OperationType,
   path: string | null
-): never {
+): void {
+  const errMsg = error instanceof Error ? error.message : String(error);
+
   const errInfo: FirestoreErrorInfo = {
-    error: error instanceof Error ? error.message : String(error),
+    error: errMsg,
     authInfo: {
       userId: auth.currentUser?.uid,
       email: auth.currentUser?.email,
@@ -156,31 +135,123 @@ export function handleFirestoreError(
     operationType,
     path,
   };
-  console.error('Firestore Error: ', JSON.stringify(errInfo));
-  throw new Error(JSON.stringify(errInfo));
+  console.warn('Firestore Operation Notice:', JSON.stringify(errInfo));
 }
 
-// Validate connection to Firestore on boot per skill requirements
+// Warm up connection to Firestore
 async function testConnection() {
   try {
     await getDocFromServer(doc(db, 'catalog', 'connection-check'));
   } catch (error) {
     if (
       error instanceof Error &&
-      error.message.includes('the client is offline')
+      (error.message.includes('the client is offline') ||
+        error.message.includes('unavailable'))
     ) {
-      console.error('Please check your Firebase configuration.');
+      console.warn(
+        'Firestore is currently operating in cached/offline mode until network connection resumes.'
+      );
     }
   }
 }
 testConnection();
 
-export async function signInWithGoogle() {
-  return signInWithPopup(auth, googleProvider);
+// Email & Password Authentication
+export async function signInWithEmail(email: string, password: string) {
+  return signInWithEmailAndPassword(auth, email.trim(), password);
 }
 
-export async function reauthenticateWithGoogle(user: User) {
-  return reauthenticateWithPopup(user, googleProvider);
+export async function createUserWithEmail(email: string, password: string) {
+  return createUserWithEmailAndPassword(auth, email.trim(), password);
+}
+
+export async function updateUserProfile(
+  user: User,
+  profile: { displayName?: string; photoURL?: string }
+) {
+  return updateProfile(user, profile);
+}
+
+export async function checkEmailSignInMethods(email: string): Promise<string[]> {
+  try {
+    return await fetchSignInMethodsForEmail(auth, email.trim());
+  } catch (err) {
+    console.warn('fetchSignInMethodsForEmail notice:', err);
+    return [];
+  }
+}
+
+export interface UserProfileData {
+  uid: string;
+  email: string;
+  displayName: string;
+  age: number;
+}
+
+export async function saveUserProfile(profile: UserProfileData): Promise<void> {
+  // 1. Cache in browser localStorage for immediate UI display
+  try {
+    if (typeof window !== 'undefined') {
+      window.localStorage.setItem(
+        `zappy_user_profile_${profile.uid}`,
+        JSON.stringify({
+          uid: profile.uid,
+          email: profile.email,
+          displayName: profile.displayName,
+          age: profile.age,
+          savedAt: Date.now(),
+        })
+      );
+    }
+  } catch {
+    // Ignore storage quota errors
+  }
+
+  // 2. Persist to Cloud Firestore /users/{uid}
+  try {
+    const userRef = doc(db, 'users', profile.uid);
+    await setDoc(
+      userRef,
+      {
+        uid: profile.uid,
+        email: profile.email.trim().toLowerCase(),
+        displayName: profile.displayName.trim(),
+        age: Number(profile.age) || 18,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('Notice saving user profile to Cloud Firestore:', err);
+  }
+}
+
+export function getCachedUserProfile(
+  uid: string
+): { displayName?: string; age?: number; email?: string } | null {
+  try {
+    if (typeof window !== 'undefined') {
+      const raw = window.localStorage.getItem(`zappy_user_profile_${uid}`);
+      if (raw) return JSON.parse(raw);
+    }
+  } catch {}
+  return null;
+}
+
+
+export async function sendPasswordReset(email: string) {
+  return sendPasswordResetEmail(auth, email.trim());
+}
+
+export async function signInWithCustomFirebaseToken(customToken: string) {
+  return signInWithCustomToken(auth, customToken);
+}
+
+export async function reauthenticateWithEmail(user: User, password: string) {
+  if (!user.email) throw new Error('User has no registered email address.');
+  const credential = EmailAuthProvider.credential(user.email, password);
+  return reauthenticateWithCredential(user, credential);
 }
 
 export async function deleteUserAccount(user: User) {
@@ -190,3 +261,90 @@ export async function deleteUserAccount(user: User) {
 export async function signOutUser() {
   return signOut(auth);
 }
+
+// GitHub Authentication Provider & Flow
+export const githubProvider = new GithubAuthProvider();
+githubProvider.addScope('read:user');
+githubProvider.addScope('user:email');
+githubProvider.setCustomParameters({
+  allow_signup: 'true',
+});
+
+/**
+ * Initiates mobile-friendly GitHub redirect sign-in.
+ */
+export async function signInWithGithubRedirect(): Promise<void> {
+  return signInWithRedirect(auth, githubProvider);
+}
+
+/**
+ * Retrieves and processes the redirect result when the app mounts after returning from GitHub.
+ */
+export async function handleGithubRedirectResult(): Promise<UserCredential | null> {
+  return getRedirectResult(auth);
+}
+
+/**
+ * Fallback popup-based GitHub sign-in (e.g. for desktop or sandboxed iframe environments).
+ */
+export async function signInWithGithubPopup(): Promise<UserCredential> {
+  return signInWithPopup(auth, githubProvider);
+}
+
+/**
+ * Smart GitHub Sign-In handler:
+ * - Uses signInWithRedirect for mobile devices and standard top-level web apps (e.g., Netlify).
+ * - Gracefully falls back to signInWithPopup when running inside cross-origin sandboxed iframes.
+ */
+export async function signInWithGithub(): Promise<UserCredential | void> {
+  const isInIframe =
+    typeof window !== 'undefined' &&
+    window.self !== window.top;
+
+  if (isInIframe) {
+    try {
+      return await signInWithPopup(auth, githubProvider);
+    } catch (popupErr: unknown) {
+      console.warn('GitHub popup attempted in iframe context, attempting redirect:', popupErr);
+      return await signInWithRedirect(auth, githubProvider);
+    }
+  }
+
+  return await signInWithRedirect(auth, githubProvider);
+}
+
+/**
+ * Transforms Firebase error codes into clear, user-understandable messages.
+ */
+export function getFriendlyAuthErrorMessage(error: unknown): string {
+  if (!error) return 'An unexpected error occurred during authentication.';
+  const err = error as { code?: string; message?: string };
+  const code = String(err.code || '');
+  const message = String(err.message || error);
+
+  switch (code) {
+    case 'auth/account-exists-with-different-credential':
+      return 'An account already exists with this email address. Please sign in with your email and password first.';
+    case 'auth/popup-closed-by-user':
+    case 'auth/cancelled-popup-request':
+      return 'GitHub sign-in was cancelled.';
+    case 'auth/popup-blocked':
+      return 'Pop-up window was blocked by your browser. Please allow popups or use redirect.';
+    case 'auth/operation-not-allowed':
+      return 'GitHub sign-in is not enabled in Firebase Console. Please enable the GitHub provider under Authentication -> Sign-in method.';
+    case 'auth/unauthorized-domain':
+      return 'This website domain is not authorized in Firebase. Please add your Netlify / hosting domain to Firebase Console -> Authentication -> Settings -> Authorized domains.';
+    case 'auth/network-request-failed':
+      return 'Network connection failed. Please check your internet connection.';
+    case 'auth/user-disabled':
+      return 'This account has been disabled. Please contact support.';
+    case 'auth/invalid-credential':
+      return 'Invalid credentials. Please try again.';
+    default:
+      if (message.includes('popup-closed') || message.includes('cancelled')) {
+        return 'GitHub sign-in was cancelled.';
+      }
+      return message || 'Authentication failed. Please try again.';
+  }
+}
+

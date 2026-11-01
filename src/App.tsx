@@ -54,18 +54,19 @@ import {
 import {
   auth,
   db,
-  legacyDb,
   ACTIVE_FIREBASE_PROJECT_ID,
   ACTIVE_FIRESTORE_DATABASE_ID,
-  LEGACY_FIREBASE_CONFIG,
   ADMIN_EMAIL,
   isUserAdmin,
-  signInWithGoogle,
+  signInWithEmail,
   signOutUser,
-  reauthenticateWithGoogle,
+  reauthenticateWithEmail,
   deleteUserAccount,
   handleFirestoreError,
   OperationType,
+  handleGithubRedirectResult,
+  getFriendlyAuthErrorMessage,
+  getCachedUserProfile,
 } from './firebase';
 import {
   MediaItem,
@@ -81,10 +82,14 @@ import { DetailsView } from './components/DetailsView';
 import {
   InfoModal,
   InfoModalType,
+  LegalDocumentPage,
   LegalPagesConfig,
+  LegalSectionKey,
+  LEGAL_ROUTE_SLUGS,
   DEFAULT_LEGAL_PAGES,
   OFFICIAL_CONTACT_EMAIL,
   normalizeLegalPagesConfig,
+  resolveLegalSectionFromLocation,
 } from './components/InfoModal';
 import {
   ContinueWatchingRow,
@@ -93,6 +98,8 @@ import {
 import { AdminStudioModal } from './components/AdminStudioModal';
 import { VisualUiEditor } from './components/VisualUiEditor';
 import { MediaArtwork } from './components/MediaArtwork';
+import { AuthModal } from './components/AuthModal';
+import { CinematicSplashScreen } from './components/CinematicSplashScreen';
 
 type NavView =
   | 'home'
@@ -104,13 +111,14 @@ type NavView =
   | 'support'
   | 'search'
   | 'watchlist'
-  | 'details';
+  | 'details'
+  | 'legal';
 
 const WATCHLIST_STORAGE_KEY = 'zappy_watchlist_v2';
 const COMPLETED_STORAGE_KEY = 'zappy_completed_v1';
 const ADS_STORAGE_KEY = 'zappy_ads_enabled_v1';
 const WATCH_PROGRESS_STORAGE_KEY = 'zappy_watch_progress_v2';
-const LEGAL_PAGES_STORAGE_KEY = 'zappy_legal_pages_v1';
+const LEGAL_PAGES_STORAGE_KEY = 'zappy_legal_pages_v2';
 const HERO_CYCLE_STORAGE_KEY = 'zappy_hero_8movie_cycle_v1';
 const HERO_DAILY_BATCH_SIZE = 8;
 const HERO_BATCH_CYCLE_MS = 24 * 60 * 60 * 1000; // 24-hour daily 8-movie batch rotation
@@ -178,7 +186,7 @@ const ZAPPY_FAQS = [
     num: '04',
     question: 'How do I sign in to ZappyFun?',
     answer:
-      'Click Sign In to authenticate with Google in one click and sync your personal watchlist across all devices.',
+      'Click Sign In to authenticate using your email and password. New users can register instantly with a secure 4-digit verification code sent to their email.',
   },
   {
     num: '05',
@@ -200,6 +208,39 @@ export default function App() {
 
   const [catalog, setCatalog] = useState<MediaItem[]>([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(true);
+
+  // Cinematic Splash Screen State (shown on cold startup and browser reload)
+  const [showSplash, setShowSplash] = useState<boolean>(() => {
+    try {
+      if (typeof window !== 'undefined') {
+        const perfNav = window.performance?.getEntriesByType?.('navigation')?.[0] as
+          | PerformanceNavigationTiming
+          | undefined;
+        const isReload = perfNav?.type === 'reload';
+        if (isReload) return true;
+
+        const alreadyShown = window.sessionStorage.getItem('zappy_splash_shown_v1');
+        return !alreadyShown;
+      }
+    } catch {
+      // Fallback
+    }
+    return true;
+  });
+
+  const handleSplashComplete = useCallback(() => {
+    setShowSplash(false);
+    try {
+      if (typeof window !== 'undefined') {
+        window.sessionStorage.setItem('zappy_splash_shown_v1', '1');
+      }
+    } catch {
+      // Ignore
+    }
+  }, []);
+
+  const isAppReady = isAuthReady && (!isLoadingCatalog || catalog.length > 0);
+
   const [videoAdConfig] = useState<VideoAdConfig>({
     imaEnabled: true,
     testMode: true,
@@ -208,7 +249,32 @@ export default function App() {
     enableMidRoll: true,
   });
 
-  const [activeView, setActiveView] = useState<NavView>('home');
+  const [activeLegalSection, setActiveLegalSection] =
+    useState<LegalSectionKey>(() => {
+      try {
+        return (
+          resolveLegalSectionFromLocation(
+            window.location.pathname,
+            window.location.search
+          ) || 'terms'
+        );
+      } catch {
+        return 'terms';
+      }
+    });
+
+  const [activeView, setActiveView] = useState<NavView>(() => {
+    try {
+      const matchedLegal = resolveLegalSectionFromLocation(
+        window.location.pathname,
+        window.location.search
+      );
+      if (matchedLegal) return 'legal';
+    } catch {
+      // Ignore
+    }
+    return 'home';
+  });
   const [previousView, setPreviousView] = useState<NavView>('home');
   const [selectedMedia, setSelectedMedia] = useState<MediaItem | null>(null);
   const [autoPlayOnOpen, setAutoPlayOnOpen] = useState<boolean>(false);
@@ -355,9 +421,10 @@ export default function App() {
     }
   });
 
-  // Admin-Editable Legal Pages & Contact Email State (Synced with Cloud Firestore ui_config/legal_pages)
+  // Code-Backed & Admin-Editable Legal Pages State (/src/data/legalDocuments.ts + Firestore ui_config/legal_pages)
   const [legalPages, setLegalPages] = useState<LegalPagesConfig>(() => {
     try {
+      localStorage.removeItem('zappy_legal_pages_v1');
       const raw = localStorage.getItem(LEGAL_PAGES_STORAGE_KEY);
       if (raw) {
         const parsed = JSON.parse(raw);
@@ -371,29 +438,26 @@ export default function App() {
     return DEFAULT_LEGAL_PAGES;
   });
 
-  const [activeModal, setActiveModal] = useState<InfoModalType>(() => {
-    try {
-      const params = new URLSearchParams(window.location.search);
-      const legalParam = params.get('legal');
-      if (legalParam === 'cookies') {
-        return 'advertising';
-      }
-      if (
-        legalParam === 'terms' ||
-        legalParam === 'privacy' ||
-        legalParam === 'advertising' ||
-        legalParam === 'disclaimer' ||
-        legalParam === 'about' ||
-        legalParam === 'contact'
-      ) {
-        return legalParam;
-      }
-    } catch {
-      // Ignore
-    }
-    return null;
-  });
+  const [activeModal, setActiveModal] = useState<InfoModalType>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Sync browser URL Back/Forward buttons for Legal routes (/Terms-of-use, /Privacy-policy, /About, /Disclaimer-and-copyright-policy)
+  useEffect(() => {
+    const handlePopState = () => {
+      const matchedLegal = resolveLegalSectionFromLocation(
+        window.location.pathname,
+        window.location.search
+      );
+      if (matchedLegal) {
+        setActiveLegalSection(matchedLegal);
+        setActiveView('legal');
+      } else {
+        setActiveView((prev) => (prev === 'legal' ? 'home' : prev));
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
 
   useEffect(() => {
     try {
@@ -405,6 +469,25 @@ export default function App() {
       // Ignore
     }
   }, [legalPages]);
+
+  // Fetch authoritative legal pages from /api/legal (backed by /src/data/legalDocuments.ts)
+  useEffect(() => {
+    fetch('/api/legal')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.legalPages && typeof data.legalPages === 'object') {
+          setLegalPages((prev) =>
+            normalizeLegalPagesConfig({
+              ...prev,
+              ...data.legalPages,
+            })
+          );
+        }
+      })
+      .catch(() => {
+        // Ignore network error
+      });
+  }, []);
 
   useEffect(() => {
     const legalDocRef = doc(db, 'ui_config', 'legal_pages');
@@ -508,14 +591,34 @@ export default function App() {
     setTimeout(() => setSessionToast(null), 3800);
   }, []);
 
-  // 1. Listen to Firebase Authentication State
+  // 1. Listen to Firebase Authentication State & Process GitHub Redirect Results
   useEffect(() => {
+    // Process redirect result if arriving back from GitHub OAuth (mobile / Netlify)
+    handleGithubRedirectResult()
+      .then((result) => {
+        if (result && result.user) {
+          const email = result.user.email || '';
+          if (isUserAdmin(email, result.user.emailVerified)) {
+            showToast(`Welcome Admin (${email})! Zappy Admin Studio unlocked.`);
+          } else {
+            showToast(
+              `Signed in with GitHub as ${result.user.displayName || email || 'User'}`
+            );
+          }
+        }
+      })
+      .catch((err) => {
+        console.warn('GitHub redirect result notice:', err);
+        const friendly = getFriendlyAuthErrorMessage(err);
+        showToast(friendly);
+      });
+
     const unsubscribe = onAuthStateChanged(auth, (user) => {
       setCurrentUser(user);
       setIsAuthReady(true);
     });
     return () => unsubscribe();
-  }, []);
+  }, [showToast]);
 
   // 2. Real-time Cloud Firestore Catalog Subscription
   useEffect(() => {
@@ -685,18 +788,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // 2B. Automatic Data Recovery & Migration from Previous Firebase Project (when switching projects)
-  useEffect(() => {
-    const isDifferentProject =
-      ACTIVE_FIREBASE_PROJECT_ID !== LEGACY_FIREBASE_CONFIG.projectId ||
-      ACTIVE_FIRESTORE_DATABASE_ID !==
-        LEGACY_FIREBASE_CONFIG.firestoreDatabaseId;
-
-    // Catalog clean-slate state: Legacy movies are no longer re-injected automatically
-    // The admin now has full, clean control to populate or clear titles in Admin Studio.
-    return () => {};
-  }, [currentUser, isAdmin]);
-
   // 3. Real-time Cloud Firestore Watchlist Subscription
   useEffect(() => {
     if (!isAuthReady || !currentUser) return;
@@ -829,21 +920,13 @@ export default function App() {
     }
   }, [watchProgressMap]);
 
-  const handleGoogleLogin = async () => {
-    try {
-      const result = await signInWithGoogle();
-      if (isUserAdmin(result.user.email, result.user.emailVerified)) {
-        showToast(
-          `Welcome Admin (${result.user.email})! Zappy Admin Studio unlocked.`
-        );
-      } else {
-        showToast(
-          `Signed in as ${result.user.displayName || result.user.email}`
-        );
-      }
-    } catch {
-      showToast('Google Sign-In was cancelled or blocked.');
-    }
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [authModalMode, setAuthModalMode] = useState<'signin' | 'register'>('signin');
+  const [deleteAccountPassword, setDeleteAccountPassword] = useState<string>('');
+
+  const handleOpenAuthModal = (mode: 'signin' | 'register' = 'signin') => {
+    setAuthModalMode(mode);
+    setIsAuthModalOpen(true);
   };
 
   const handleLogout = async () => {
@@ -896,9 +979,14 @@ export default function App() {
     setDeleteAccountSuccessBanner(null);
 
     try {
-      // 1. Optional Google Re-authentication when required by Firebase Auth
+      // 1. Password re-authentication when required by Firebase Auth
       if (reauthFirst) {
-        await reauthenticateWithGoogle(currentUser);
+        if (!deleteAccountPassword) {
+          setDeleteAccountError('Please enter your account password to confirm deletion.');
+          setIsDeletingAccount(false);
+          return;
+        }
+        await reauthenticateWithEmail(currentUser, deleteAccountPassword);
         setDeleteAccountNeedsReauth(false);
       }
 
@@ -931,6 +1019,7 @@ export default function App() {
       setWatchlistIds([]);
       setCompletedIds([]);
       setWatchProgressMap({});
+      setDeleteAccountPassword('');
       setShowDeleteAccountConfirm(false);
       setDeleteAccountNeedsReauth(false);
       setDeleteAccountSuccessBanner(
@@ -950,14 +1039,14 @@ export default function App() {
       ) {
         setDeleteAccountNeedsReauth(true);
         setDeleteAccountError(
-          'For your security, Firebase requires a fresh Google sign-in before deleting your account. Your cloud watchlist entries were cleared, but your account is still active. Click "Re-verify with Google & Complete Deletion" below to finish.'
+          'For your security, please enter your password below to confirm account deletion.'
         );
       } else if (
-        errCode === 'auth/popup-closed-by-user' ||
-        errCode === 'auth/cancelled-popup-request'
+        errCode === 'auth/wrong-password' ||
+        errCode === 'auth/invalid-credential'
       ) {
         setDeleteAccountError(
-          'Google re-authentication popup was closed before verification completed. Your account was not deleted.'
+          'Incorrect password. Please enter your correct account password.'
         );
       } else {
         setDeleteAccountError(
@@ -1146,6 +1235,18 @@ export default function App() {
     setNotificationsOpen(false);
     setProfileMenuOpen(false);
     setMobileMenuOpen(false);
+    try {
+      if (
+        resolveLegalSectionFromLocation(
+          window.location.pathname,
+          window.location.search
+        )
+      ) {
+        window.history.pushState({}, '', '/');
+      }
+    } catch {
+      // Ignore
+    }
 
     if (autoPlay && !completedIds.includes(item.id)) {
       const existing = watchProgressMap[item.id];
@@ -1167,15 +1268,55 @@ export default function App() {
     []
   );
 
+  const openLegalPage = useCallback(
+    (section: LegalSectionKey) => {
+      if (activeView !== 'legal' && activeView !== 'details') {
+        setPreviousView(activeView);
+      }
+      setSearchBarOpen(false);
+      setActiveModal(null);
+      setActiveLegalSection(section);
+      setActiveView('legal');
+      setMobileMenuOpen(false);
+      setNotificationsOpen(false);
+      setProfileMenuOpen(false);
+      try {
+        const targetSlug = LEGAL_ROUTE_SLUGS[section] || '/Terms-of-use';
+        if (window.location.pathname !== targetSlug) {
+          window.history.pushState({ legalSection: section }, '', targetSlug);
+        }
+      } catch {
+        // Ignore history push error
+      }
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    },
+    [activeView]
+  );
+
   const handleNavigate = (view: NavView) => {
-    if (activeView !== 'details') {
+    if (activeView !== 'details' && activeView !== 'legal') {
       setPreviousView(activeView);
     }
     setSearchBarOpen(false);
+    setActiveModal(null);
     setActiveView(view);
     setMobileMenuOpen(false);
     setNotificationsOpen(false);
     setProfileMenuOpen(false);
+    if (view !== 'legal') {
+      try {
+        if (
+          resolveLegalSectionFromLocation(
+            window.location.pathname,
+            window.location.search
+          )
+        ) {
+          window.history.pushState({}, '', '/');
+        }
+      } catch {
+        // Ignore
+      }
+    }
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
@@ -1192,18 +1333,42 @@ export default function App() {
 
   const handleSaveLegalPages = useCallback(
     async (nextLegal: LegalPagesConfig) => {
-      setLegalPages(nextLegal);
-      if (currentUser && isAdmin) {
-        await setDoc(
-          doc(db, 'ui_config', 'legal_pages'),
-          {
-            ...nextLegal,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
+      const normalized = normalizeLegalPagesConfig({
+        ...nextLegal,
+        updatedAtMs: Date.now(),
+      });
+      setLegalPages(normalized);
+
+      // 1. Persist directly into source code (/src/data/legalDocuments.ts) via backend API
+      try {
+        await fetch('/api/legal', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ legalPages: normalized }),
+        });
+      } catch {
+        // Ignore network error
       }
-      showToast('Legal pages and contact information updated!');
+
+      // 2. Also sync to Cloud Firestore if signed in as admin
+      if (currentUser && isAdmin) {
+        try {
+          await setDoc(
+            doc(db, 'ui_config', 'legal_pages'),
+            {
+              ...normalized,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch {
+          // Ignore Firestore error
+        }
+      }
+
+      showToast(
+        'Legal documents saved and synced directly into /src/data/legalDocuments.ts!'
+      );
     },
     [currentUser, isAdmin, showToast]
   );
@@ -1953,14 +2118,19 @@ export default function App() {
           <button
             type="button"
             onClick={() => handleNavigate('home')}
-            className="flex items-center justify-center group-hover:justify-start w-full px-1.5 py-2 rounded-xl hover:bg-[#252832]/50 cursor-pointer transition-all active:scale-95"
+            className="flex items-center justify-center group-hover:justify-start w-full px-1.5 py-1.5 rounded-2xl hover:bg-[#1F1B2B]/60 cursor-pointer transition-all active:scale-95 group/logo"
             title="ZappyFun Home"
           >
-            <img
-              src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
-              alt="ZappyFun"
-              className="w-full max-w-[116px] lg:max-w-[128px] group-hover:max-w-[172px] h-10 sm:h-11 object-contain object-center group-hover:object-left shrink-0 transition-all duration-300 drop-shadow-md"
-            />
+            <div className="w-11 h-11 rounded-2xl overflow-hidden shadow-lg shadow-black/80 shrink-0 border border-[#231E30] bg-black flex items-center justify-center p-0.5">
+              <img
+                src="/assets/aistudio/1792738076429_2_1a521405.jpg"
+                alt="ZappyFun Play Button Logo"
+                className="w-full h-full object-contain select-none"
+              />
+            </div>
+            <span className="hidden group-hover:inline-block ml-3 font-display font-black text-lg tracking-tight text-white whitespace-nowrap">
+              ZAPPY<span className="bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] bg-clip-text text-transparent">FUN</span>
+            </span>
           </button>
 
           {/* Navigation Links */}
@@ -2066,7 +2236,7 @@ export default function App() {
           ) : (
             <button
               type="button"
-              onClick={handleGoogleLogin}
+              onClick={() => handleOpenAuthModal('signin')}
               className="flex items-center justify-center gap-2 w-full px-3 py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold transition-colors cursor-pointer shadow-md"
               title="Sign In"
             >
@@ -2086,14 +2256,19 @@ export default function App() {
         <button
           type="button"
           onClick={() => handleNavigate('home')}
-          className="flex items-center cursor-pointer py-1"
+          className="flex items-center gap-2.5 cursor-pointer py-1"
           title="ZappyFun Home"
         >
-          <img
-            src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
-            alt="ZappyFun"
-            className="h-9 w-auto max-w-[140px] object-contain drop-shadow"
-          />
+          <div className="w-9 h-9 rounded-xl overflow-hidden shadow-md shadow-black/80 shrink-0 border border-[#231E30] bg-black flex items-center justify-center p-0.5">
+            <img
+              src="/assets/aistudio/1792738076429_2_1a521405.jpg"
+              alt="ZappyFun"
+              className="w-full h-full object-contain"
+            />
+          </div>
+          <span className="font-display font-black text-base tracking-tight text-white">
+            ZAPPY<span className="bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] bg-clip-text text-transparent">FUN</span>
+          </span>
         </button>
 
         <div className="flex items-center gap-2">
@@ -2204,7 +2379,27 @@ export default function App() {
 
       {/* MAIN PAGE CONTENT */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-3 sm:px-5 lg:px-6 pt-2 sm:pt-3 pb-6 space-y-6 sm:space-y-8">
-        {isLoadingCatalog ? (
+        {activeView === 'legal' ? (
+          <LegalDocumentPage
+            section={activeLegalSection}
+            legalPages={legalPages}
+            adsEnabled={adsEnabled}
+            isAdmin={isAdmin}
+            onToggleAds={() => setAdsEnabled((prev) => !prev)}
+            onSelectSection={(sec) => openLegalPage(sec)}
+            onBackHome={() =>
+              handleNavigate(
+                previousView &&
+                  previousView !== 'legal' &&
+                  previousView !== 'details'
+                  ? previousView
+                  : 'home'
+              )
+            }
+            onOpenSupport={() => handleNavigate('support')}
+            onSaveLegalPages={handleSaveLegalPages}
+          />
+        ) : isLoadingCatalog ? (
           <div className="space-y-5 animate-pulse" aria-busy="true" aria-label="Loading catalog">
             <div className="w-full h-[280px] sm:h-[360px] rounded-2xl bg-[#14161D] border border-[#292C35]" />
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-5 gap-3 sm:gap-4">
@@ -2282,7 +2477,7 @@ export default function App() {
                   setActiveView('search');
                 }}
                 onToggleAds={() => setAdsEnabled((prev) => !prev)}
-                onOpenAdPolicy={() => setActiveModal('advertising')}
+                onOpenAdPolicy={() => openLegalPage('advertising')}
                 onOpenAdminStudio={(mediaItem) =>
                   openAdminStudio(mediaItem, 'catalog')
                 }
@@ -2750,8 +2945,13 @@ export default function App() {
                       )}
                     </div>
                     {currentUser?.email && (
-                      <p className="text-xs text-[#A7A9B4]">
-                        {currentUser.email}
+                      <p className="text-xs text-[#A7A9B4] flex flex-wrap items-center gap-2">
+                        <span>{currentUser.email}</span>
+                        {currentUser?.uid && getCachedUserProfile(currentUser.uid)?.age && (
+                          <span className="px-2 py-0.5 rounded-full bg-[#1A1D27] border border-[#2B3142] text-[10px] font-semibold text-[#FFC400]">
+                            Age {getCachedUserProfile(currentUser.uid)?.age}
+                          </span>
+                        )}
                       </p>
                     )}
                   </div>
@@ -2761,7 +2961,7 @@ export default function App() {
                   {!currentUser ? (
                     <button
                       type="button"
-                      onClick={handleGoogleLogin}
+                      onClick={() => handleOpenAuthModal('signin')}
                       className="px-5 py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20"
                     >
                       <LogIn className="w-4 h-4" />
@@ -2974,17 +3174,20 @@ export default function App() {
                     <MessageSquare className="w-4 h-4 text-[#FFC400] shrink-0" />
                   </button>
 
-                  <button
-                    type="button"
-                    onClick={() => setActiveModal('terms')}
+                  <a
+                    href="/Terms-of-use"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openLegalPage('terms');
+                    }}
                     className="p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-left flex items-center justify-between cursor-pointer hover:border-[#FFC400]/50 transition-colors"
                   >
                     <div>
                       <p className="text-xs font-bold text-white">Terms &amp; Privacy Policy</p>
-                      <p className="text-[11px] text-[#A7A9B4]">Legal guidelines &amp; policies</p>
+                      <p className="text-[11px] text-[#A7A9B4]">/Terms-of-use · /Privacy-policy</p>
                     </div>
                     <FileText className="w-4 h-4 text-[#FFC400] shrink-0" />
-                  </button>
+                  </a>
                 </div>
               </div>
 
@@ -3125,24 +3328,33 @@ export default function App() {
                       </button>
 
                       {deleteAccountNeedsReauth ? (
-                        <button
-                          type="button"
-                          disabled={isDeletingAccount}
-                          onClick={() => handleDeleteAccountAndData(true)}
-                          className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-50"
-                        >
-                          {isDeletingAccount ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              <span>Re-verifying &amp; Deleting...</span>
-                            </>
-                          ) : (
-                            <>
-                              <RefreshCw className="w-3.5 h-3.5" />
-                              <span>Re-verify with Google &amp; Complete Deletion</span>
-                            </>
-                          )}
-                        </button>
+                        <div className="flex flex-col sm:flex-row items-center gap-2">
+                          <input
+                            type="password"
+                            placeholder="Enter account password"
+                            value={deleteAccountPassword}
+                            onChange={(e) => setDeleteAccountPassword(e.target.value)}
+                            className="px-3 py-1.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white placeholder-[#5A5E70] focus:border-[#FFC400]"
+                          />
+                          <button
+                            type="button"
+                            disabled={isDeletingAccount || !deleteAccountPassword}
+                            onClick={() => handleDeleteAccountAndData(true)}
+                            className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-50"
+                          >
+                            {isDeletingAccount ? (
+                              <>
+                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                <span>Verifying &amp; Deleting...</span>
+                              </>
+                            ) : (
+                              <>
+                                <Trash2 className="w-3.5 h-3.5" />
+                                <span>Confirm Password &amp; Delete</span>
+                              </>
+                            )}
+                          </button>
+                        </div>
                       ) : (
                         <button
                           type="button"
@@ -3392,21 +3604,27 @@ export default function App() {
                       />
                       <span>
                         I agree with{' '}
-                        <button
-                          type="button"
-                          onClick={() => setActiveModal('terms')}
+                        <a
+                          href="/Terms-of-use"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            openLegalPage('terms');
+                          }}
                           className="text-[#FFC400] hover:underline cursor-pointer"
                         >
                           Terms of Use
-                        </button>{' '}
+                        </a>{' '}
                         and{' '}
-                        <button
-                          type="button"
-                          onClick={() => setActiveModal('privacy')}
+                        <a
+                          href="/Privacy-policy"
+                          onClick={(e) => {
+                            e.preventDefault();
+                            openLegalPage('privacy');
+                          }}
                           className="text-[#FFC400] hover:underline cursor-pointer"
                         >
                           Privacy Policy
-                        </button>
+                        </a>
                       </span>
                     </label>
 
@@ -3489,11 +3707,11 @@ export default function App() {
               ) : (
                 <section className="relative min-h-[340px] rounded-2xl overflow-hidden border border-[#292C35] bg-gradient-to-b from-[#14161D] to-[#08090D] p-8 sm:p-12 flex flex-col justify-center items-center text-center shadow-2xl">
                   <div className="space-y-4 max-w-xl">
-                    <div className="h-14 mx-auto rounded-2xl bg-[#08090D] border border-[#292C35] flex items-center justify-center px-5 py-2 shadow-xl">
+                    <div className="h-16 w-16 mx-auto rounded-2xl bg-black border border-[#231E30] flex items-center justify-center p-2.5 shadow-xl">
                       <img
-                        src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
+                        src="/assets/aistudio/1792738076429_2_1a521405.jpg"
                         alt="ZappyFun"
-                        className="h-10 w-auto object-contain"
+                        className="h-full w-full object-contain rounded-xl select-none"
                       />
                     </div>
                     <h1 className="text-2xl sm:text-4xl font-black text-white font-display tracking-tight">
@@ -3504,7 +3722,7 @@ export default function App() {
                         <button
                           type="button"
                           onClick={() => openAdminStudio(null, 'catalog')}
-                          className="px-6 py-3 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-xl shadow-[#FFC400]/20 transition-transform active:scale-95"
+                          className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] hover:brightness-110 text-white font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-xl shadow-[#FF5A36]/25 transition-transform active:scale-95"
                         >
                           <SlidersHorizontal className="w-4 h-4" />
                           <span>Open Admin Studio</span>
@@ -3512,8 +3730,8 @@ export default function App() {
                       ) : (
                         <button
                           type="button"
-                          onClick={handleGoogleLogin}
-                          className="px-6 py-3 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-xl shadow-[#FFC400]/20"
+                          onClick={() => handleOpenAuthModal('signin')}
+                          className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] hover:brightness-110 text-white font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer shadow-xl shadow-[#FF5A36]/25"
                         >
                           <LogIn className="w-4 h-4" />
                           <span>Sign In</span>
@@ -3533,7 +3751,7 @@ export default function App() {
       </main>
 
       {/* DARK FOOTER (#08090D) */}
-      <footer className="mt-auto bg-[#08090D] border-t border-[#292C35] pt-6 pb-6 px-4 sm:px-6 lg:px-8 text-xs sm:text-sm text-[#747784]">
+      <footer className="mt-auto bg-[#08090D] border-t border-[#292C35] pt-6 pb-8 px-4 sm:px-6 lg:px-8 text-xs sm:text-sm text-[#747784]">
         <div className="max-w-7xl mx-auto space-y-6">
           <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-6">
             <div className="space-y-3">
@@ -3655,31 +3873,52 @@ export default function App() {
               <h3 className="text-white font-semibold text-base">Legal</h3>
               <ul className="space-y-2">
                 <li>
-                  <button
-                    type="button"
-                    onClick={() => setActiveModal('terms')}
-                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
+                  <a
+                    href="/Terms-of-use"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openLegalPage('terms');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer block"
                   >
                     Terms of Use
-                  </button>
+                  </a>
                 </li>
                 <li>
-                  <button
-                    type="button"
-                    onClick={() => setActiveModal('privacy')}
-                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
+                  <a
+                    href="/Privacy-policy"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openLegalPage('privacy');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer block"
                   >
                     Privacy Policy
-                  </button>
+                  </a>
                 </li>
                 <li>
-                  <button
-                    type="button"
-                    onClick={() => setActiveModal('disclaimer')}
-                    className="hover:text-[#FFC400] transition-colors cursor-pointer"
+                  <a
+                    href="/Disclaimer-and-copyright-policy"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openLegalPage('disclaimer');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer block"
                   >
-                    Disclaimer &amp; DMCA
-                  </button>
+                    Disclaimer &amp; Copyright Policy
+                  </a>
+                </li>
+                <li>
+                  <a
+                    href="/About"
+                    onClick={(e) => {
+                      e.preventDefault();
+                      openLegalPage('about');
+                    }}
+                    className="hover:text-[#FFC400] transition-colors cursor-pointer block"
+                  >
+                    About ZappyFun
+                  </a>
                 </li>
               </ul>
             </div>
@@ -3710,56 +3949,85 @@ export default function App() {
 
           <div className="pt-6 border-t border-[#292C35] flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#747784]">
             <div className="flex flex-wrap items-center gap-4">
-              <div className="h-9 flex items-center justify-center shrink-0">
-                <img
-                  src="/assets/aistudio/file_000000003a7c8208a896f64f3d00ee88-removebg-preview_03ffad4d.png"
-                  alt="ZappyFun Logo"
-                  className="h-9 w-auto max-w-[140px] object-contain select-none pointer-events-none"
-                />
+              <div className="flex items-center gap-2.5 shrink-0">
+                <div className="h-9 w-9 rounded-xl bg-black border border-[#231E30] flex items-center justify-center p-1 shadow-md overflow-hidden">
+                  <img
+                    src="/assets/aistudio/1792738076429_2_1a521405.jpg"
+                    alt="ZappyFun Logo"
+                    className="h-full w-full object-contain rounded-lg select-none pointer-events-none"
+                  />
+                </div>
+                <span className="font-display font-black text-sm tracking-wider zf-gradient-text">
+                  ZAPPYFUN
+                </span>
               </div>
               <p className="border-l border-[#292C35] pl-4">
                 © 2026 ZappyFun · {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-4">
-              <button
-                type="button"
-                onClick={() => setActiveModal('about')}
+              <a
+                href="/About"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openLegalPage('about');
+                }}
                 className="hover:text-white cursor-pointer"
               >
                 About
-              </button>
+              </a>
               <span className="text-[#292C35]">|</span>
-              <button
-                type="button"
-                onClick={() => setActiveModal('terms')}
+              <a
+                href="/Terms-of-use"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openLegalPage('terms');
+                }}
                 className="hover:text-white cursor-pointer"
               >
                 Terms of Use
-              </button>
+              </a>
               <span className="text-[#292C35]">|</span>
-              <button
-                type="button"
-                onClick={() => setActiveModal('privacy')}
+              <a
+                href="/Privacy-policy"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openLegalPage('privacy');
+                }}
                 className="hover:text-white cursor-pointer"
               >
                 Privacy Policy
-              </button>
+              </a>
               <span className="text-[#292C35]">|</span>
-              <button
-                type="button"
-                onClick={() => setActiveModal('advertising')}
+              <a
+                href="/Cookie-policy"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openLegalPage('advertising');
+                }}
                 className="hover:text-white cursor-pointer"
               >
                 Cookie Policy
-              </button>
+              </a>
+              <span className="text-[#292C35]">|</span>
+              <a
+                href="/Disclaimer-and-copyright-policy"
+                onClick={(e) => {
+                  e.preventDefault();
+                  openLegalPage('disclaimer');
+                }}
+                className="hover:text-white cursor-pointer"
+              >
+                Disclaimer &amp; Copyright Policy
+              </a>
               <span className="text-[#292C35]">|</span>
               <button
                 type="button"
-                onClick={() => setActiveModal('disclaimer')}
-                className="hover:text-white cursor-pointer"
+                onClick={() => setShowSplash(true)}
+                className="hover:text-[#FFB800] transition-colors cursor-pointer flex items-center gap-1 text-[11px] text-[#A7A9B4]"
+                title="Replay ZappyFun Cinematic Opening"
               >
-                Disclaimer
+                <span>🎬 Replay Intro</span>
               </button>
             </div>
           </div>
@@ -3811,6 +4079,27 @@ export default function App() {
         onToggleAds={() => setAdsEnabled((prev) => !prev)}
         onClose={() => setActiveModal(null)}
       />
+
+      {/* EMAIL / OTP AUTHENTICATION MODAL */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        onClose={() => setIsAuthModalOpen(false)}
+        initialMode={authModalMode}
+        onSuccess={() => {
+          showToast('Signed in successfully!');
+        }}
+      />
+
+      {/* CINEMATIC STARTUP SPLASH SCREEN & ANIMATED LOGO REVEAL */}
+      <AnimatePresence>
+        {showSplash && (
+          <CinematicSplashScreen
+            isReady={isAppReady}
+            minDurationMs={4000}
+            onComplete={handleSplashComplete}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
