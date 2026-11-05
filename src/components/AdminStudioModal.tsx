@@ -200,6 +200,56 @@ interface AdminStudioModalProps {
 }
 
 /**
+ * Checks if a candidate movie already exists in the catalog to prevent duplicate uploads.
+ * Matches by doc ID, TMDB ID, normalized title, or JustWatch URL.
+ */
+export function findDuplicateMovie(
+  candidate: {
+    id?: string;
+    title?: string;
+    tmdbId?: number | string | null;
+    justWatchUrl?: string;
+  },
+  catalogList: MediaItem[],
+  currentEditId?: string | null
+): MediaItem | undefined {
+  if (!candidate || !catalogList || catalogList.length === 0) return undefined;
+  const normTitle = (candidate.title || '').trim().toLowerCase();
+  const candTmdb = Number(candidate.tmdbId) || 0;
+  const candJw = (candidate.justWatchUrl || '').trim().toLowerCase();
+  const candId = (candidate.id || '').trim().toLowerCase();
+
+  return catalogList.find((item) => {
+    // If editing existing movie, skip self
+    if (currentEditId && item.id === currentEditId) {
+      return false;
+    }
+    // Check if doc ID matches
+    if (candId && item.id.toLowerCase() === candId) {
+      return true;
+    }
+    // Check if real TMDB ID matches (excluding fallback dummy id 157336 unless title matches)
+    const itemTmdb = Number(item.tmdbId) || 0;
+    if (candTmdb > 0 && candTmdb !== 157336 && itemTmdb === candTmdb) {
+      return true;
+    }
+    // Check if normalized title matches
+    if (normTitle && item.title.trim().toLowerCase() === normTitle) {
+      return true;
+    }
+    // Check if JustWatch URL matches
+    if (
+      candJw &&
+      item.justWatchUrl &&
+      item.justWatchUrl.trim().toLowerCase() === candJw
+    ) {
+      return true;
+    }
+    return false;
+  });
+}
+
+/**
  * Builds the Vidly.pro embed URL for a Movie or TV Show using the numeric TMDb ID.
  */
 export function parseOrBuildCineSrcUrl(
@@ -372,8 +422,8 @@ function buildMediaItemFromExtractedData(extracted: any): {
   item: MediaItem;
   serializedCredits: string;
 } {
-  const finalMediaType: TMDBMediaType =
-    extracted.mediaType === 'tv' ? 'tv' : 'movie';
+  // ZappyFun is strictly a movies-only platform
+  const finalMediaType: TMDBMediaType = 'movie';
   const rawTitle = String(extracted.title || 'Untitled').trim().slice(0, 200);
   const slugFallback = rawTitle
     .toLowerCase()
@@ -403,10 +453,7 @@ function buildMediaItemFromExtractedData(extracted: any): {
   }
 
   const streamTmdbId = finalTmdbId > 0 ? finalTmdbId : 157336;
-  const finalEmbedUrl =
-    finalMediaType === 'tv'
-      ? `https://vidly.pro/tv/${streamTmdbId}/1/1`
-      : `https://vidly.pro/movie/${streamTmdbId}`;
+  const finalEmbedUrl = `https://vidly.pro/movie/${streamTmdbId}`;
 
   const idToken = hasRealTmdbId
     ? String(finalTmdbId)
@@ -472,7 +519,7 @@ function buildMediaItemFromExtractedData(extracted: any): {
     title: rawTitle,
     tagline: safeTagline,
     synopsis: safeSynopsis,
-    contentType: finalMediaType === 'tv' ? 'series' : 'movie',
+    contentType: 'movie',
     genres: safeGenres,
     releaseYear: Math.min(
       2100,
@@ -493,14 +540,8 @@ function buildMediaItemFromExtractedData(extracted: any): {
       100,
       Math.max(1, Math.round(Number(extracted.popularScore) || 92))
     ),
-    seasonsCount:
-      finalMediaType === 'tv'
-        ? Math.min(100, Math.max(1, Number(extracted.seasonsCount) || 1))
-        : 0,
-    episodesCount:
-      finalMediaType === 'tv'
-        ? Math.min(5000, Math.max(1, Number(extracted.episodesCount) || 8))
-        : 0,
+    seasonsCount: 0,
+    episodesCount: 0,
     availabilityStatus: 'playable_demo',
     availabilityNote: '4K UHD · Instant Stream',
     visualTheme: {
@@ -1064,14 +1105,23 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     serializedCredits: string
   ) => {
     if (!currentUser || !isAdmin) return;
+
+    // Strict duplicate check: prevent uploading the same movie twice
+    const duplicate = findDuplicateMovie(item, catalog, editingId);
+    if (duplicate && duplicate.id !== item.id) {
+      throw new Error(
+        `Duplicate Movie Detected: "${duplicate.title}" (${duplicate.releaseYear}) is already in your catalog! You cannot upload the same movie twice.`
+      );
+    }
+
     const docRef = doc(db, 'catalog', item.id);
     const existingItem = catalog.find((c) => c.id === item.id);
 
     const payload: Record<string, any> = {
       id: item.id,
       tmdbId: item.tmdbId,
-      mediaType: item.mediaType,
-      contentType: item.contentType,
+      mediaType: 'movie',
+      contentType: 'movie',
       title: item.title,
       tagline: item.tagline,
       synopsis: item.synopsis,
@@ -1089,8 +1139,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       featured: Boolean(item.featured ?? true),
       heroAddedAtMs: existingItem?.heroAddedAtMs || Date.now(),
       popularScore: item.popularScore || 92,
-      seasonsCount: item.mediaType === 'tv' ? item.seasonsCount || 1 : 0,
-      episodesCount: item.mediaType === 'tv' ? item.episodesCount || 8 : 0,
+      seasonsCount: 0,
+      episodesCount: 0,
       visibility: 'public',
       authorUid: existingItem?.authorUid || currentUser.uid,
       updatedAt: serverTimestamp(),
@@ -1183,6 +1233,25 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           const { item, serializedCredits } =
             buildMediaItemFromExtractedData(extracted);
 
+          const existingDuplicate = findDuplicateMovie(item, catalog);
+          if (existingDuplicate) {
+            failCount += 1;
+            setBatchResults((prev) =>
+              prev.map((entry) =>
+                entry.index === currentIndex
+                  ? {
+                      ...entry,
+                      status: 'error',
+                      errorText: `Duplicate movie skipped: "${existingDuplicate.title}" is already in catalog`,
+                      extractedData: extracted,
+                      draftItem: item,
+                    }
+                  : entry
+              )
+            );
+            continue;
+          }
+
           if (autoPublishToFirestore) {
             await persistMediaItemToFirestore(item, serializedCredits);
           }
@@ -1254,6 +1323,21 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         const { item, serializedCredits } = buildMediaItemFromExtractedData(
           entry.extractedData
         );
+        const existingDuplicate = findDuplicateMovie(item, catalog);
+        if (existingDuplicate) {
+          setBatchResults((prev) =>
+            prev.map((b) =>
+              b.index === entry.index
+                ? {
+                    ...b,
+                    status: 'error',
+                    errorText: `Duplicate skipped: "${existingDuplicate.title}" is already in catalog`,
+                  }
+                : b
+            )
+          );
+          continue;
+        }
         await persistMediaItemToFirestore(item, serializedCredits);
         publishedNow += 1;
         setBatchResults((prev) =>
@@ -1357,14 +1441,14 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       mediaType,
       Number(tmdbIdInput)
     );
-    const finalMediaType = parsedCine.detectedType;
+    const finalMediaType: TMDBMediaType = 'movie';
     const finalTmdbId = parsedCine.detectedTmdbId;
-    const finalEmbedUrl = parsedCine.embedUrl;
+    const finalEmbedUrl = `https://vidly.pro/movie/${finalTmdbId}`;
 
     const safeTitle = (title.trim() || 'Untitled Preview').slice(0, 200);
     const docId =
       editingId ||
-      `${finalMediaType}-${finalTmdbId}`
+      `movie-${finalTmdbId}`
         .replace(/[^a-zA-Z0-9_-]/g, '-')
         .slice(0, 120);
 
@@ -1390,11 +1474,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     const fallbackSeed: Omit<MediaItem, 'posterUrl' | 'backdropUrl'> = {
       id: docId,
       tmdbId: finalTmdbId,
-      mediaType: finalMediaType,
+      mediaType: 'movie',
       title: safeTitle,
       tagline: safeTagline,
       synopsis: safeSynopsis,
-      contentType: finalMediaType === 'tv' ? 'series' : 'movie',
+      contentType: 'movie',
       genres: safeGenres,
       releaseYear: Math.min(2100, Math.max(1900, Number(releaseYear) || 2024)),
       durationMinutes: Math.min(
@@ -1409,14 +1493,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       justWatchUrl: justWatchUrl.trim(),
       featured: Boolean(featured),
       popularScore: Math.min(100, Math.max(1, Math.round(popularScore || 92))),
-      seasonsCount:
-        finalMediaType === 'tv'
-          ? Math.min(100, Math.max(1, Number(seasonsCount) || 1))
-          : undefined,
-      episodesCount:
-        finalMediaType === 'tv'
-          ? Math.min(5000, Math.max(1, Number(episodesCount) || 8))
-          : undefined,
+      seasonsCount: undefined,
+      episodesCount: undefined,
       availabilityStatus: 'playable_demo',
       availabilityNote: '4K UHD · Instant Stream',
       visualTheme: {
@@ -1449,10 +1527,26 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     card: JustWatchBrowseCard
   ) => {
     if (!currentUser || !isAdmin) return;
-    const cardKey = `${card.mediaType}-${card.title}-${card.releaseYear}`;
-    setPublishingCardKey(cardKey);
     setErrorMessage(null);
     setStatusMessage(null);
+
+    const duplicate = findDuplicateMovie(
+      {
+        title: card.title,
+        tmdbId: card.tmdbId,
+        justWatchUrl: card.justWatchUrl,
+      },
+      catalog
+    );
+    if (duplicate) {
+      setErrorMessage(
+        `Duplicate Movie Detected: "${duplicate.title}" (${duplicate.releaseYear}) is already in your catalog! You cannot upload the same movie twice.`
+      );
+      return;
+    }
+
+    const cardKey = `${card.mediaType}-${card.title}-${card.releaseYear}`;
+    setPublishingCardKey(cardKey);
 
     try {
       const res = await fetch('/api/justwatch/extract', {
@@ -1461,7 +1555,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         body: JSON.stringify({
           justWatchUrl: card.justWatchUrl,
           title: card.title,
-          mediaType: card.mediaType,
+          mediaType: 'movie',
         }),
       });
       const extracted = res.ok ? await res.json() : card;
@@ -1497,20 +1591,28 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
     if (!currentUser || !isAdmin) {
       setErrorMessage(
-        `Only ${ADMIN_EMAIL} can add or update movies and TV shows.`
+        `Only ${ADMIN_EMAIL} can add or update movies in the catalog.`
       );
       return;
     }
 
     if (!title.trim()) {
       setErrorMessage(
-        'Please enter a Movie or TV Show title (or select one from JustWatch).'
+        'Please enter a Movie title (or select one from JustWatch).'
       );
       return;
     }
 
     const draftItem = buildDraftMediaItemFromForm();
     if (!draftItem) return;
+
+    const duplicate = findDuplicateMovie(draftItem, catalog, editingId);
+    if (duplicate && duplicate.id !== editingId) {
+      setErrorMessage(
+        `Duplicate Movie Detected: "${duplicate.title}" (${duplicate.releaseYear}) is already in your catalog! You cannot upload the same movie twice.`
+      );
+      return;
+    }
 
     let serializedCredits = '[]';
     try {
@@ -1745,6 +1847,19 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         </span>
                       )}
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveAdminTab('legal')}
+                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                        activeAdminTab === 'legal'
+                          ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
+                          : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
+                      }`}
+                    >
+                      <FileText className="w-3.5 h-3.5 shrink-0" />
+                      <span>Legal &amp; Policies</span>
+                    </button>
                   </div>
 
                   <span className="text-[11px] text-[#747784] font-mono-tabular hidden sm:inline">
@@ -1946,6 +2061,150 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </button>
                   </form>
                 </div>
+              ) : activeAdminTab === 'legal' ? (
+                /* =========================================================
+                    LEGAL & POLICIES EDITOR TAB
+                ========================================================= */
+                <form
+                  onSubmit={handleSaveLegalToFirestore}
+                  className="space-y-5"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#292C35] pb-4">
+                    <div>
+                      <h3 className="text-base sm:text-lg font-bold text-white font-display flex items-center gap-2">
+                        <FileText className="w-5 h-5 text-[#FFC400]" />
+                        <span>Legal Documents &amp; Official Contact Editor</span>
+                      </h3>
+                      <p className="text-xs text-[#A7A9B4] mt-1">
+                        Edit Terms of Use, Privacy Policy, Cookie Policy, Disclaimer, and About pages.
+                      </p>
+                    </div>
+                    <button
+                      type="submit"
+                      disabled={isSavingLegal}
+                      className="min-h-[38px] px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-60"
+                    >
+                      {isSavingLegal ? (
+                        <>
+                          <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          <span>Saving...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Save className="w-3.5 h-3.5" />
+                          <span>Save All Legal Pages</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    {(
+                      [
+                        { id: 'terms', label: 'Terms of Use' },
+                        { id: 'privacy', label: 'Privacy Policy' },
+                        { id: 'about', label: 'About' },
+                        { id: 'disclaimer', label: 'Disclaimer & Copyright' },
+                        { id: 'advertising', label: 'Cookie Policy' },
+                      ] as const
+                    ).map((sec) => (
+                      <button
+                        key={sec.id}
+                        type="button"
+                        onClick={() => setActiveLegalSection(sec.id)}
+                        className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold cursor-pointer transition-colors ${
+                          activeLegalSection === sec.id
+                            ? 'bg-[#FFC400] text-[#08090D]'
+                            : 'bg-[#14161D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
+                        }`}
+                      >
+                        {sec.label}
+                      </button>
+                    ))}
+                  </div>
+
+                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-4">
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                          Section Title
+                        </label>
+                        <input
+                          type="text"
+                          value={
+                            legalDraft[activeLegalSection]?.title ||
+                            DEFAULT_LEGAL_PAGES[activeLegalSection].title
+                          }
+                          onChange={(e) =>
+                            updateLegalSectionField(
+                              activeLegalSection,
+                              'title',
+                              e.target.value
+                            )
+                          }
+                          className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white font-bold focus:outline-none focus:border-[#FFC400]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                          Subtitle / Effective Date
+                        </label>
+                        <input
+                          type="text"
+                          value={
+                            legalDraft[activeLegalSection]?.subtitle ||
+                            DEFAULT_LEGAL_PAGES[activeLegalSection].subtitle
+                          }
+                          onChange={(e) =>
+                            updateLegalSectionField(
+                              activeLegalSection,
+                              'subtitle',
+                              e.target.value
+                            )
+                          }
+                          className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-[#FFC400] focus:outline-none focus:border-[#FFC400]"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                          Official Contact Email
+                        </label>
+                        <input
+                          type="email"
+                          value={legalDraft.contactEmail || OFFICIAL_CONTACT_EMAIL}
+                          onChange={(e) =>
+                            setLegalDraft((prev) => ({
+                              ...prev,
+                              contactEmail: e.target.value,
+                            }))
+                          }
+                          className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
+                        />
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                        Document Body
+                      </label>
+                      <textarea
+                        rows={12}
+                        value={
+                          legalDraft[activeLegalSection]?.body ||
+                          DEFAULT_LEGAL_PAGES[activeLegalSection].body
+                        }
+                        onChange={(e) =>
+                          updateLegalSectionField(
+                            activeLegalSection,
+                            'body',
+                            e.target.value
+                          )
+                        }
+                        className="w-full p-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white leading-relaxed focus:outline-none focus:border-[#FFC400]"
+                      />
+                    </div>
+                  </div>
+                </form>
               ) : activeAdminTab === 'support' ? (
                 /* =========================================================
                     USER SUPPORT MESSAGES INBOX TAB
@@ -2379,29 +2638,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         </p>
                       </div>
 
-                      {/* Type & Country Filters */}
+                      {/* Country Filter & Movies Badge */}
                       <div className="flex flex-wrap items-center gap-2">
-                        <div className="inline-flex items-center p-1 rounded-xl bg-[#08090D] border border-[#292C35]">
-                          {(
-                            [
-                              { id: 'ALL', label: 'All' },
-                              { id: 'MOVIE', label: 'Movies' },
-                              { id: 'SHOW', label: 'TV Shows' },
-                            ] as const
-                          ).map((tab) => (
-                            <button
-                              key={tab.id}
-                              type="button"
-                              onClick={() => setJwTypeFilter(tab.id)}
-                              className={`px-3 py-1 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
-                                jwTypeFilter === tab.id
-                                  ? 'bg-[#FFC400] text-[#08090D]'
-                                  : 'text-[#A7A9B4] hover:text-white'
-                              }`}
-                            >
-                              {tab.label}
-                            </button>
-                          ))}
+                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-bold text-[#FFC400]">
+                          <Film className="w-3.5 h-3.5" />
+                          <span>Movies Only (4K UHD)</span>
                         </div>
 
                         <select
@@ -2426,7 +2667,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         type="text"
                         value={jwSearchQuery}
                         onChange={(e) => setJwSearchQuery(e.target.value)}
-                        placeholder="Search any Movie or TV Series directly on JustWatch (e.g. Breaking Bad, Stranger Things, Mirzapur, Dune, Interstellar)..."
+                        placeholder="Search any Movie directly on JustWatch (e.g. Interstellar, Dune, Inception, Avengers, Oppenheimer)..."
                         className="w-full min-h-[44px] pl-10 pr-24 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
                       />
                       {jwSearchQuery && (
@@ -2445,28 +2686,28 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       <div className="py-10 flex flex-col items-center justify-center gap-2 text-[#A7A9B4]">
                         <Loader2 className="w-6 h-6 animate-spin text-[#FFC400]" />
                         <span className="text-xs font-medium">
-                          Fetching live titles from JustWatch...
+                          Fetching live movies from JustWatch...
                         </span>
                       </div>
                     ) : jwResults.length === 0 ? (
                       <div className="py-8 text-center text-xs text-[#747784]">
-                        No JustWatch titles matched &ldquo;{jwSearchQuery}&rdquo;. Try another search term.
+                        No JustWatch movies matched &ldquo;{jwSearchQuery}&rdquo;. Try another search term.
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 max-h-[380px] overflow-y-auto pr-1">
                         {jwResults.map((card) => {
-                          const cardKey = `${card.mediaType}-${card.title}-${card.releaseYear}`;
+                          const cardKey = `movie-${card.title}-${card.releaseYear}`;
                           const isPublishingThis =
                             publishingCardKey === cardKey;
-                          const alreadyInCatalog = catalog.some(
-                            (c) =>
-                              (card.tmdbId &&
-                                c.tmdbId === card.tmdbId &&
-                                c.mediaType === card.mediaType) ||
-                              (c.title.toLowerCase() ===
-                                card.title.toLowerCase() &&
-                                c.releaseYear === card.releaseYear)
+                          const duplicateMovie = findDuplicateMovie(
+                            {
+                              title: card.title,
+                              tmdbId: card.tmdbId,
+                              justWatchUrl: card.justWatchUrl,
+                            },
+                            catalog
                           );
+                          const isDuplicate = Boolean(duplicateMovie);
 
                           return (
                             <div
@@ -2483,9 +2724,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                 <div className="min-w-0 flex-1 space-y-1">
                                   <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-mono-tabular">
                                     <span className="font-extrabold uppercase text-[#FFC400]">
-                                      {card.mediaType === 'tv'
-                                        ? 'TV SERIES'
-                                        : 'MOVIE'}
+                                      MOVIE
                                     </span>
                                     <span className="text-[#747784]">·</span>
                                     <span className="text-[#A7A9B4]">
@@ -2523,7 +2762,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                       handleExtractFromJustWatch(
                                         card.justWatchUrl,
                                         card.title,
-                                        card.mediaType,
+                                        'movie',
                                         false
                                       )
                                     }
@@ -2541,12 +2780,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                       handleExtractFromJustWatch(
                                         card.justWatchUrl,
                                         card.title,
-                                        card.mediaType,
+                                        'movie',
                                         true
                                       )
                                     }
                                     className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-[11px] font-bold text-[#FFC400] flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
-                                    title="Preview player & episodes before publishing"
+                                    title="Preview movie player before publishing"
                                   >
                                     <Eye className="w-3 h-3 shrink-0" />
                                     <span>Preview</span>
@@ -2555,31 +2794,36 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                                 <button
                                   type="button"
-                                  disabled={isPublishingThis}
-                                  onClick={() =>
-                                    handleDirectPublishFromJustWatchCard(card)
-                                  }
-                                  className={`w-full min-h-[34px] px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap ${
-                                    alreadyInCatalog
-                                      ? 'bg-emerald-500/20 border border-emerald-500/40 text-emerald-300 hover:bg-emerald-500/30'
-                                      : 'bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D]'
+                                  disabled={isPublishingThis || isDuplicate}
+                                  onClick={() => {
+                                    if (isDuplicate) return;
+                                    handleDirectPublishFromJustWatchCard(card);
+                                  }}
+                                  className={`w-full min-h-[34px] px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
+                                    isDuplicate
+                                      ? 'bg-[#14161D] border border-emerald-500/40 text-emerald-400 cursor-not-allowed opacity-90'
+                                      : 'bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] cursor-pointer'
                                   }`}
-                                  title="Directly extract and publish to app"
+                                  title={
+                                    isDuplicate
+                                      ? `Already in your catalog ("${duplicateMovie?.title}") — duplicate uploads are blocked`
+                                      : 'Directly extract and publish movie to app'
+                                  }
                                 >
                                   {isPublishingThis ? (
                                     <>
                                       <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
                                       <span>Publishing...</span>
                                     </>
-                                  ) : alreadyInCatalog ? (
+                                  ) : isDuplicate ? (
                                     <>
-                                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                                      <span>Update in App</span>
+                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                      <span>Already in Catalog</span>
                                     </>
                                   ) : (
                                     <>
                                       <Plus className="w-3.5 h-3.5 shrink-0" />
-                                      <span>1-Click Publish</span>
+                                      <span>1-Click Publish Movie</span>
                                     </>
                                   )}
                                 </button>
@@ -2704,79 +2948,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         </div>
                       </div>
 
-                      {/* Season & Episode Selector for Series Preview */}
-                      {currentDraftPreviewItem.mediaType === 'tv' && (
-                        <div className="flex flex-wrap items-center gap-3 p-3 rounded-xl bg-[#14161D] border border-[#292C35]">
-                          <span className="text-xs font-bold text-[#FFC400] uppercase">
-                            Test Series Episodes:
-                          </span>
-                          <div className="flex items-center gap-2">
-                            <label className="text-xs text-[#A7A9B4]">
-                              Season:
-                            </label>
-                            <select
-                              value={previewSeason}
-                              onChange={(e) => {
-                                setPreviewSeason(Number(e.target.value));
-                                setPreviewEpisode(1);
-                              }}
-                              className="px-2.5 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-white font-bold"
-                            >
-                              {Array.from(
-                                {
-                                  length: Math.max(
-                                    1,
-                                    currentDraftPreviewItem.seasonsCount || 1
-                                  ),
-                                },
-                                (_, i) => i + 1
-                              ).map((s) => (
-                                <option key={s} value={s}>
-                                  Season {s}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <label className="text-xs text-[#A7A9B4]">
-                              Episode:
-                            </label>
-                            <select
-                              value={previewEpisode}
-                              onChange={(e) =>
-                                setPreviewEpisode(Number(e.target.value))
-                              }
-                              className="px-2.5 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-white font-bold"
-                            >
-                              {Array.from(
-                                {
-                                  length: Math.max(
-                                    1,
-                                    currentDraftPreviewItem.episodesCount || 8
-                                  ),
-                                },
-                                (_, i) => i + 1
-                              ).map((ep) => (
-                                <option key={ep} value={ep}>
-                                  Episode {ep}
-                                </option>
-                              ))}
-                            </select>
-                          </div>
-                        </div>
-                      )}
-
-                      {/* Live Video Player Stream Test */}
+                      {/* Live Video Player Stream Test (4K UHD Movie) */}
                       <VideoPlayer
                         item={currentDraftPreviewItem}
-                        selectedSeason={previewSeason}
-                        selectedEpisodeNumber={previewEpisode}
-                        onNextEpisode={
-                          currentDraftPreviewItem.mediaType === 'tv'
-                            ? () => setPreviewEpisode((e) => e + 1)
-                            : undefined
-                        }
                       />
 
                       {/* Banner & Metadata Card Preview */}
@@ -2880,20 +3054,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     <div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5 p-3.5 rounded-xl bg-[#08090D] border border-[#292C35]">
                       <div className="sm:col-span-3">
                         <label className="block text-xs text-[#A7A9B4] mb-1">
-                          Content Type
+                          Media Type
                         </label>
-                        <select
-                          value={mediaType}
-                          onChange={(e) => {
-                            const next = e.target.value as TMDBMediaType;
-                            setMediaType(next);
-                            setMaturityRating(next === 'tv' ? 'TV-14' : 'PG-13');
-                          }}
-                          className="w-full min-h-[42px] px-3 rounded-xl bg-[#14161D] border border-[#292C35] text-xs text-white font-semibold"
-                        >
-                          <option value="movie">Movie</option>
-                          <option value="tv">TV Series</option>
-                        </select>
+                        <div className="w-full min-h-[42px] px-3 rounded-xl bg-[#14161D] border border-[#292C35] text-xs text-white font-semibold flex items-center gap-2">
+                          <Film className="w-3.5 h-3.5 text-[#FFC400]" />
+                          <span>Movie (4K UHD)</span>
+                        </div>
                       </div>
 
                       <div className="sm:col-span-3">
@@ -2927,7 +3093,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       </div>
                     </div>
 
-                    {/* Title, Year, Duration, Rating, Seasons/Episodes */}
+                    {/* Title, Year, Duration, Rating */}
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
                       <div className="sm:col-span-2">
                         <label className="block text-xs text-[#A7A9B4] mb-1">
@@ -2970,37 +3136,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
                         />
                       </div>
-
-                      {mediaType === 'tv' && (
-                        <>
-                          <div>
-                            <label className="block text-xs text-[#A7A9B4] mb-1">
-                              Total Aired Seasons
-                            </label>
-                            <input
-                              type="number"
-                              min={1}
-                              max={100}
-                              value={seasonsCount}
-                              onChange={(e) => setSeasonsCount(e.target.value)}
-                              className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
-                            />
-                          </div>
-                          <div>
-                            <label className="block text-xs text-[#A7A9B4] mb-1">
-                              Episodes in Season 1
-                            </label>
-                            <input
-                              type="number"
-                              min={1}
-                              max={500}
-                              value={episodesCount}
-                              onChange={(e) => setEpisodesCount(e.target.value)}
-                              className="w-full min-h-[40px] px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs text-white font-mono-tabular focus:outline-none focus:border-[#FFC400]"
-                            />
-                          </div>
-                        </>
-                      )}
 
                       <div>
                         <label className="block text-xs text-[#A7A9B4] mb-1">

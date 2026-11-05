@@ -19,6 +19,21 @@
   - Removed Legal & Policies editor and SMTP configuration tabs from the admin panel — all legal documents and SMTP settings are now locked and maintained permanently in code.
 - [x] **Google Site Verification**
   - Deployed `googlec41e2056a51ca5fe.html` to `/public/googlec41e2056a51ca5fe.html` for instant verification by Google Search Console.
+- [x] **New Transparent Play-Button Logo Throughout the App**
+  - Replaced legacy image asset with the official transparent gradient play-button logo (`/assets/aistudio/20261023_170257_6e6b6602.png`) across all touchpoints:
+    - Browser favicon and Apple touch icon in `index.html`
+    - Cinematic startup splash screen (`CinematicSplashScreen.tsx`)
+    - Authentication modal header (`AuthModal.tsx`)
+    - Admin studio content management modal (`AdminStudioModal.tsx`)
+    - Desktop navigation rail, mobile header, empty state catalog, and footer (`App.tsx`)
+  - Cleaned up container backgrounds so the logo has no box or dark background behind it.
+- [x] **7-Second Cinematic Startup Animation**
+  - Extended startup sequence to a full 7 seconds (`minDurationMs = 7000`).
+  - Rendered large, prominent logo icon (`w-40 h-40` up to `w-64 h-64`) with smooth upward easing.
+  - Removed tagline text beneath "ZappyFun".
+  - Rendered the selected header wordmark style: `ZAPPY<span className="bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] bg-clip-text text-transparent">FUN</span>` in large cinematic typography (`text-5xl sm:text-7xl md:text-8xl`).
+  - Multi-stage orchestration: logo entry (0-1.8s), laser-spark text reveal (1.8-5.2s), settle & pulse (5.2-7.0s), followed by graceful exit fade when app initialization is complete.
 - [x] **Verification & Compliance**
   - All 12 automated security and compliance test suites passing.
   - Zero TypeScript lint or compilation errors.
+

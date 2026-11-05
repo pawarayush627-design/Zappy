@@ -840,7 +840,7 @@ export const VisualUiEditor: React.FC<VisualUiEditorProps> = ({
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         className={`pointer-events-auto fixed z-[95] left-2 right-2 md:left-auto md:right-4 md:w-[380px] rounded-2xl bg-[#14101F]/95 backdrop-blur-2xl border border-[#B892FF]/40 shadow-2xl flex flex-col overflow-hidden transition-all duration-200 ${
-          dockPosition === 'top' ? 'top-2' : 'bottom-2'
+          dockPosition === 'top' ? 'top-16 md:top-3' : 'bottom-20 md:bottom-4'
         }`}
       >
         {/* Unified Compact Top Control Bar (Always Visible) */}

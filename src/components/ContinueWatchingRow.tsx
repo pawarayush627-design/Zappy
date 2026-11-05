@@ -45,11 +45,11 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
 
   return (
     <section
-      className="space-y-3"
+      className="space-y-3.5"
       aria-label="Continue Watching"
     >
       <div className="flex items-center justify-between gap-4">
-        <h2 className="text-lg sm:text-xl lg:text-2xl font-bold text-white font-display">
+        <h2 className="text-lg sm:text-xl lg:text-2xl font-extrabold text-white font-display tracking-tight">
           Continue Watching
         </h2>
 
@@ -58,7 +58,7 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
             <button
               type="button"
               onClick={() => handleScroll('left')}
-              className="w-8 h-8 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-white flex items-center justify-center cursor-pointer transition-colors"
+              className="w-8 h-8 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/50 text-white flex items-center justify-center cursor-pointer transition-all active:scale-95"
               aria-label="Scroll Continue Watching left"
             >
               <ArrowLeft className="w-4 h-4" />
@@ -66,7 +66,7 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
             <button
               type="button"
               onClick={() => handleScroll('right')}
-              className="w-8 h-8 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-white flex items-center justify-center cursor-pointer transition-colors"
+              className="w-8 h-8 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/50 text-white flex items-center justify-center cursor-pointer transition-all active:scale-95"
               aria-label="Scroll Continue Watching right"
             >
               <ArrowRight className="w-4 h-4" />
@@ -77,17 +77,17 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
 
       <div
         ref={scrollContainerRef}
-        className="flex gap-3.5 sm:gap-4 overflow-x-auto no-scrollbar pb-1.5"
+        className="flex gap-3.5 sm:gap-4 overflow-x-auto no-scrollbar pb-1.5 pt-0.5"
       >
         {items.map(({ item, progress }) => (
           <motion.article
             key={item.id}
-            whileHover={{ y: -3 }}
-            transition={{ duration: 0.2 }}
-            className="group relative w-[240px] sm:w-[290px] rounded-xl bg-[#14161D] border border-[#292C35] hover:border-[#FFC400]/60 p-2.5 flex flex-col gap-2 transition-colors shrink-0 cinema-card-shadow"
+            whileHover={{ y: -6, scale: 1.02 }}
+            transition={{ type: 'spring', stiffness: 320, damping: 24 }}
+            className="group relative w-[240px] sm:w-[290px] rounded-2xl bg-[#14161D] border border-[#292C35] hover:border-[#FF5A36]/80 p-2.5 flex flex-col gap-2.5 transition-all duration-300 shrink-0 cinema-card-shadow cinema-glow-hover will-change-transform"
           >
-            {/* Widescreen Backdrop Thumbnail — Clicking resumes playback directly */}
-            <div className="relative aspect-[16/9] w-full rounded-lg overflow-hidden bg-[#0F1117]">
+            {/* Widescreen Backdrop Thumbnail with Glass Sheen Sweep */}
+            <div className="relative aspect-[16/9] w-full rounded-xl overflow-hidden bg-[#0F1117] zf-sheen">
               <button
                 type="button"
                 onClick={() => onSelectMedia(item, true, true)}
@@ -99,32 +99,23 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
                   alt={item.title}
                   item={item}
                   aspectRatio="backdrop"
-                  className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                  className="w-full h-full object-cover group-hover:scale-[1.08] transition-transform duration-700 ease-out group-hover:brightness-105"
                 />
 
-                <div className="absolute inset-0 bg-gradient-to-t from-black/85 via-black/25 to-transparent" />
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/25 to-transparent" />
 
-                {/* Center Play Button */}
-                <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="w-11 h-11 rounded-full bg-[#FFC400] text-[#08090D] flex items-center justify-center shadow-lg group-hover:scale-110 transition-transform">
+                {/* Center Play Button with Spring Pop */}
+                <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                  <div className="w-9 h-9 sm:w-11 sm:h-11 rounded-full zf-gradient-btn text-white flex items-center justify-center shadow-xl group-hover:scale-115 transition-transform duration-300">
                     <Play className="w-4 h-4 fill-current ml-0.5" />
                   </div>
                 </div>
 
                 {/* Bottom Overlay Progress Bar */}
-                <div className="absolute bottom-2 left-2.5 right-2.5 space-y-1.5">
-                  <div className="flex items-center justify-end text-[11px] font-medium text-white">
-                    {progress.remainingLabel && (
-                      <span className="px-2 py-0.5 rounded bg-black/70 text-[#A7A9B4] font-mono-tabular">
-                        {progress.remainingLabel} left
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Progress Track */}
-                  <div className="w-full h-1 rounded-full bg-white/25 overflow-hidden">
+                <div className="absolute bottom-2 left-2.5 right-2.5 pointer-events-none">
+                  <div className="w-full h-1 rounded-full bg-white/20 overflow-hidden">
                     <div
-                      className="h-full bg-[#FFC400] rounded-full transition-all"
+                      className="h-full bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] rounded-full transition-all duration-300"
                       style={{
                         width: `${Math.min(
                           98,
@@ -140,7 +131,7 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
                 <button
                   type="button"
                   onClick={(e) => onRemoveProgress(item.id, e)}
-                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/75 hover:bg-[#FFC400] text-[#A7A9B4] hover:text-[#08090D] border border-white/15 flex items-center justify-center transition-colors cursor-pointer z-10"
+                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/75 hover:bg-[#FFB800] text-[#A7A9B4] hover:text-[#08090D] border border-white/15 flex items-center justify-center transition-all cursor-pointer z-10 active:scale-90"
                   title="Remove from Continue Watching"
                   aria-label={`Remove ${item.title} from Continue Watching`}
                 >
@@ -149,22 +140,32 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
               )}
             </div>
 
-            {/* Bottom Title — Clicking opens details */}
-            <div className="flex items-center justify-between gap-2 px-0.5">
+            {/* Bottom Title & Progress Metadata — Clicking opens details */}
+            <div className="flex items-center justify-between gap-2 px-0.5 min-w-0">
               <button
                 type="button"
                 onClick={() => onSelectMedia(item, false, false)}
-                className="min-w-0 text-left cursor-pointer"
+                className="min-w-0 flex-1 text-left cursor-pointer"
               >
-                <h3 className="text-xs sm:text-sm font-bold text-white group-hover:text-[#FFC400] transition-colors truncate">
+                <h3 className="text-xs sm:text-sm font-bold text-white group-hover:text-[#FFB800] transition-colors truncate font-display">
                   {item.title}
                 </h3>
               </button>
-              <span className="text-[11px] text-[#747784] tabular-nums shrink-0">
-                {item.contentType === 'series'
-                  ? progress.seasonEpisodeLabel
-                  : item.releaseYear}
-              </span>
+              <div className="flex items-center gap-1.5 text-[11px] text-[#A7A9B4] tabular-nums shrink-0 font-medium">
+                <span>
+                  {item.contentType === 'series'
+                    ? progress.seasonEpisodeLabel
+                    : item.releaseYear}
+                </span>
+                {progress.remainingLabel && (
+                  <>
+                    <span aria-hidden="true" className="text-[#747784]">·</span>
+                    <span className="text-[#FFB800] font-semibold">
+                      {progress.remainingLabel} left
+                    </span>
+                  </>
+                )}
+              </div>
             </div>
           </motion.article>
         ))}

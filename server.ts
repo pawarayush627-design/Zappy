@@ -1422,9 +1422,9 @@ async function startServer() {
       const rawType =
         typeof req.query.type === 'string'
           ? req.query.type.toUpperCase()
-          : 'ALL';
+          : 'MOVIE';
       const objectTypeFilter: 'ALL' | 'MOVIE' | 'SHOW' =
-        rawType === 'MOVIE' || rawType === 'SHOW' ? rawType : 'ALL';
+        rawType === 'SHOW' ? 'SHOW' : rawType === 'ALL' ? 'ALL' : 'MOVIE';
       const country =
         typeof req.query.country === 'string' && req.query.country.length === 2
           ? req.query.country.toUpperCase()

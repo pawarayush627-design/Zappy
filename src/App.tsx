@@ -105,7 +105,6 @@ type NavView =
   | 'home'
   | 'movies_shows'
   | 'movies'
-  | 'tv'
   | 'categories'
   | 'myspace'
   | 'support'
@@ -209,24 +208,8 @@ export default function App() {
   const [catalog, setCatalog] = useState<MediaItem[]>([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(true);
 
-  // Cinematic Splash Screen State (shown on cold startup and browser reload)
-  const [showSplash, setShowSplash] = useState<boolean>(() => {
-    try {
-      if (typeof window !== 'undefined') {
-        const perfNav = window.performance?.getEntriesByType?.('navigation')?.[0] as
-          | PerformanceNavigationTiming
-          | undefined;
-        const isReload = perfNav?.type === 'reload';
-        if (isReload) return true;
-
-        const alreadyShown = window.sessionStorage.getItem('zappy_splash_shown_v1');
-        return !alreadyShown;
-      }
-    } catch {
-      // Fallback
-    }
-    return true;
-  });
+  // Starting logo reveal animation removed as requested (loads app directly and smoothly)
+  const [showSplash, setShowSplash] = useState<boolean>(false);
 
   const handleSplashComplete = useCallback(() => {
     setShowSplash(false);
@@ -706,14 +689,11 @@ export default function App() {
           return {
             id: data.id || docSnap.id,
             tmdbId: resolvedNumericId,
-            mediaType,
+            mediaType: 'movie' as const,
             title: data.title || 'Untitled',
             tagline: cleanTagline,
             synopsis: data.synopsis || '',
-            contentType:
-              data.contentType === 'series' || mediaType === 'tv'
-                ? 'series'
-                : 'movie',
+            contentType: 'movie' as const,
             genres:
               Array.isArray(data.genres) && data.genres.length > 0
                 ? data.genres
@@ -738,8 +718,8 @@ export default function App() {
             heroAddedAtMs: Number(data.heroAddedAtMs) || undefined,
             popularScore: Number(data.popularScore) || 92,
             recentlyAdded: true,
-            seasonsCount: Number(data.seasonsCount) || 1,
-            episodesCount: Number(data.episodesCount) || 8,
+            seasonsCount: undefined,
+            episodesCount: undefined,
             visualTheme: {
               primaryHex: '#141414',
               secondaryHex: '#1A1A1A',
@@ -749,7 +729,31 @@ export default function App() {
           };
         });
 
-        setCatalog(items);
+        // Strict Deduplication & Movie-Only Filtering:
+        // Ensure no duplicate movie can ever exist twice in the live catalog
+        const seenMovieKeys = new Set<string>();
+        const uniqueMovies: MediaItem[] = [];
+        for (const item of items) {
+          const normTitle = (item.title || '').trim().toLowerCase();
+          const tmdbKey = item.tmdbId ? `tmdb:${item.tmdbId}` : null;
+          const titleKey = normTitle ? `title:${normTitle}` : null;
+          const jwKey = item.justWatchUrl ? `jw:${item.justWatchUrl.trim().toLowerCase()}` : null;
+
+          if (
+            (tmdbKey && seenMovieKeys.has(tmdbKey)) ||
+            (titleKey && seenMovieKeys.has(titleKey)) ||
+            (jwKey && seenMovieKeys.has(jwKey))
+          ) {
+            continue;
+          }
+
+          if (tmdbKey) seenMovieKeys.add(tmdbKey);
+          if (titleKey) seenMovieKeys.add(titleKey);
+          if (jwKey) seenMovieKeys.add(jwKey);
+          uniqueMovies.push(item);
+        }
+
+        setCatalog(uniqueMovies);
         setIsLoadingCatalog(false);
 
         setSelectedMedia((prev) => {
@@ -1383,6 +1387,27 @@ export default function App() {
 
   const handlePublishDraftFromPreview = async (draftItem: MediaItem) => {
     if (!currentUser || !isAdmin) return;
+
+    // Duplicate Prevention: do not allow uploading twice
+    const isDuplicate = catalog.some((existing) => {
+      if (existing.id === draftItem.id) return false;
+      if (draftItem.tmdbId && Number(existing.tmdbId) === Number(draftItem.tmdbId)) return true;
+      if (existing.title.trim().toLowerCase() === draftItem.title.trim().toLowerCase()) return true;
+      if (
+        draftItem.justWatchUrl &&
+        existing.justWatchUrl &&
+        draftItem.justWatchUrl.trim().toLowerCase() === existing.justWatchUrl.trim().toLowerCase()
+      ) {
+        return true;
+      }
+      return false;
+    });
+
+    if (isDuplicate) {
+      showToast(`Duplicate Movie: "${draftItem.title}" is already in your catalog. Upload prevented.`);
+      return;
+    }
+
     setIsPublishingDraft(true);
     const docRef = doc(db, 'catalog', draftItem.id);
     try {
@@ -1744,15 +1769,9 @@ export default function App() {
     return entries;
   }, [catalog, watchProgressMap, completedIds]);
 
-  const moviesList = useMemo(
-    () => catalog.filter((i) => i.contentType === 'movie'),
-    [catalog]
-  );
-
-  const showsList = useMemo(
-    () => catalog.filter((i) => i.contentType === 'series'),
-    [catalog]
-  );
+  // Since ZappyFun is strictly movies only, moviesList represents the full movie catalog
+  const moviesList = useMemo(() => catalog, [catalog]);
+  const showsList = useMemo<MediaItem[]>(() => [], []);
 
   // Filter out any completed items so watched titles never remain in Watchlist
   const activeWatchlistIds = useMemo(
@@ -1801,104 +1820,212 @@ export default function App() {
     });
   }, [genreCountsMap]);
 
-  // Optimized Multi-Token Relevance Search + Genre + ContentType + Sort
-  const filteredSearchCatalog = useMemo(() => {
-    let result = [...catalog];
-
-    if (searchTypeFilter !== 'all') {
-      result = result.filter((item) => item.contentType === searchTypeFilter);
-    }
-
-    if (selectedGenre !== 'All') {
-      result = result.filter((item) =>
-        item.genres.some(
-          (g) => g.toLowerCase() === selectedGenre.toLowerCase()
-        )
-      );
-    }
-
-    const rawQuery = debouncedSearchQuery.trim().toLowerCase();
-    const tokens = rawQuery.split(/\s+/).filter(Boolean);
-
-    if (tokens.length > 0) {
-      const scored = result
-        .map((item) => {
-          const titleLower = item.title.toLowerCase();
-          const directorLower = item.directorOrCreator.toLowerCase();
-          const synopsisLower = item.synopsis.toLowerCase();
-          const genresLower = item.genres.map((g) => g.toLowerCase());
-          const castLower = item.cast.map((c) => c.toLowerCase());
-          const yearStr = String(item.releaseYear);
-
-          let score = 0;
-          let matchedAllTokens = true;
-
-          for (const token of tokens) {
-            let tokenMatched = false;
-            if (titleLower === token) {
-              score += 120;
-              tokenMatched = true;
-            } else if (titleLower.startsWith(token)) {
-              score += 80;
-              tokenMatched = true;
-            } else if (titleLower.includes(token)) {
-              score += 50;
-              tokenMatched = true;
-            }
-
-            if (genresLower.some((g) => g.includes(token))) {
-              score += 35;
-              tokenMatched = true;
-            }
-            if (castLower.some((c) => c.includes(token))) {
-              score += 30;
-              tokenMatched = true;
-            }
-            if (directorLower.includes(token)) {
-              score += 25;
-              tokenMatched = true;
-            }
-            if (yearStr.includes(token)) {
-              score += 20;
-              tokenMatched = true;
-            }
-            if (synopsisLower.includes(token)) {
-              score += 10;
-              tokenMatched = true;
-            }
-
-            if (!tokenMatched) {
-              matchedAllTokens = false;
-              break;
-            }
+  // Enhanced Typo-Tolerant Multi-Field Relevance Search + Match Attribution + Sort
+  const { filteredSearchCatalog, searchMatchReasonsMap, quickSearchSuggestions } =
+    useMemo(() => {
+      // Helper for typo-tolerant subsequence / fuzzy word similarity
+      const isFuzzyWordMatch = (targetWord: string, queryToken: string): boolean => {
+        if (queryToken.length < 3 || targetWord.length < 3) return false;
+        if (Math.abs(targetWord.length - queryToken.length) > 3) return false;
+        // Subsequence check (e.g. "intrstlr" -> "interstellar")
+        let qi = 0;
+        for (let ti = 0; ti < targetWord.length && qi < queryToken.length; ti++) {
+          if (targetWord[ti] === queryToken[qi]) qi++;
+        }
+        if (qi === queryToken.length && queryToken.length >= targetWord.length - 2) {
+          return true;
+        }
+        // Bounded Levenshtein edit distance <= 1 (or <= 2 for 6+ chars)
+        const maxDist = queryToken.length >= 6 ? 2 : 1;
+        const m = targetWord.length;
+        const n = queryToken.length;
+        const dp: number[][] = Array.from({ length: m + 1 }, () =>
+          new Array(n + 1).fill(0)
+        );
+        for (let i = 0; i <= m; i++) dp[i][0] = i;
+        for (let j = 0; j <= n; j++) dp[0][j] = j;
+        for (let i = 1; i <= m; i++) {
+          for (let j = 1; j <= n; j++) {
+            const cost = targetWord[i - 1] === queryToken[j - 1] ? 0 : 1;
+            dp[i][j] = Math.min(
+              dp[i - 1][j] + 1,
+              dp[i][j - 1] + 1,
+              dp[i - 1][j - 1] + cost
+            );
           }
+        }
+        return dp[m][n] <= maxDist;
+      };
 
-          return { item, score, matchedAllTokens };
-        })
-        .filter((entry) => entry.matchedAllTokens && entry.score > 0);
+      let result = [...catalog];
 
-      if (searchSortBy === 'relevance') {
-        scored.sort((a, b) => b.score - a.score);
+      if (searchTypeFilter !== 'all') {
+        result = result.filter((item) => item.contentType === searchTypeFilter);
       }
-      result = scored.map((entry) => entry.item);
-    }
 
-    if (searchSortBy === 'newest') {
-      result.sort((a, b) => b.releaseYear - a.releaseYear);
-    } else if (searchSortBy === 'popular') {
-      result.sort((a, b) => (b.popularScore || 0) - (a.popularScore || 0));
-    } else if (searchSortBy === 'title') {
-      result.sort((a, b) => a.title.localeCompare(b.title));
-    }
+      if (selectedGenre !== 'All') {
+        result = result.filter((item) =>
+          item.genres.some(
+            (g) => g.toLowerCase() === selectedGenre.toLowerCase()
+          )
+        );
+      }
 
-    return result;
-  }, [
-    catalog,
-    searchTypeFilter,
-    selectedGenre,
-    debouncedSearchQuery,
-    searchSortBy,
-  ]);
+      const reasonsMap: Record<string, string> = {};
+      const rawQuery = debouncedSearchQuery.trim().toLowerCase();
+      const tokens = rawQuery.split(/\s+/).filter(Boolean);
+
+      if (tokens.length > 0) {
+        const scored = result
+          .map((item) => {
+            const titleLower = item.title.toLowerCase();
+            const titleWords = titleLower.split(/[^a-z0-9]+/).filter(Boolean);
+            const taglineLower = (item.tagline || '').toLowerCase();
+            const directorLower = item.directorOrCreator.toLowerCase();
+            const synopsisLower = item.synopsis.toLowerCase();
+            const genresLower = item.genres.map((g) => g.toLowerCase());
+            const castList = item.cast || [];
+            const yearStr = String(item.releaseYear);
+
+            let score = 0;
+            let matchedAllTokens = true;
+            let bestReason = '';
+
+            // Full phrase bonus
+            if (titleLower === rawQuery) {
+              score += 250;
+              bestReason = 'Exact Title Match';
+            } else if (titleLower.startsWith(rawQuery)) {
+              score += 160;
+            } else if (titleLower.includes(rawQuery)) {
+              score += 110;
+            }
+
+            for (const token of tokens) {
+              let tokenMatched = false;
+
+              if (titleLower === token) {
+                score += 140;
+                tokenMatched = true;
+              } else if (titleLower.startsWith(token)) {
+                score += 95;
+                tokenMatched = true;
+              } else if (titleWords.some((w) => w.startsWith(token))) {
+                score += 75;
+                tokenMatched = true;
+              } else if (titleLower.includes(token)) {
+                score += 55;
+                tokenMatched = true;
+              } else if (titleWords.some((w) => isFuzzyWordMatch(w, token))) {
+                score += 38;
+                tokenMatched = true;
+                if (!bestReason) bestReason = `Close match for "${debouncedSearchQuery.trim()}"`;
+              }
+
+              const matchedGenreIdx = genresLower.findIndex((g) => g.includes(token));
+              if (matchedGenreIdx !== -1) {
+                score += 40;
+                tokenMatched = true;
+                if (!bestReason) bestReason = `Genre · ${item.genres[matchedGenreIdx]}`;
+              }
+
+              const matchedActor = castList.find(
+                (c) =>
+                  c.toLowerCase().includes(token) ||
+                  c
+                    .toLowerCase()
+                    .split(/\s+/)
+                    .some((w) => isFuzzyWordMatch(w, token))
+              );
+              if (matchedActor && matchedActor !== 'Featured Cast') {
+                score += 45;
+                tokenMatched = true;
+                if (!bestReason) bestReason = `Cast · ${matchedActor}`;
+              }
+
+              if (
+                directorLower.includes(token) &&
+                item.directorOrCreator !== 'Featured Creator'
+              ) {
+                score += 35;
+                tokenMatched = true;
+                if (!bestReason)
+                  bestReason = `${
+                    item.contentType === 'series' ? 'Creator' : 'Director'
+                  } · ${item.directorOrCreator}`;
+              }
+
+              if (yearStr.includes(token)) {
+                score += 30;
+                tokenMatched = true;
+                if (!bestReason) bestReason = `Released in ${item.releaseYear}`;
+              }
+
+              if (taglineLower.includes(token) || synopsisLower.includes(token)) {
+                score += 18;
+                tokenMatched = true;
+                if (!bestReason) bestReason = 'Matched in Storyline';
+              }
+
+              if (!tokenMatched) {
+                matchedAllTokens = false;
+                break;
+              }
+            }
+
+            if (matchedAllTokens && score > 0 && bestReason) {
+              reasonsMap[item.id] = bestReason;
+            }
+
+            return { item, score, matchedAllTokens };
+          })
+          .filter((entry) => entry.matchedAllTokens && entry.score > 0);
+
+        if (searchSortBy === 'relevance') {
+          scored.sort((a, b) => b.score - a.score);
+        }
+        result = scored.map((entry) => entry.item);
+      }
+
+      if (searchSortBy === 'newest') {
+        result.sort((a, b) => b.releaseYear - a.releaseYear);
+      } else if (searchSortBy === 'popular') {
+        result.sort((a, b) => (b.popularScore || 0) - (a.popularScore || 0));
+      } else if (searchSortBy === 'title') {
+        result.sort((a, b) => a.title.localeCompare(b.title));
+      }
+
+      // Build curated quick search pills from live catalog (top titles, actors, and years)
+      const suggestions: string[] = [];
+      catalog.slice(0, 4).forEach((item) => {
+        if (item.title && !suggestions.includes(item.title)) {
+          suggestions.push(item.title);
+        }
+      });
+      catalog.forEach((item) => {
+        if (suggestions.length >= 8) return;
+        const firstActor = item.cast?.[0];
+        if (
+          firstActor &&
+          firstActor !== 'Featured Cast' &&
+          !suggestions.includes(firstActor)
+        ) {
+          suggestions.push(firstActor);
+        }
+      });
+
+      return {
+        filteredSearchCatalog: result,
+        searchMatchReasonsMap: reasonsMap,
+        quickSearchSuggestions: suggestions.slice(0, 7),
+      };
+    }, [
+      catalog,
+      searchTypeFilter,
+      selectedGenre,
+      debouncedSearchQuery,
+      searchSortBy,
+    ]);
 
   // Build 2x2 Poster Grid Category Cards with Interactive Pagination & Accurate Genre Distribution
   const renderGenre2x2GridSection = (
@@ -1975,8 +2102,11 @@ export default function App() {
             const fourPosters = matching.slice(0, 4);
 
             return (
-              <div
+              <motion.div
                 key={`${sectionTitle}-${genre}`}
+                whileHover={{ y: -6, scale: 1.02 }}
+                whileTap={{ scale: 0.98 }}
+                transition={{ type: 'spring', stiffness: 320, damping: 24 }}
                 onClick={() => {
                   setSelectedGenre(genre);
                   if (filterContentType) {
@@ -1986,7 +2116,7 @@ export default function App() {
                   }
                   handleNavigate('search');
                 }}
-                className="group rounded-xl bg-[#14161D] border border-[#292C35] hover:border-[#FFC400]/60 p-3 sm:p-3.5 flex flex-col justify-between gap-2.5 transition-all cursor-pointer cinema-card-shadow"
+                className="group rounded-xl bg-[#14161D] border border-[#292C35] hover:border-[#FFC400]/70 p-3 sm:p-3.5 flex flex-col justify-between gap-2.5 transition-all cursor-pointer cinema-card-shadow cinema-glow-hover zf-sheen will-change-transform"
               >
                 {/* 2x2 Poster Mosaic with Bottom Fade */}
                 <div className="relative grid grid-cols-2 gap-2 aspect-square overflow-hidden rounded-lg bg-[#0F1117]">
@@ -2003,7 +2133,7 @@ export default function App() {
                             alt={posterItem.title}
                             item={posterItem}
                             aspectRatio="poster"
-                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                            className="w-full h-full object-cover group-hover:scale-108 transition-transform duration-500 ease-out"
                           />
                         ) : (
                           <div className="w-full h-full bg-gradient-to-br from-[#252832] to-[#14161D] flex items-center justify-center text-[10px] font-semibold text-[#747784]">
@@ -2032,9 +2162,9 @@ export default function App() {
                       {matching.length === 1 ? 'title' : 'titles'}
                     </p>
                   </div>
-                  <ArrowRight className="w-4 h-4 text-white group-hover:translate-x-1 group-hover:text-[#FFC400] transition-all shrink-0" />
+                  <ArrowRight className="w-4 h-4 text-white group-hover:translate-x-1.5 group-hover:text-[#FFC400] transition-transform duration-200 shrink-0" />
                 </div>
-              </div>
+              </motion.div>
             );
           })}
         </div>
@@ -2042,7 +2172,7 @@ export default function App() {
     );
   };
 
-  // Reusable FAQ Section
+  // Reusable FAQ Section with Silky Smooth Expand/Collapse
   const renderFaqSection = () => (
     <section className="space-y-4" aria-label="Frequently Asked Questions">
       <h2 className="text-xl sm:text-2xl font-bold text-white font-display">
@@ -2057,29 +2187,40 @@ export default function App() {
               <button
                 type="button"
                 onClick={() => setOpenFaqId(isOpen ? '' : faq.num)}
-                className="w-full flex items-start justify-between gap-3 text-left cursor-pointer"
+                className="w-full flex items-start justify-between gap-3 text-left cursor-pointer group"
               >
                 <div className="flex items-start gap-3">
-                  <span className="w-10 h-10 rounded-xl bg-[#14161D] border border-[#292C35] text-[#FFC400] font-bold text-xs flex items-center justify-center shrink-0">
+                  <span className="w-10 h-10 rounded-xl bg-[#14161D] border border-[#292C35] text-[#FFC400] font-bold text-xs flex items-center justify-center shrink-0 group-hover:border-[#FFC400]/60 transition-colors">
                     {faq.num}
                   </span>
-                  <div className="space-y-1.5 pt-1.5">
-                    <h3 className="text-sm sm:text-base font-medium text-white">
+                  <div className="space-y-1.5 pt-1.5 flex-1 min-w-0">
+                    <h3 className="text-sm sm:text-base font-medium text-white group-hover:text-[#FFC400] transition-colors">
                       {faq.question}
                     </h3>
-                    {isOpen && (
-                      <p className="text-xs sm:text-sm text-[#A7A9B4] leading-relaxed pr-2">
-                        {faq.answer}
-                      </p>
-                    )}
+                    <AnimatePresence initial={false}>
+                      {isOpen && (
+                        <motion.div
+                          key="answer"
+                          initial={{ opacity: 0, height: 0 }}
+                          animate={{ opacity: 1, height: 'auto' }}
+                          exit={{ opacity: 0, height: 0 }}
+                          transition={{ duration: 0.25, ease: [0.16, 1, 0.3, 1] }}
+                          className="overflow-hidden"
+                        >
+                          <p className="text-xs sm:text-sm text-[#A7A9B4] leading-relaxed pr-2 pt-1">
+                            {faq.answer}
+                          </p>
+                        </motion.div>
+                      )}
+                    </AnimatePresence>
                   </div>
                 </div>
 
-                <span className="pt-2 text-[#FFC400] shrink-0">
+                <span className="pt-2 text-[#FFC400] shrink-0 transition-transform duration-200">
                   {isOpen ? (
                     <Minus className="w-4 h-4" />
                   ) : (
-                    <Plus className="w-4 h-4" />
+                    <Plus className="w-4 h-4 group-hover:rotate-90 transition-transform duration-200" />
                   )}
                 </span>
               </button>
@@ -2095,7 +2236,6 @@ export default function App() {
     { id: 'myspace', label: 'My Space', icon: UserIcon },
     { id: 'search', label: 'Search', icon: Search },
     { id: 'home', label: 'Home', icon: Home },
-    { id: 'tv', label: 'TV Shows', icon: Tv },
     { id: 'movies', label: 'Movies', icon: Film },
     { id: 'categories', label: 'Categories', icon: Layers },
   ];
@@ -2105,35 +2245,35 @@ export default function App() {
   ).length;
 
   return (
-    <div className="min-h-screen w-full bg-[#08090D] text-white flex flex-col md:pl-32 lg:pl-36 pb-20 md:pb-0 overflow-x-hidden transition-[padding] duration-300">
+    <div className="min-h-screen w-full bg-[#08090D] text-white flex flex-col md:pl-44 lg:pl-52 pb-24 md:pb-0 overflow-x-hidden transition-[padding] duration-300">
       {/* =========================================================
-          ZAPPYFUN DESKTOP LEFT NAVIGATION RAIL (Full Logo Always Visible)
+          ZAPPYFUN DESKTOP LEFT NAVIGATION RAIL (Non-Overlapping Fixed Width)
       ========================================================= */}
       <aside
         aria-label="Sidebar Navigation"
-        className="hidden md:flex fixed left-0 top-0 bottom-0 z-40 w-32 lg:w-36 hover:w-60 bg-[#14161D]/95 backdrop-blur-2xl border-r border-[#292C35] transition-all duration-300 group flex-col justify-between py-5 px-3 select-none shadow-2xl"
+        className="hidden md:flex fixed left-0 top-0 bottom-0 z-40 w-44 lg:w-52 bg-[#14161D]/95 backdrop-blur-2xl border-r border-[#292C35] flex-col justify-between py-5 px-3 select-none shadow-2xl"
       >
-        {/* Top: Original ZappyFun Logo (Fully Visible) */}
-        <div className="flex flex-col items-center group-hover:items-start gap-5 w-full">
+        {/* Top: Original ZappyFun Logo (Always Visible with Wordmark) */}
+        <div className="flex flex-col items-start gap-5 w-full">
           <button
             type="button"
             onClick={() => handleNavigate('home')}
-            className="flex items-center justify-center group-hover:justify-start w-full px-1.5 py-1.5 rounded-2xl hover:bg-[#1F1B2B]/60 cursor-pointer transition-all active:scale-95 group/logo"
+            className="flex items-center justify-start gap-2.5 w-full px-2 py-1.5 rounded-2xl hover:bg-[#1F1B2B]/60 cursor-pointer transition-all active:scale-95 group/logo"
             title="ZappyFun Home"
           >
-            <div className="w-11 h-11 rounded-2xl overflow-hidden shadow-lg shadow-black/80 shrink-0 border border-[#231E30] bg-black flex items-center justify-center p-0.5">
+            <div className="w-9 h-9 lg:w-10 lg:h-10 rounded-xl overflow-hidden shrink-0 flex items-center justify-center p-0.5">
               <img
-                src="/assets/aistudio/1792738076429_2_1a521405.jpg"
+                src="/assets/aistudio/20261023_170257_6e6b6602.png"
                 alt="ZappyFun Play Button Logo"
                 className="w-full h-full object-contain select-none"
               />
             </div>
-            <span className="hidden group-hover:inline-block ml-3 font-display font-black text-lg tracking-tight text-white whitespace-nowrap">
+            <span className="font-display font-black text-base lg:text-lg tracking-tight text-white whitespace-nowrap truncate">
               ZAPPY<span className="bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] bg-clip-text text-transparent">FUN</span>
             </span>
           </button>
 
-          {/* Navigation Links */}
+          {/* Navigation Links with Smooth Spring Indicator */}
           <nav className="w-full flex flex-col gap-1">
             {navRailItems.map((tab) => {
               const Icon = tab.icon;
@@ -2146,21 +2286,28 @@ export default function App() {
                   key={tab.id}
                   type="button"
                   onClick={() => handleNavigate(tab.id)}
-                  className={`flex items-center gap-2.5 w-full px-3 py-2.5 rounded-xl transition-all cursor-pointer ${
+                  className={`group relative flex items-center gap-2.5 w-full px-3 py-2.5 rounded-xl transition-all duration-200 cursor-pointer border ${
                     isActive
-                      ? 'bg-[#252832] text-white font-semibold border-l-2 border-[#FFC400] shadow-sm'
-                      : 'text-[#A7A9B4] hover:text-white hover:bg-[#252832]/60'
+                      ? 'bg-[#252832] text-white font-semibold border-[#FFB800]/50 shadow-md shadow-[#FFB800]/10'
+                      : 'border-transparent text-[#A7A9B4] hover:text-white hover:bg-[#252832]/60'
                   }`}
                   title={tab.label}
                 >
                   <Icon
-                    className={`w-5 h-5 shrink-0 transition-colors ${
-                      isActive ? 'text-[#FFC400]' : 'group-hover:text-[#FFD54A]'
+                    className={`w-5 h-5 shrink-0 transition-transform duration-200 group-hover:scale-110 ${
+                      isActive ? 'text-[#FFB800]' : 'group-hover:text-[#FFD54A]'
                     }`}
                   />
                   <span className="truncate text-xs font-semibold">
                     {tab.label}
                   </span>
+                  {isActive && (
+                    <motion.span
+                      layoutId="sidebar-active-indicator"
+                      className="absolute right-2 w-1.5 h-4 rounded-full bg-gradient-to-b from-[#FFB800] via-[#FF5A36] to-[#FF168B]"
+                      transition={{ type: 'spring', stiffness: 380, damping: 30 }}
+                    />
+                  )}
                 </button>
               );
             })}
@@ -2259,9 +2406,9 @@ export default function App() {
           className="flex items-center gap-2.5 cursor-pointer py-1"
           title="ZappyFun Home"
         >
-          <div className="w-9 h-9 rounded-xl overflow-hidden shadow-md shadow-black/80 shrink-0 border border-[#231E30] bg-black flex items-center justify-center p-0.5">
+          <div className="w-9 h-9 rounded-xl overflow-hidden shrink-0 flex items-center justify-center p-0.5">
             <img
-              src="/assets/aistudio/1792738076429_2_1a521405.jpg"
+              src="/assets/aistudio/20261023_170257_6e6b6602.png"
               alt="ZappyFun"
               className="w-full h-full object-contain"
             />
@@ -2315,16 +2462,15 @@ export default function App() {
       </header>
 
       {/* =========================================================
-          MOBILE BOTTOM NAVIGATION RAIL
+          MOBILE BOTTOM NAVIGATION RAIL (5-Column Clean Non-Overflowing Grid)
       ========================================================= */}
       <nav
         aria-label="Mobile Navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 h-16 bg-[#14161D]/95 backdrop-blur-xl border-t border-[#292C35] flex items-center justify-around px-2 select-none safe-bottom-nav"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 min-h-[64px] bg-[#14161D]/95 backdrop-blur-xl border-t border-[#292C35] grid grid-cols-5 items-center gap-0.5 px-2 py-1 select-none safe-bottom-nav"
       >
         {[
           { id: 'home', label: 'Home', icon: Home },
           { id: 'search', label: 'Search', icon: Search },
-          { id: 'tv', label: 'TV', icon: Tv },
           { id: 'movies', label: 'Movies', icon: Film },
           { id: 'categories', label: 'Genres', icon: Layers },
           { id: 'myspace', label: 'My Space', icon: UserIcon },
@@ -2339,12 +2485,25 @@ export default function App() {
               key={tab.id}
               type="button"
               onClick={() => handleNavigate(tab.id as NavView)}
-              className={`min-h-[44px] min-w-[48px] flex flex-col items-center justify-center py-1 px-2 rounded-lg cursor-pointer transition-colors ${
-                isActive ? 'text-[#FFC400]' : 'text-[#A7A9B4] hover:text-white'
+              className={`relative min-h-[44px] w-full min-w-0 flex flex-col items-center justify-center py-1 px-0.5 rounded-lg cursor-pointer transition-colors ${
+                isActive ? 'text-[#FFB800] font-bold' : 'text-[#A7A9B4] hover:text-white'
               }`}
             >
-              <Icon className="w-5 h-5" />
-              <span className="text-[10px] font-medium mt-0.5">{tab.label}</span>
+              <Icon
+                className={`w-4 h-4 sm:w-5 sm:h-5 shrink-0 transition-transform duration-200 ${
+                  isActive ? 'scale-110 text-[#FFB800]' : ''
+                }`}
+              />
+              <span className="text-[10px] font-medium mt-0.5 truncate max-w-full leading-tight">
+                {tab.label}
+              </span>
+              {isActive && (
+                <motion.span
+                  layoutId="mobile-active-dot"
+                  className="w-1.5 h-1 rounded-full bg-gradient-to-r from-[#FFB800] to-[#FF5A36] mt-0.5 shadow-sm shadow-[#FFB800]/50"
+                  transition={{ type: 'spring', stiffness: 420, damping: 28 }}
+                />
+              )}
             </button>
           );
         })}
@@ -2357,17 +2516,17 @@ export default function App() {
             initial={{ opacity: 0, y: -10 }}
             animate={{ opacity: 1, y: 0 }}
             exit={{ opacity: 0, y: -10 }}
-            className="max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 mt-2"
+            className="max-w-7xl mx-auto w-full px-3 sm:px-5 lg:px-6 mt-2"
           >
-            <div className="px-4 py-3 rounded-xl bg-[#14161D] border border-[#FFC400]/50 text-xs text-white flex items-center justify-between shadow-xl">
-              <span className="flex items-center gap-2">
+            <div className="px-4 py-3 rounded-xl bg-[#14161D] border border-[#FFC400]/50 text-xs text-white flex items-center justify-between gap-3 shadow-xl">
+              <span className="flex items-center gap-2 min-w-0 break-words">
                 <span className="w-2 h-2 rounded-full bg-[#FFC400] shrink-0" />
-                <span>{sessionToast}</span>
+                <span className="min-w-0">{sessionToast}</span>
               </span>
               <button
                 type="button"
                 onClick={() => setSessionToast(null)}
-                className="text-[#A7A9B4] hover:text-white cursor-pointer"
+                className="text-[#A7A9B4] hover:text-white cursor-pointer shrink-0 p-1"
                 aria-label="Dismiss notification"
               >
                 <X className="w-3.5 h-3.5" />
@@ -2476,6 +2635,14 @@ export default function App() {
                   setSelectedGenre(genre);
                   setActiveView('search');
                 }}
+                onSearchQuery={(q) => {
+                  setPreviewDraftItem(null);
+                  setSearchQuery(q);
+                  setDebouncedSearchQuery(q);
+                  setSelectedGenre('All');
+                  setSearchTypeFilter('all');
+                  setActiveView('search');
+                }}
                 onToggleAds={() => setAdsEnabled((prev) => !prev)}
                 onOpenAdPolicy={() => openLegalPage('advertising')}
                 onOpenAdminStudio={(mediaItem) =>
@@ -2504,15 +2671,20 @@ export default function App() {
               exit={{ opacity: 0, y: -8 }}
               className="space-y-5"
             >
-              <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-3.5">
+              <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 space-y-3.5 cinema-card-shadow">
                 <div className="flex flex-wrap items-center justify-between gap-2.5">
                   <div className="flex items-center gap-2.5">
-                    <h1 className="text-lg sm:text-2xl font-bold text-white font-display">
+                    <h1 className="text-lg sm:text-2xl font-extrabold text-white font-display tracking-tight">
                       Search
                     </h1>
-                    <span className="text-xs font-semibold text-[#A7A9B4] tabular-nums">
+                    <motion.span
+                      key={filteredSearchCatalog.length}
+                      initial={{ scale: 0.85, opacity: 0.5 }}
+                      animate={{ scale: 1, opacity: 1 }}
+                      className="text-xs font-bold text-[#FFB800] tabular-nums"
+                    >
                       ({filteredSearchCatalog.length})
-                    </span>
+                    </motion.span>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
@@ -2520,7 +2692,10 @@ export default function App() {
                       selectedGenre !== 'All' ||
                       searchTypeFilter !== 'all' ||
                       searchSortBy !== 'relevance') && (
-                      <button
+                      <motion.button
+                        initial={{ opacity: 0, scale: 0.9 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        whileTap={{ scale: 0.94 }}
                         type="button"
                         onClick={() => {
                           setSearchQuery('');
@@ -2529,13 +2704,13 @@ export default function App() {
                           setSearchTypeFilter('all');
                           setSearchSortBy('relevance');
                         }}
-                        className="h-9 px-3 rounded-xl bg-[#252832] hover:bg-[#FFC400] text-[#FFC400] hover:text-[#08090D] border border-[#FFC400]/40 text-xs font-bold cursor-pointer transition-colors"
+                        className="h-9 px-3 rounded-xl bg-[#252832] hover:bg-[#FFB800] text-[#FFB800] hover:text-[#08090D] border border-[#FFB800]/40 text-xs font-bold cursor-pointer transition-colors"
                       >
                         Reset
-                      </button>
+                      </motion.button>
                     )}
 
-                    {/* Content Type Filter */}
+                    {/* Animated Content Type Segmented Filter */}
                     <div className="inline-flex items-center p-1 rounded-xl bg-[#08090D] border border-[#292C35]">
                       {(
                         [
@@ -2543,20 +2718,34 @@ export default function App() {
                           { id: 'movie', label: 'Movies' },
                           { id: 'series', label: 'TV Shows' },
                         ] as const
-                      ).map((tab) => (
-                        <button
-                          key={tab.id}
-                          type="button"
-                          onClick={() => setSearchTypeFilter(tab.id)}
-                          className={`px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
-                            searchTypeFilter === tab.id
-                              ? 'bg-[#FFC400] text-[#08090D]'
-                              : 'text-[#A7A9B4] hover:text-white'
-                          }`}
-                        >
-                          {tab.label}
-                        </button>
-                      ))}
+                      ).map((tab) => {
+                        const isTabActive = searchTypeFilter === tab.id;
+                        return (
+                          <button
+                            key={tab.id}
+                            type="button"
+                            onClick={() => setSearchTypeFilter(tab.id)}
+                            className={`relative px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
+                              isTabActive
+                                ? 'text-[#08090D]'
+                                : 'text-[#A7A9B4] hover:text-white'
+                            }`}
+                          >
+                            {isTabActive && (
+                              <motion.span
+                                layoutId="search-type-active-pill"
+                                transition={{
+                                  type: 'spring',
+                                  stiffness: 380,
+                                  damping: 30,
+                                }}
+                                className="absolute inset-0 rounded-lg bg-[#FFB800]"
+                              />
+                            )}
+                            <span className="relative z-10">{tab.label}</span>
+                          </button>
+                        );
+                      })}
                     </div>
 
                     {/* Sort Order */}
@@ -2572,7 +2761,7 @@ export default function App() {
                         )
                       }
                       aria-label="Sort results"
-                      className="h-9 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-semibold text-white focus:outline-none focus:border-[#FFC400]"
+                      className="h-9 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-semibold text-white focus:outline-none focus:border-[#FFB800] cursor-pointer"
                     >
                       <option value="relevance">Relevance</option>
                       <option value="popular">Top Rated</option>
@@ -2582,40 +2771,68 @@ export default function App() {
                   </div>
                 </div>
 
-                <div className="relative">
-                  <Search className="w-5 h-5 text-[#A7A9B4] absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
+                <div className="relative group/search">
+                  <Search className="w-5 h-5 text-[#A7A9B4] group-focus-within/search:text-[#FFB800] transition-colors absolute left-4 top-1/2 -translate-y-1/2 pointer-events-none" />
                   <input
                     ref={searchInputRef}
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Movies, shows, cast, or genres"
-                    className="w-full h-12 sm:h-13 pl-12 pr-12 rounded-xl bg-[#08090D] border border-[#292C35] text-sm sm:text-base text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400] transition-colors"
+                    placeholder="Search movies, series, actors, directors, or release year..."
+                    className="w-full h-12 sm:h-13 pl-12 pr-12 rounded-xl bg-[#08090D] border border-[#292C35] text-sm sm:text-base text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/15 transition-all"
                   />
-                  {searchQuery && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setSearchQuery('');
-                        setDebouncedSearchQuery('');
-                      }}
-                      aria-label="Clear search query"
-                      className="absolute right-4 top-1/2 -translate-y-1/2 text-[#A7A9B4] hover:text-white cursor-pointer"
-                    >
-                      <X className="w-4 h-4" />
-                    </button>
-                  )}
+                  <AnimatePresence>
+                    {searchQuery && (
+                      <motion.button
+                        initial={{ opacity: 0, scale: 0.7 }}
+                        animate={{ opacity: 1, scale: 1 }}
+                        exit={{ opacity: 0, scale: 0.7 }}
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery('');
+                          setDebouncedSearchQuery('');
+                          searchInputRef.current?.focus();
+                        }}
+                        aria-label="Clear search query"
+                        className="absolute right-3.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] flex items-center justify-center text-[#A7A9B4] hover:text-white cursor-pointer transition-colors"
+                      >
+                        <X className="w-3.5 h-3.5" />
+                      </motion.button>
+                    )}
+                  </AnimatePresence>
                 </div>
+
+                {/* Quick Search Suggestions when input is empty */}
+                {!searchQuery.trim() && quickSearchSuggestions.length > 0 && (
+                  <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
+                    <span className="text-[11px] font-semibold text-[#747784] shrink-0 mr-1">
+                      Try:
+                    </span>
+                    {quickSearchSuggestions.map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery(suggestion);
+                          setDebouncedSearchQuery(suggestion);
+                        }}
+                        className="px-2.5 py-1 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/50 text-[11px] font-medium text-[#D4D6DF] hover:text-[#FFB800] transition-colors cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 {/* Genre Distribution Bar with Live Counts */}
                 <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
                   <button
                     type="button"
                     onClick={() => setSelectedGenre('All')}
-                    className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                    className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
                       selectedGenre === 'All'
-                        ? 'bg-[#FFC400] text-[#08090D]'
-                        : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFC400]/50'
+                        ? 'bg-[#FFB800] text-[#08090D] shadow-md shadow-[#FFB800]/20'
+                        : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFB800]/50'
                     }`}
                   >
                     <span>All Genres</span>
@@ -2628,10 +2845,10 @@ export default function App() {
                         key={g}
                         type="button"
                         onClick={() => setSelectedGenre(g)}
-                        className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-colors whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
+                        className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
                           selectedGenre === g
-                            ? 'bg-[#FFC400] text-[#08090D]'
-                            : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFC400]/50'
+                            ? 'bg-[#FFB800] text-[#08090D] shadow-md shadow-[#FFB800]/20'
+                            : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFB800]/50'
                         }`}
                       >
                         <span>{g}</span>
@@ -2643,10 +2860,33 @@ export default function App() {
               </div>
 
               {filteredSearchCatalog.length === 0 ? (
-                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-10 text-center max-w-lg mx-auto space-y-4">
-                  <p className="text-base font-bold text-white">
-                    No matching titles found
+                <motion.div
+                  initial={{ opacity: 0, y: 12 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 sm:p-10 text-center max-w-xl mx-auto space-y-4 cinema-card-shadow"
+                >
+                  <p className="text-base sm:text-lg font-extrabold text-white font-display">
+                    No matching titles found for &ldquo;{searchQuery.trim() || selectedGenre}&rdquo;
                   </p>
+                  {quickSearchSuggestions.length > 0 && (
+                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
+                      {quickSearchSuggestions.slice(0, 5).map((suggestion) => (
+                        <button
+                          key={suggestion}
+                          type="button"
+                          onClick={() => {
+                            setSelectedGenre('All');
+                            setSearchTypeFilter('all');
+                            setSearchQuery(suggestion);
+                            setDebouncedSearchQuery(suggestion);
+                          }}
+                          className="px-3 py-1.5 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/60 text-xs font-semibold text-[#D4D6DF] hover:text-[#FFB800] cursor-pointer transition-colors"
+                        >
+                          {suggestion}
+                        </button>
+                      ))}
+                    </div>
+                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -2656,22 +2896,154 @@ export default function App() {
                       setSearchTypeFilter('all');
                       setSearchSortBy('relevance');
                     }}
-                    className="px-5 py-2.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
+                    className="px-5 py-2.5 rounded-xl bg-[#FFB800] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer transition-colors"
                   >
                     Reset Filters
                   </button>
-                </div>
+                </motion.div>
               ) : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-5">
-                  {filteredSearchCatalog.map((item) => (
-                    <MovieCard
-                      key={item.id}
-                      item={item}
-                      inWatchlist={activeWatchlistIds.includes(item.id)}
-                      onSelect={handleSelectMedia}
-                      onToggleWatchlist={handleToggleWatchlist}
-                    />
-                  ))}
+                <div className="space-y-5">
+                  {/* Animated Top Match Spotlight Banner when user enters a search query */}
+                  <AnimatePresence mode="wait">
+                    {debouncedSearchQuery.trim().length > 0 &&
+                      filteredSearchCatalog[0] && (
+                        <motion.div
+                          key={`top-match-${filteredSearchCatalog[0].id}`}
+                          initial={{ opacity: 0, y: 14, scale: 0.99 }}
+                          animate={{ opacity: 1, y: 0, scale: 1 }}
+                          exit={{ opacity: 0, y: -10, scale: 0.99 }}
+                          transition={{
+                            type: 'spring',
+                            stiffness: 320,
+                            damping: 28,
+                          }}
+                          onClick={() =>
+                            handleSelectMedia(
+                              filteredSearchCatalog[0],
+                              false,
+                              false
+                            )
+                          }
+                          className="group relative rounded-2xl overflow-hidden bg-[#14161D] border border-[#292C35] hover:border-[#FFB800]/60 p-4 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer cinema-card-shadow"
+                        >
+                          <div className="absolute inset-0 pointer-events-none opacity-35 group-hover:opacity-45 transition-opacity duration-500">
+                            <MediaArtwork
+                              src={
+                                filteredSearchCatalog[0].backdropUrl ||
+                                filteredSearchCatalog[0].posterUrl
+                              }
+                              alt={filteredSearchCatalog[0].title}
+                              item={filteredSearchCatalog[0]}
+                              aspectRatio="backdrop"
+                              className="w-full h-full object-cover"
+                            />
+                            <div className="absolute inset-0 bg-gradient-to-r from-[#14161D] via-[#14161D]/90 to-[#14161D]/45" />
+                          </div>
+
+                          <div className="relative z-10 flex items-center gap-4 min-w-0 flex-1">
+                            <div className="w-16 sm:w-20 aspect-[2/3] rounded-xl overflow-hidden border border-white/15 bg-[#08090D] shrink-0 shadow-xl">
+                              <MediaArtwork
+                                src={filteredSearchCatalog[0].posterUrl}
+                                alt={filteredSearchCatalog[0].title}
+                                item={filteredSearchCatalog[0]}
+                                aspectRatio="poster"
+                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                              />
+                            </div>
+
+                            <div className="min-w-0 flex-1 space-y-1">
+                              <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-[#FFB800]">
+                                <span>Top Match</span>
+                                <span aria-hidden="true" className="text-[#747784]">
+                                  ·
+                                </span>
+                                <span className="text-[#D4D6DF]">
+                                  {filteredSearchCatalog[0].contentType === 'series'
+                                    ? 'TV Series'
+                                    : 'Movie'}
+                                </span>
+                                <span aria-hidden="true" className="text-[#747784]">
+                                  ·
+                                </span>
+                                <span className="text-white tabular-nums">
+                                  {filteredSearchCatalog[0].releaseYear}
+                                </span>
+                                {searchMatchReasonsMap[
+                                  filteredSearchCatalog[0].id
+                                ] && (
+                                  <>
+                                    <span
+                                      aria-hidden="true"
+                                      className="text-[#747784]"
+                                    >
+                                      ·
+                                    </span>
+                                    <span className="text-[#FF5A36]">
+                                      {
+                                        searchMatchReasonsMap[
+                                          filteredSearchCatalog[0].id
+                                        ]
+                                      }
+                                    </span>
+                                  </>
+                                )}
+                              </div>
+
+                              <h2 className="text-base sm:text-xl font-black text-white group-hover:text-[#FFB800] transition-colors font-display truncate">
+                                {filteredSearchCatalog[0].title}
+                              </h2>
+
+                              {filteredSearchCatalog[0].synopsis && (
+                                <p className="text-xs text-[#A7A9B4] line-clamp-2 max-w-2xl leading-relaxed">
+                                  {filteredSearchCatalog[0].synopsis}
+                                </p>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="relative z-10 flex items-center gap-2.5 shrink-0 w-full sm:w-auto sm:self-center">
+                            <motion.button
+                              whileHover={{ scale: 1.04 }}
+                              whileTap={{ scale: 0.95 }}
+                              type="button"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                handleSelectMedia(
+                                  filteredSearchCatalog[0],
+                                  true,
+                                  false
+                                );
+                              }}
+                              className="min-h-[42px] w-full sm:w-auto justify-center px-4 sm:px-5 py-2 rounded-xl zf-gradient-btn text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
+                            >
+                              <Play className="w-3.5 h-3.5 fill-current shrink-0" />
+                              <span>Play Now</span>
+                            </motion.button>
+                          </div>
+                        </motion.div>
+                      )}
+                  </AnimatePresence>
+
+                  {/* Animated Morphing Search Results Grid */}
+                  <motion.div
+                    layout
+                    className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-5"
+                  >
+                    <AnimatePresence mode="popLayout">
+                      {filteredSearchCatalog.map((item, idx) => (
+                        <MovieCard
+                          key={item.id}
+                          item={item}
+                          index={idx}
+                          highlightQuery={debouncedSearchQuery}
+                          matchReason={searchMatchReasonsMap[item.id]}
+                          inWatchlist={activeWatchlistIds.includes(item.id)}
+                          onSelect={handleSelectMedia}
+                          onToggleWatchlist={handleToggleWatchlist}
+                        />
+                      ))}
+                    </AnimatePresence>
+                  </motion.div>
                 </div>
               )}
             </motion.section>
@@ -2778,79 +3150,6 @@ export default function App() {
                     </h2>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
                       {moviesList.map((item) => (
-                        <MovieCard
-                          key={item.id}
-                          item={item}
-                          inWatchlist={activeWatchlistIds.includes(item.id)}
-                          onSelect={handleSelectMedia}
-                          onToggleWatchlist={handleToggleWatchlist}
-                        />
-                      ))}
-                    </div>
-                  </div>
-                </div>
-              )}
-            </motion.section>
-          ) : /* =========================================================
-              ZAPPYFUN VIEW: TV SHOWS
-          ========================================================= */
-          activeView === 'tv' ? (
-            <motion.section
-              key="tv-view"
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              className="space-y-6"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight">
-                  TV Shows
-                </h1>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => openAdminStudio(null, 'catalog')}
-                    className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Add Shows</span>
-                  </button>
-                )}
-              </div>
-
-              {showsList.length === 0 ? (
-                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-xl mx-auto space-y-3">
-                  <Tv className="w-10 h-10 text-[#FFC400] mx-auto opacity-80" />
-                  <h2 className="text-lg font-bold text-white">
-                    No TV Shows Available
-                  </h2>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => openAdminStudio(null, 'catalog')}
-                      className="px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
-                    >
-                      Open Admin Studio
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  <CarouselRow
-                    title="Top 10 Series"
-                    items={showsList.slice(0, 10)}
-                    watchlistIds={activeWatchlistIds}
-                    isTop10Row={true}
-                    onSelectMedia={handleSelectMedia}
-                    onToggleWatchlist={handleToggleWatchlist}
-                  />
-
-                  <div className="space-y-3">
-                    <h2 className="text-lg sm:text-xl font-bold text-white font-display">
-                      All TV Shows ({showsList.length})
-                    </h2>
-                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
-                      {showsList.map((item) => (
                         <MovieCard
                           key={item.id}
                           item={item}
@@ -3693,25 +3992,15 @@ export default function App() {
                       onToggleWatchlist={handleToggleWatchlist}
                     />
                   )}
-
-                  {showsList.length > 0 && (
-                    <CarouselRow
-                      title="TV Shows"
-                      items={showsList}
-                      watchlistIds={activeWatchlistIds}
-                      onSelectMedia={handleSelectMedia}
-                      onToggleWatchlist={handleToggleWatchlist}
-                    />
-                  )}
                 </>
               ) : (
                 <section className="relative min-h-[340px] rounded-2xl overflow-hidden border border-[#292C35] bg-gradient-to-b from-[#14161D] to-[#08090D] p-8 sm:p-12 flex flex-col justify-center items-center text-center shadow-2xl">
                   <div className="space-y-4 max-w-xl">
-                    <div className="h-16 w-16 mx-auto rounded-2xl bg-black border border-[#231E30] flex items-center justify-center p-2.5 shadow-xl">
+                    <div className="h-16 w-16 mx-auto flex items-center justify-center p-1">
                       <img
-                        src="/assets/aistudio/1792738076429_2_1a521405.jpg"
+                        src="/assets/aistudio/20261023_170257_6e6b6602.png"
                         alt="ZappyFun"
-                        className="h-full w-full object-contain rounded-xl select-none"
+                        className="h-full w-full object-contain select-none"
                       />
                     </div>
                     <h1 className="text-2xl sm:text-4xl font-black text-white font-display tracking-tight">
@@ -3829,41 +4118,39 @@ export default function App() {
             </div>
 
             <div className="space-y-3">
-              <h3 className="text-white font-semibold text-base">TV Shows</h3>
+              <h3 className="text-white font-semibold text-base">Genres</h3>
               <ul className="space-y-2">
                 <li>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('tv')}
+                    onClick={() => handleNavigate('categories')}
                     className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    All Shows
+                    All Categories
                   </button>
                 </li>
                 <li>
                   <button
                     type="button"
                     onClick={() => {
-                      setSearchTypeFilter('series');
-                      setSearchSortBy('popular');
-                      handleNavigate('search');
+                      setSelectedGenre('Action');
+                      handleNavigate('categories');
                     }}
                     className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Top Rated
+                    Action &amp; Adventure
                   </button>
                 </li>
                 <li>
                   <button
                     type="button"
                     onClick={() => {
-                      setSearchTypeFilter('series');
-                      setSearchSortBy('newest');
-                      handleNavigate('search');
+                      setSelectedGenre('Sci-Fi');
+                      handleNavigate('categories');
                     }}
                     className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    New Episodes
+                    Sci-Fi &amp; Fantasy
                   </button>
                 </li>
               </ul>
@@ -3950,11 +4237,11 @@ export default function App() {
           <div className="pt-6 border-t border-[#292C35] flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-[#747784]">
             <div className="flex flex-wrap items-center gap-4">
               <div className="flex items-center gap-2.5 shrink-0">
-                <div className="h-9 w-9 rounded-xl bg-black border border-[#231E30] flex items-center justify-center p-1 shadow-md overflow-hidden">
+                <div className="h-9 w-9 shrink-0 flex items-center justify-center p-0.5 overflow-hidden">
                   <img
-                    src="/assets/aistudio/1792738076429_2_1a521405.jpg"
+                    src="/assets/aistudio/20261023_170257_6e6b6602.png"
                     alt="ZappyFun Logo"
-                    className="h-full w-full object-contain rounded-lg select-none pointer-events-none"
+                    className="h-full w-full object-contain select-none pointer-events-none"
                   />
                 </div>
                 <span className="font-display font-black text-sm tracking-wider zf-gradient-text">
@@ -4095,7 +4382,7 @@ export default function App() {
         {showSplash && (
           <CinematicSplashScreen
             isReady={isAppReady}
-            minDurationMs={4000}
+            minDurationMs={7000}
             onComplete={handleSplashComplete}
           />
         )}

@@ -599,22 +599,23 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const pwdStrength = calculatePasswordStrength(password);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/85 backdrop-blur-md animate-fadeIn">
-      <div className="relative w-full max-w-md bg-[#15121D] border border-[#231E30] rounded-3xl p-6 sm:p-8 shadow-2xl text-white">
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md overflow-y-auto animate-fadeIn">
+      <div className="relative w-full max-w-md my-auto max-h-[92vh] overflow-y-auto bg-[#15121D] border border-[#231E30] rounded-3xl p-5 sm:p-8 shadow-2xl text-white">
         {/* Top Gradient Accent Bar */}
         <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#8B35FF] rounded-t-3xl" />
 
         {/* Close Button */}
         <button
+          type="button"
           onClick={onClose}
-          className="absolute top-5 right-5 p-2 rounded-xl text-[#7A7686] hover:text-white hover:bg-[#1F1B2B] transition-colors"
+          className="absolute top-4 right-4 z-10 p-2 rounded-xl text-[#7A7686] hover:text-white hover:bg-[#1F1B2B] transition-colors cursor-pointer"
           aria-label="Close"
         >
           <X className="w-5 h-5" />
         </button>
 
         {/* Header Branding with Official Logo */}
-        <div className="text-center mb-5">
+        <div className="text-center mb-5 px-6">
           <div className="inline-flex items-center justify-center h-12 w-12 rounded-2xl bg-black border border-[#231E30] p-1.5 shadow-lg mb-3">
             <img
               src={LOGO_ICON_URL}
@@ -623,7 +624,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             />
           </div>
 
-          <h2 className="text-2xl font-black tracking-tight font-display text-white">
+          <h2 className="text-xl sm:text-2xl font-black tracking-tight font-display text-white">
             {step === 'EMAIL_INPUT' && 'Welcome to ZappyFun'}
             {step === 'PASSWORD_INPUT' && 'Welcome Back'}
             {step === 'OTP_VERIFICATION' && 'Verify Your Email'}

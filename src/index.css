@@ -8,9 +8,9 @@
 
     /* ZappyFun Premium Dark-Cinema Color System */
     --color-bg-primary: #050505;
-    --color-bg-secondary: #0D0B12;
-    --color-surface-card: #15121D;
-    --color-surface-elevated: #1F1B2B;
+    --color-bg-secondary: #08090D;
+    --color-surface-card: #14161D;
+    --color-surface-elevated: #1E212B;
 
     /* Brand Gradient Colors */
     --color-brand-orange: #FFB800;
@@ -22,25 +22,35 @@
     --color-text-primary: #FFFFFF;
     --color-text-secondary: #B8B4C2;
     --color-text-muted: #7A7686;
-    --color-border: #231E30;
+    --color-border: #292C35;
   }
 
   html {
     scroll-behavior: smooth;
-    background-color: #050505;
+    background-color: #08090D;
     color-scheme: dark;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
 
   body {
     font-family: var(--font-sans);
-    background-color: #050505;
+    background-color: #08090D;
     color: #FFFFFF;
     overflow-x: hidden;
+    selection-background-color: #FF5A36;
+  }
+
+  ::selection {
+    background: rgba(255, 90, 54, 0.35);
+    color: #FFFFFF;
   }
 
   h1, h2, h3, h4, .font-display {
     font-family: var(--font-display);
     text-wrap: balance;
+    letter-spacing: -0.02em;
   }
 
   .font-mono-tabular {
@@ -71,23 +81,44 @@
   color: #FFFFFF;
   font-weight: 700;
   transition: all 0.25s cubic-bezier(0.16, 1, 0.3, 1);
-  box-shadow: 0 4px 20px -4px rgba(255, 90, 54, 0.4);
+  box-shadow: 0 6px 22px -4px rgba(255, 90, 54, 0.42), inset 0 1px 0 0 rgba(255, 255, 255, 0.22);
 }
 .zf-gradient-btn:hover {
-  filter: brightness(1.1);
+  filter: brightness(1.08);
   transform: translateY(-1px);
-  box-shadow: 0 8px 25px -4px rgba(255, 22, 139, 0.5);
+  box-shadow: 0 10px 28px -4px rgba(255, 22, 139, 0.52), inset 0 1px 0 0 rgba(255, 255, 255, 0.28);
 }
 
-/* ZappyFun Golden-Yellow Primary CTA Button (maintained for component compatibility) */
+/* ZappyFun Golden-Yellow Primary CTA Button */
 .zf-gold-btn {
   background: linear-gradient(135deg, #FFB800 0%, #FF5A36 100%);
   color: #050505;
   font-weight: 800;
-  transition: all 0.2s ease;
+  transition: all 0.22s cubic-bezier(0.16, 1, 0.3, 1);
+  box-shadow: 0 4px 18px -4px rgba(255, 184, 0, 0.35), inset 0 1px 0 0 rgba(255, 255, 255, 0.35);
 }
 .zf-gold-btn:hover {
   background: linear-gradient(135deg, #FFD54A 0%, #FF7043 100%);
+  transform: translateY(-1px);
+}
+
+/* Multi-layered Cinema Hero Vignette */
+.sv-hero-vignette {
+  background:
+    radial-gradient(110% 95% at 72% 32%, rgba(8, 9, 13, 0.04) 0%, rgba(8, 9, 13, 0.58) 65%, rgba(8, 9, 13, 0.94) 100%),
+    linear-gradient(180deg, rgba(8, 9, 13, 0.35) 0%, rgba(8, 9, 13, 0) 28%, rgba(8, 9, 13, 0.72) 76%, #08090D 100%);
+}
+
+/* Specular Hairline FAQ Divider */
+.sv-faq-divider {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 184, 0, 0) 0%,
+    rgba(255, 184, 0, 0.38) 25%,
+    rgba(255, 90, 54, 0.38) 55%,
+    rgba(139, 53, 255, 0.22) 80%,
+    rgba(41, 44, 53, 0) 100%
+  );
 }
 
 /* ZappyFun Ambient Brand Glow Card */
@@ -98,8 +129,8 @@
       rgba(139, 53, 255, 0.04) 50%,
       rgba(21, 18, 29, 0.0) 100%
     ),
-    #15121D;
-  border-color: #231E30;
+    #14161D;
+  border-color: #292C35;
 }
 
 /* ZappyFun Gradient Accent Divider */
@@ -113,9 +144,107 @@
   );
 }
 
-/* Cinema surface shadow */
+/* Cinema surface shadow with top-edge specular highlight */
 .cinema-card-shadow {
-  box-shadow: 0 16px 36px -10px rgba(0, 0, 0, 0.9), 0 0 0 1px rgba(255, 255, 255, 0.04);
+  box-shadow:
+    0 18px 40px -12px rgba(0, 0, 0, 0.92),
+    0 4px 12px -2px rgba(0, 0, 0, 0.6),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.06);
+}
+
+/* Ultra-rich ambient glow for featured cards */
+.cinema-glow-hover {
+  transition: all 0.35s cubic-bezier(0.16, 1, 0.3, 1);
+}
+.cinema-glow-hover:hover {
+  box-shadow:
+    0 22px 50px -10px rgba(255, 90, 54, 0.28),
+    0 0 24px -2px rgba(255, 184, 0, 0.18),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.16);
+}
+
+/* Subtle dark-cinema shimmer for progressive image loading */
+@keyframes zf-shimmer {
+  0% {
+    background-position: -200% 0;
+  }
+  100% {
+    background-position: 200% 0;
+  }
+}
+
+.zf-skeleton-shimmer {
+  background: linear-gradient(
+    110deg,
+    #11131A 25%,
+    #1B1E29 45%,
+    #11131A 65%
+  );
+  background-size: 200% 100%;
+  animation: zf-shimmer 1.8s ease-in-out infinite;
+}
+
+/* Ambient pulse glow for live badges & spotlight highlights */
+@keyframes zf-soft-pulse {
+  0%, 100% {
+    opacity: 0.85;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.03);
+  }
+}
+
+.zf-pulse-glow {
+  animation: zf-soft-pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Glass Sheen Sweep Effect on Hover for Media Cards */
+.zf-sheen {
+  position: relative;
+  overflow: hidden;
+}
+.zf-sheen::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  left: -120%;
+  width: 70%;
+  height: 100%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(255, 255, 255, 0.09) 45%,
+    rgba(255, 255, 255, 0.16) 50%,
+    rgba(255, 255, 255, 0.09) 55%,
+    transparent 100%
+  );
+  transform: skewX(-20deg);
+  pointer-events: none;
+  transition: none;
+  opacity: 0;
+}
+.zf-sheen:hover::after {
+  opacity: 1;
+  left: 140%;
+  transition: all 0.75s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+/* Sleek minimalist dark cinema scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #08090D;
+}
+::-webkit-scrollbar-thumb {
+  background: #252832;
+  border-radius: 9999px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #FFB800;
 }
 
 /* Visible Keyboard Focus Indicator */
@@ -124,7 +253,7 @@ a:focus-visible,
 input:focus-visible,
 select:focus-visible,
 textarea:focus-visible {
-  outline: 2px solid #FF168B;
+  outline: 2px solid #FFB800;
   outline-offset: 2px;
 }
 

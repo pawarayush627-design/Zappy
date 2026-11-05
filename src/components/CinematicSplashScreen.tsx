@@ -192,7 +192,7 @@ export const CinematicSplashScreen: React.FC<CinematicSplashScreenProps> = ({
             }}
           >
             {/* Selected Component As Text: Big, Bold, and Cinematic */}
-            <span className="font-display font-black tracking-tight text-white text-5xl sm:text-7xl md:text-8xl select-none inline-block filter drop-shadow-[0_4px_28px_rgba(255,90,54,0.45)]">
+            <span className="font-display font-black tracking-tight text-white text-[clamp(2.25rem,11vw,6rem)] select-none inline-block filter drop-shadow-[0_4px_28px_rgba(255,90,54,0.45)]">
               ZAPPY
               <span className="bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] bg-clip-text text-transparent">
                 FUN
