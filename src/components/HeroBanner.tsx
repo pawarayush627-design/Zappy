@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Play, ChevronLeft, ChevronRight, Info } from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
 
@@ -33,6 +33,20 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   const touchCurrentXRef = useRef<number | null>(null);
   const pointerStartXRef = useRef<number | null>(null);
   const didSwipeRef = useRef<boolean>(false);
+
+  // Preload all hero spotlight backdrop & poster images into browser cache so slide transitions are instantaneous
+  useEffect(() => {
+    if (heroPool.length === 0 || typeof window === 'undefined') return;
+    heroPool.forEach((item) => {
+      const urls = [item.backdropUrl, item.posterUrl].filter(Boolean);
+      urls.forEach((raw) => {
+        if (!raw || raw.startsWith('data:')) return;
+        const img = new window.Image();
+        img.referrerPolicy = 'no-referrer';
+        img.src = raw;
+      });
+    });
+  }, [heroPool]);
 
   // Automatic 7-second rotation through the active hero spotlight items (pauses on hover)
   useEffect(() => {
@@ -123,15 +137,15 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
       onPointerUp={handlePointerUp}
       className="group/hero relative w-full min-h-[290px] sm:min-h-[390px] lg:min-h-[465px] rounded-2xl overflow-hidden bg-[#08090D] border border-[#292C35]/90 flex flex-col justify-end select-none touch-pan-y cinema-card-shadow"
     >
-      {/* Background Backdrop Image with Ultra-Smooth Directional Swipe & Subtle Ken Burns Drift */}
-      <AnimatePresence mode="wait" custom={swipeDirection}>
+      {/* Background Backdrop Image with Instant Crossfade (no blank wait gap) */}
+      <AnimatePresence initial={false} custom={swipeDirection}>
         <motion.div
           key={hero.id}
           custom={swipeDirection}
-          initial={{ opacity: 0, x: swipeDirection * 40, scale: 1.04 }}
-          animate={{ opacity: 1, x: 0, scale: 1 }}
-          exit={{ opacity: 0, x: swipeDirection * -40, scale: 0.985 }}
-          transition={{ duration: 0.55, ease: [0.16, 1, 0.3, 1] }}
+          initial={{ opacity: 0, scale: 1.02 }}
+          animate={{ opacity: 1, scale: 1 }}
+          exit={{ opacity: 0 }}
+          transition={{ duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
           onClick={() => {
             if (!didSwipeRef.current) {
               onOpenDetails(hero);
@@ -181,41 +195,56 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
         </div>
       )}
 
-      {/* Bottom Content Overlay — Clean Title, Single Primary Play Now CTA, and Slide Dots */}
-      <div className="relative z-10 w-full px-4 sm:px-8 lg:px-10 pb-4 sm:pb-7 pt-14 sm:pt-16 flex flex-col gap-3 sm:gap-4 pointer-events-none">
-        <div className="max-w-2xl pointer-events-auto">
-          <AnimatePresence mode="wait">
-            <motion.h1
-              key={`title-${hero.id}`}
-              initial={{ opacity: 0, y: 16, filter: 'blur(4px)' }}
-              animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
-              exit={{ opacity: 0, y: -10, filter: 'blur(2px)' }}
-              transition={{ type: 'spring', stiffness: 300, damping: 28 }}
-              onClick={() => onOpenDetails(hero)}
-              className="text-xl sm:text-4xl lg:text-5xl font-black text-white font-display tracking-tight leading-[1.08] cursor-pointer hover:text-[#FFB800] transition-colors drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] break-words"
-              style={{ textWrap: 'balance' }}
-            >
-              {hero.title}
-            </motion.h1>
-          </AnimatePresence>
+      {/* Bottom Content Overlay — Clean Title, Metadata, Play & Details CTAs, and Slide Dots */}
+      <div className="relative z-10 w-full px-4 sm:px-8 lg:px-10 pb-4 sm:pb-7 pt-14 sm:pt-16 flex flex-col gap-2.5 sm:gap-3.5 pointer-events-none">
+        <div className="max-w-2xl pointer-events-auto space-y-1.5">
+          <div className="flex flex-wrap items-center gap-2 text-[11px] sm:text-xs font-bold text-[#FFB800]">
+            <span>{hero.releaseYear}</span>
+            {hero.genres?.[0] && (
+              <>
+                <span className="text-white/40">·</span>
+                <span className="text-white/90">{hero.genres.slice(0, 2).join(' / ')}</span>
+              </>
+            )}
+            {hero.durationMinutes > 0 && (
+              <>
+                <span className="text-white/40">·</span>
+                <span className="text-white/75">{hero.durationMinutes}m</span>
+              </>
+            )}
+          </div>
+          <h1
+            onClick={() => onOpenDetails(hero)}
+            className="text-xl sm:text-4xl lg:text-5xl font-black text-white font-display tracking-tight leading-[1.08] cursor-pointer hover:text-[#FFB800] transition-colors drop-shadow-[0_4px_24px_rgba(0,0,0,0.85)] break-words"
+            style={{ textWrap: 'balance' }}
+          >
+            {hero.title}
+          </h1>
         </div>
 
-        {/* Bottom Bar: Primary Play CTA on Left + Swipe Indicator Dots on Right */}
+        {/* Bottom Bar: Play CTA + Details CTA on Left, Swipe Indicator Dots on Right */}
         <div className="flex flex-wrap items-center justify-between gap-2.5 sm:gap-3 pt-0.5 pointer-events-auto">
-          <motion.button
-            key={`play-${hero.id}`}
-            initial={{ opacity: 0, y: 12, scale: 0.95 }}
-            animate={{ opacity: 1, y: 0, scale: 1 }}
-            whileHover={{ scale: 1.05, y: -2 }}
-            whileTap={{ scale: 0.94 }}
-            transition={{ type: 'spring', stiffness: 360, damping: 22 }}
-            type="button"
-            onClick={() => onPlayMedia(hero)}
-            className="min-h-[42px] sm:min-h-[44px] px-5 sm:px-7 py-2 sm:py-2.5 rounded-xl zf-gradient-btn text-white font-extrabold text-xs sm:text-sm flex items-center gap-2.5 cursor-pointer whitespace-nowrap shrink-0 shadow-lg shadow-[#FF5A36]/30 hover:shadow-2xl hover:shadow-[#FF168B]/40 transition-all duration-300"
-          >
-            <Play className="w-4 h-4 fill-current shrink-0 transition-transform duration-200 group-hover/hero:translate-x-0.5" />
-            <span>Play Now</span>
-          </motion.button>
+          <div className="flex items-center gap-2.5">
+            <motion.button
+              whileHover={{ scale: 1.04 }}
+              whileTap={{ scale: 0.95 }}
+              type="button"
+              onClick={() => onPlayMedia(hero)}
+              className="min-h-[40px] sm:min-h-[44px] px-5 sm:px-7 py-2 sm:py-2.5 rounded-xl zf-gradient-btn text-white font-extrabold text-xs sm:text-sm flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 shadow-lg shadow-[#FF5A36]/30 transition-all duration-200"
+            >
+              <Play className="w-4 h-4 fill-current shrink-0" />
+              <span>Play Now</span>
+            </motion.button>
+
+            <button
+              type="button"
+              onClick={() => onOpenDetails(hero)}
+              className="min-h-[40px] sm:min-h-[44px] px-4 sm:px-5 py-2 sm:py-2.5 rounded-xl bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/15 text-white font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer whitespace-nowrap shrink-0 transition-colors"
+            >
+              <Info className="w-4 h-4 shrink-0" />
+              <span>Details</span>
+            </button>
+          </div>
 
           {heroPool.length > 1 && (
             <div className="flex items-center gap-1 sm:gap-1.5 px-2 sm:px-2.5 py-1 sm:py-1.5 rounded-full bg-[#050505]/85 backdrop-blur-md border border-white/10 shadow-lg max-w-full overflow-x-auto no-scrollbar">

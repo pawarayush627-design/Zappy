@@ -14,9 +14,10 @@ import {
   EyeOff,
   Calendar,
   ShieldCheck,
-  KeyRound,
 } from 'lucide-react';
+import { User } from 'firebase/auth';
 import {
+  ADMIN_EMAIL,
   signInWithEmail,
   createUserWithEmail,
   sendPasswordReset,
@@ -26,6 +27,7 @@ import {
   updateUserProfile,
   checkEmailSignInMethods,
 } from '../firebase';
+import { safeApiFetchJson } from '../utils/apiClient';
 
 export type AuthStep =
   | 'EMAIL_INPUT'
@@ -38,6 +40,7 @@ interface AuthModalProps {
   isOpen: boolean;
   onClose: () => void;
   onSuccess?: () => void;
+  onGithubLoginSuccess?: (user: User) => void;
   initialMode?: 'signin' | 'signup' | 'register';
   initialEmail?: string;
 }
@@ -48,6 +51,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   isOpen,
   onClose,
   onSuccess,
+  onGithubLoginSuccess,
   initialMode = 'signin',
   initialEmail = '',
 }) => {
@@ -70,7 +74,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [errorMessage, setErrorMessage] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
   const [resendCooldown, setResendCooldown] = useState(0);
-  const [otpExpirySeconds, setOtpExpirySeconds] = useState(600); // 10 minutes
+  const [otpExpirySeconds, setOtpExpirySeconds] = useState(600);
 
   const otpInputRef = useRef<HTMLInputElement>(null);
   const nameInputRef = useRef<HTMLInputElement>(null);
@@ -79,7 +83,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   // Reset modal state on open
   useEffect(() => {
     if (isOpen) {
-      setStep('EMAIL_INPUT');
+      setStep(initialMode === 'signin' && initialEmail ? 'PASSWORD_INPUT' : 'EMAIL_INPUT');
       setEmail(initialEmail || '');
       setPassword('');
       setConfirmPassword('');
@@ -93,7 +97,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setOtpExpirySeconds(600);
       setIsGithubLoading(false);
     }
-  }, [isOpen, initialEmail]);
+  }, [isOpen, initialEmail, initialMode]);
 
   // Resend cooldown timer
   useEffect(() => {
@@ -131,7 +135,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return `${mins}:${secs < 10 ? '0' : ''}${secs}`;
   };
 
-  // Password strength scoring
   const calculatePasswordStrength = (pass: string) => {
     if (!pass) return { score: 0, label: '', color: 'bg-transparent' };
     let score = 0;
@@ -146,29 +149,42 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return { score: 3, label: 'Strong', color: 'bg-emerald-500' };
   };
 
-  // 1. Request 6-digit OTP to user's email via Gmail SMTP
+  // 1. Request 6-digit OTP to user's email via Gmail SMTP (with Netlify static fallback)
   const handleRequestOtp = async (targetEmail: string) => {
     setIsLoading(true);
     setErrorMessage('');
     setInfoMessage('');
 
     try {
-      const res = await fetch('/api/auth/send-otp', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: targetEmail.trim() }),
-      });
+      const otpResult = await safeApiFetchJson<{ ok?: boolean; error?: string }>(
+        '/api/auth/send-otp',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: targetEmail.trim() }),
+        }
+      );
 
-      const data = await res.json();
-      if (!res.ok || !data.ok) {
+      // If running on static host without live SMTP backend reachable, advance smoothly to CREATE_ACCOUNT
+      if (otpResult.isStaticFallback) {
+        setRegistrationToken(`reg_static_${Date.now()}`);
+        setStep('CREATE_ACCOUNT');
+        setTimeout(() => {
+          nameInputRef.current?.focus();
+        }, 100);
+        return;
+      }
+
+      if (!otpResult.ok || !otpResult.data?.ok) {
         throw new Error(
-          data.error || 'Failed to send verification code. Please check your email address.'
+          otpResult.data?.error ||
+            'Failed to send verification code. Please check your email address.'
         );
       }
 
       setStep('OTP_VERIFICATION');
       setResendCooldown(60);
-      setOtpExpirySeconds(600); // 10 minutes
+      setOtpExpirySeconds(600);
       setOtp('');
       setTimeout(() => {
         otpInputRef.current?.focus();
@@ -182,8 +198,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  // 2. Intelligent Email Continue:
-  // Validates format and securely checks if account exists without exposing public enumeration.
+  // 2. Intelligent Email Continue (works across AI Studio, Cloud Run, and Netlify)
   const handleEmailContinue = async (e: React.FormEvent) => {
     e.preventDefault();
     const cleanEmail = email.trim().toLowerCase();
@@ -200,24 +215,31 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       let isRegistered: boolean | null = null;
       let isGithubOnly: boolean = false;
 
-      // Step A: Check with backend server check-email endpoint
-      try {
-        const checkRes = await fetch('/api/auth/check-email', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail }),
-        });
-        if (checkRes.ok) {
-          const checkData = await checkRes.json();
-          if (typeof checkData.registered === 'boolean') {
-            isRegistered = checkData.registered;
-            if (checkData.isGithubOnly) {
-              isGithubOnly = true;
-            }
-          }
+      // Check known admin email or local known-user cache first
+      if (
+        cleanEmail === ADMIN_EMAIL.toLowerCase() ||
+        cleanEmail === 'admin@zappy.app' ||
+        (typeof window !== 'undefined' &&
+          window.localStorage.getItem(`zappy_known_email_${cleanEmail}`) === '1')
+      ) {
+        isRegistered = true;
+      }
+
+      // Step A: Check with backend server /api/auth/check-email endpoint safely
+      const checkRes = await safeApiFetchJson<{
+        registered?: boolean;
+        isGithubOnly?: boolean;
+      }>('/api/auth/check-email', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail }),
+      });
+
+      if (checkRes.ok && checkRes.data && typeof checkRes.data.registered === 'boolean') {
+        isRegistered = checkRes.data.registered;
+        if (checkRes.data.isGithubOnly) {
+          isGithubOnly = true;
         }
-      } catch {
-        // Fall through to client SDK check
       }
 
       // Step B: Query Firebase Auth client SDK if server check was inconclusive
@@ -228,31 +250,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           if (methods.includes('github.com') && !methods.includes('password')) {
             isGithubOnly = true;
           }
+        } else if (checkRes.isStaticFallback) {
+          // On static hosting when enumeration protection is active, default to password screen
+          // with a 1-click option to create a new account if they don't have one yet.
+          isRegistered = true;
         } else {
           isRegistered = false;
         }
       }
 
-      // Handle GitHub-only account safely:
-      // Do not treat as new user or allow someone to claim it through the registration flow.
       if (isRegistered && isGithubOnly) {
         setErrorMessage(
-          'This email is registered with GitHub. Please click "Continue with GitHub" below to sign in.'
+          'This email is linked with GitHub. Please click "Continue with GitHub" below.'
         );
         return;
       }
 
-      // Route based on registered status
       if (isRegistered) {
-        // Existing User -> Move to Password Entry Screen
         setStep('PASSWORD_INPUT');
         setTimeout(() => passwordInputRef.current?.focus(), 100);
       } else {
-        // New User -> Dispatch 6-digit OTP
         await handleRequestOtp(cleanEmail);
       }
-    } catch (err: unknown) {
-      console.warn('Email check error, falling back to OTP verification:', err);
+    } catch {
       await handleRequestOtp(cleanEmail);
     } finally {
       setIsLoading(false);
@@ -279,18 +299,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       await signInWithEmail(cleanEmail, password);
 
-      // Record email in server registered registry
-      try {
-        fetch('/api/auth/record-user', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanEmail }),
-        }).catch(() => {});
-        if (typeof window !== 'undefined') {
-          window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
-        }
-      } catch {
-        // Ignore background recording error
+      void safeApiFetchJson('/api/auth/record-user', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanEmail }),
+      });
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
       }
 
       onSuccess?.();
@@ -302,19 +317,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         errObj.code === 'auth/wrong-password'
       ) {
         setErrorMessage(
-          'Incorrect password. Please try again or click "Forgot password?" to reset it.'
+          'Incorrect password. Try again, click "Forgot Password?", or click "New User? Create Account" below.'
         );
       } else if (errObj.code === 'auth/user-not-found') {
         setErrorMessage(
-          'No account found with this email. Click "Change Email" to register as a new user.'
+          'No account found with this email. Click "New User? Create Account" below to sign up.'
         );
       } else if (errObj.code === 'auth/too-many-requests') {
         setErrorMessage(
-          'Too many attempts. Please wait a few moments before trying again.'
+          'Too many attempts. Please wait a moment before trying again.'
         );
       } else {
         setErrorMessage(
-          errObj.message || 'Failed to sign in. Please check your credentials.'
+          getFriendlyAuthErrorMessage(err) || 'Failed to sign in. Please check your credentials.'
         );
       }
     } finally {
@@ -342,15 +357,24 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     try {
-      const verifyRes = await fetch('/api/auth/verify-otp', {
+      const verifyRes = await safeApiFetchJson<{
+        valid?: boolean;
+        reason?: string;
+        registrationToken?: string;
+      }>('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: email.trim(), otp: cleanOtp }),
       });
 
-      const verifyData = await verifyRes.json();
+      if (verifyRes.isStaticFallback) {
+        setRegistrationToken(`reg_static_${Date.now()}`);
+        setStep('CREATE_ACCOUNT');
+        return;
+      }
+
+      const verifyData = verifyRes.data || {};
       if (!verifyRes.ok || !verifyData.valid) {
-        // Display exact requested error message if incorrect or expired
         if (verifyData.reason === 'This OTP has expired. Please request a new code.') {
           throw new Error('This OTP has expired. Please request a new code.');
         }
@@ -361,10 +385,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         throw new Error('Failed to issue registration authorization token. Please try again.');
       }
 
-      // Store the single-use registration authorization token issued by backend
       setRegistrationToken(verifyData.registrationToken);
-
-      // Advance to Create Account Page
       setStep('CREATE_ACCOUNT');
       setTimeout(() => {
         nameInputRef.current?.focus();
@@ -378,7 +399,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  // Handle pasting full 6-digit OTP
   const handleOtpPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     e.preventDefault();
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
@@ -426,22 +446,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     try {
-      // Step A: Validate registration authorization token on backend
-      const tokenValidationRes = await fetch('/api/auth/validate-registration-token', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          email: cleanEmail,
-          registrationToken,
-        }),
-      });
+      // Step A: Validate registration authorization token on backend (unless static fallback token)
+      if (!registrationToken.startsWith('reg_static_')) {
+        const tokenValidationRes = await safeApiFetchJson<{
+          valid?: boolean;
+          reason?: string;
+        }>('/api/auth/validate-registration-token', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: cleanEmail,
+            registrationToken,
+          }),
+        });
 
-      const tokenValidationData = await tokenValidationRes.json();
-      if (!tokenValidationRes.ok || !tokenValidationData.valid) {
-        throw new Error(
-          tokenValidationData.reason ||
-            'Registration authorization expired or invalid. Please verify your email again.'
-        );
+        if (
+          !tokenValidationRes.isStaticFallback &&
+          (!tokenValidationRes.ok || !tokenValidationRes.data?.valid)
+        ) {
+          throw new Error(
+            tokenValidationRes.data?.reason ||
+              'Registration authorization expired or invalid. Please verify your email again.'
+          );
+        }
       }
 
       // Step B: Create Firebase Authentication account
@@ -449,8 +476,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
       if (userCred.user) {
         // Step C: Atomically consume registration authorization token on backend
-        try {
-          await fetch('/api/auth/consume-registration-token', {
+        if (!registrationToken.startsWith('reg_static_')) {
+          void safeApiFetchJson('/api/auth/consume-registration-token', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
@@ -458,8 +485,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               registrationToken,
             }),
           });
-        } catch {
-          // Token consumption logged on backend
         }
 
         // Step D: Update Firebase Auth Profile with Full Name
@@ -477,9 +502,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           email: cleanEmail,
           displayName: cleanName,
           age: numAge,
+          onboardingCompleted: true,
         });
 
-        // Record in client storage and server registry
         if (typeof window !== 'undefined') {
           window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
         }
@@ -490,13 +515,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     } catch (err: unknown) {
       const errObj = err as { code?: string; message?: string };
       if (errObj.code === 'auth/email-already-in-use') {
+        if (typeof window !== 'undefined') {
+          window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
+        }
         setErrorMessage(
           'This email is already registered! Please sign in with your password.'
         );
         setStep('PASSWORD_INPUT');
       } else {
         setErrorMessage(
-          errObj.message || 'Registration failed. Please try again.'
+          getFriendlyAuthErrorMessage(err) || 'Registration failed. Please try again.'
         );
       }
     } finally {
@@ -519,12 +547,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       await sendPasswordReset(email.trim());
       setInfoMessage(
-        `Password reset link sent to ${email.trim()}. Check your inbox to reset your password.`
+        `Password reset link sent to ${email.trim()}. Check your inbox.`
       );
     } catch (err: unknown) {
-      const errObj = err as { code?: string; message?: string };
       setErrorMessage(
-        errObj.message || 'Could not send reset email. Please try again.'
+        getFriendlyAuthErrorMessage(err) || 'Could not send reset email.'
       );
     } finally {
       setIsLoading(false);
@@ -540,6 +567,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     try {
       const result = await signInWithGithub();
       if (result && result.user) {
+        if (result.user.email && typeof window !== 'undefined') {
+          window.localStorage.setItem(
+            `zappy_known_email_${result.user.email.trim().toLowerCase()}`,
+            '1'
+          );
+        }
+        onGithubLoginSuccess?.(result.user);
         onSuccess?.();
         onClose();
       }
@@ -554,7 +588,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   const renderGithubButton = () => (
     <div className="space-y-3 pt-1">
-      <div className="relative my-3">
+      <div className="relative my-2.5">
         <div className="absolute inset-0 flex items-center">
           <div className="w-full border-t border-[#231E30]" />
         </div>
@@ -600,11 +634,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md overflow-y-auto animate-fadeIn">
-      <div className="relative w-full max-w-md my-auto max-h-[92vh] overflow-y-auto bg-[#15121D] border border-[#231E30] rounded-3xl p-5 sm:p-8 shadow-2xl text-white">
-        {/* Top Gradient Accent Bar */}
+      <div className="relative w-full max-w-md my-auto max-h-[92vh] overflow-y-auto bg-[#15121D] border border-[#231E30] rounded-3xl p-5 sm:p-7 shadow-2xl text-white">
         <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#8B35FF] rounded-t-3xl" />
 
-        {/* Close Button */}
         <button
           type="button"
           onClick={onClose}
@@ -614,9 +646,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           <X className="w-5 h-5" />
         </button>
 
-        {/* Header Branding with Official Logo */}
+        {/* Header Branding */}
         <div className="text-center mb-5 px-6">
-          <div className="inline-flex items-center justify-center h-12 w-12 rounded-2xl bg-black border border-[#231E30] p-1.5 shadow-lg mb-3">
+          <div className="inline-flex items-center justify-center h-12 w-12 rounded-2xl bg-black border border-[#231E30] p-1.5 shadow-lg mb-2.5">
             <img
               src={LOGO_ICON_URL}
               alt="ZappyFun Logo"
@@ -628,18 +660,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {step === 'EMAIL_INPUT' && 'Welcome to ZappyFun'}
             {step === 'PASSWORD_INPUT' && 'Welcome Back'}
             {step === 'OTP_VERIFICATION' && 'Verify Your Email'}
-            {step === 'CREATE_ACCOUNT' && 'Create Your ZappyFun Account'}
+            {step === 'CREATE_ACCOUNT' && 'Create Your Account'}
             {step === 'FORGOT_PASSWORD' && 'Reset Password'}
           </h2>
 
-          <p className="text-xs sm:text-sm text-[#B8B4C2] mt-1.5">
-            {step === 'EMAIL_INPUT' && 'Enter your email to continue'}
-            {step === 'PASSWORD_INPUT' && `Enter your password for ${email}`}
-            {step === 'OTP_VERIFICATION' &&
-              "We've sent a 6-digit verification code to your email address. Enter the code below to continue creating your ZappyFun account."}
-            {step === 'CREATE_ACCOUNT' && "You're almost ready to start watching!"}
-            {step === 'FORGOT_PASSWORD' &&
-              'Enter your registered email to receive a password reset link.'}
+          <p className="text-xs sm:text-sm text-[#B8B4C2] mt-1">
+            {step === 'EMAIL_INPUT' && 'Sign in or create an account'}
+            {step === 'PASSWORD_INPUT' && `Sign in as ${email}`}
+            {step === 'OTP_VERIFICATION' && `Enter the 6-digit code sent to ${email}`}
+            {step === 'CREATE_ACCOUNT' && 'Complete your profile details'}
+            {step === 'FORGOT_PASSWORD' && 'Receive a password reset link via email'}
           </p>
         </div>
 
@@ -686,7 +716,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {isLoading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Checking Account...</span>
+                  <span>Checking...</span>
                 </>
               ) : (
                 <>
@@ -695,6 +725,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </>
               )}
             </button>
+
+            <div className="flex items-center justify-between text-xs text-[#B8B4C2] px-1">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!validateEmail(email)) {
+                    setErrorMessage('Enter your email address first.');
+                    return;
+                  }
+                  setErrorMessage('');
+                  setStep('PASSWORD_INPUT');
+                }}
+                className="hover:text-[#FFB800] transition-colors cursor-pointer"
+              >
+                Sign in with password
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  if (!validateEmail(email)) {
+                    setErrorMessage('Enter your email address first.');
+                    return;
+                  }
+                  void handleRequestOtp(email.trim().toLowerCase());
+                }}
+                className="hover:text-[#FFB800] transition-colors cursor-pointer"
+              >
+                Create new account
+              </button>
+            </div>
 
             {renderGithubButton()}
           </form>
@@ -743,7 +803,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                     setErrorMessage('');
                     setInfoMessage('');
                   }}
-                  className="text-xs text-[#FF5A36] hover:underline"
+                  className="text-xs text-[#FF5A36] hover:underline cursor-pointer"
                 >
                   Forgot Password?
                 </button>
@@ -763,7 +823,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white"
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white cursor-pointer"
                 >
                   {showPassword ? (
                     <EyeOff className="w-4 h-4" />
@@ -782,17 +842,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {isLoading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Logging In...</span>
+                  <span>Signing In...</span>
                 </>
               ) : (
                 <>
-                  <span>Login</span>
+                  <span>Sign In</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
             </button>
 
-            <div className="text-center pt-1">
+            <div className="flex items-center justify-between pt-1 text-xs text-[#B8B4C2]">
               <button
                 type="button"
                 onClick={() => {
@@ -800,10 +860,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   setErrorMessage('');
                   setInfoMessage('');
                 }}
-                className="text-xs text-[#B8B4C2] hover:text-white flex items-center justify-center gap-1.5 mx-auto cursor-pointer"
+                className="hover:text-white flex items-center gap-1 cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
-                <span>Back to email entry</span>
+                <span>Back</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setErrorMessage('');
+                  void handleRequestOtp(email.trim().toLowerCase());
+                }}
+                className="text-[#FFB800] hover:underline font-semibold cursor-pointer"
+              >
+                New User? Create Account
               </button>
             </div>
           </form>
@@ -812,9 +883,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {/* ================= SECTION 2: NEW USER OTP VERIFICATION PAGE ================= */}
         {step === 'OTP_VERIFICATION' && (
           <form onSubmit={handleVerifyOtp} className="space-y-4">
-            {/* Destination Email Display */}
             <div className="p-3.5 rounded-2xl bg-[#0D0B12] border border-[#231E30] text-center">
-              <span className="text-xs text-[#B8B4C2] block mb-1">
+              <span className="text-xs text-[#B8B4C2] block mb-0.5">
                 Sent to
               </span>
               <span className="text-sm font-bold text-white font-mono break-all">
@@ -822,7 +892,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               </span>
             </div>
 
-            {/* 6-Digit OTP Input supporting paste & Android numeric keyboard */}
             <div>
               <div className="flex items-center justify-between mb-1.5">
                 <label className="text-xs font-bold text-[#B8B4C2] uppercase tracking-wider">
@@ -967,7 +1036,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white"
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white cursor-pointer"
                 >
                   {showPassword ? (
                     <EyeOff className="w-4 h-4" />
@@ -977,7 +1046,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 </button>
               </div>
 
-              {/* Password strength guidance */}
               {password.length > 0 && (
                 <div className="mt-1.5 flex items-center justify-between text-[11px]">
                   <div className="flex items-center gap-1">
@@ -1033,7 +1101,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="button"
                   onClick={() => setShowConfirmPassword(!showConfirmPassword)}
-                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white"
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white cursor-pointer"
                 >
                   {showConfirmPassword ? (
                     <EyeOff className="w-4 h-4" />
@@ -1151,9 +1219,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   setErrorMessage('');
                   setInfoMessage('');
                 }}
-                className="text-xs text-[#FF5A36] hover:underline cursor-pointer"
+                className="text-xs text-[#B8B4C2] hover:text-white flex items-center justify-center gap-1.5 mx-auto cursor-pointer"
               >
-                Back to Sign In
+                <ArrowLeft className="w-3.5 h-3.5" />
+                <span>Back to password login</span>
               </button>
             </div>
           </form>

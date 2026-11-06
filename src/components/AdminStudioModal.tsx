@@ -79,6 +79,7 @@ import {
   OFFICIAL_CONTACT_EMAIL,
   normalizeLegalPagesConfig,
 } from './InfoModal';
+import { safeApiFetchJson } from '../utils/apiClient';
 
 const LOGO_ASSET_URL =
   '/assets/aistudio/20261023_170257_6e6b6602.png';
@@ -783,9 +784,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
   const loadSmtpStatus = useCallback(async () => {
     try {
-      const res = await fetch('/api/auth/smtp-status');
-      if (res.ok) {
-        const data = await res.json();
+      const { ok, data } = await safeApiFetchJson<any>('/api/auth/smtp-status');
+      if (ok && data) {
         setSmtpStatus(data);
         setSmtpForm((prev) => ({
           ...prev,
@@ -815,7 +815,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setErrorMessage(null);
     try {
       const token = await currentUser.getIdToken();
-      const res = await fetch('/api/admin/smtp', {
+      const { ok, data } = await safeApiFetchJson<any>('/api/admin/smtp', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -823,8 +823,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         },
         body: JSON.stringify(smtpForm),
       });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error || 'Failed to save SMTP settings.');
+      if (!ok) throw new Error(data?.error || 'Failed to save SMTP settings.');
       setSmtpStatus(data.status);
       setStatusMessage('SMTP configuration saved successfully! Gmail verification is active.');
     } catch (err: unknown) {
@@ -840,7 +839,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setSmtpTestResult(null);
     try {
       const token = await currentUser.getIdToken();
-      const res = await fetch('/api/admin/test-smtp', {
+      const { data } = await safeApiFetchJson<any>('/api/admin/test-smtp', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -848,8 +847,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         },
         body: JSON.stringify({ email: smtpForm.user || ADMIN_EMAIL }),
       });
-      const data = await res.json();
-      setSmtpTestResult(data.message || (data.success ? 'Test email sent successfully!' : 'Test email failed.'));
+      setSmtpTestResult(data?.message || (data?.success ? 'Test email sent successfully!' : 'Test email failed.'));
     } catch (err: unknown) {
       setSmtpTestResult(err instanceof Error ? err.message : 'Failed to send test email.');
     } finally {
@@ -913,12 +911,11 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           type: typeFilter,
           country: countryCode,
         });
-        const res = await fetch(`/api/justwatch/search?${params.toString()}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (Array.isArray(data.items)) {
-            setJwResults(data.items);
-          }
+        const { ok, data } = await safeApiFetchJson<{ items?: JustWatchBrowseCard[] }>(
+          `/api/justwatch/search?${params.toString()}`
+        );
+        if (ok && Array.isArray(data?.items)) {
+          setJwResults(data.items);
         }
       } catch {
         // Ignore
@@ -1214,17 +1211,19 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           const isUrl =
             targetLink.includes('justwatch.com') ||
             targetLink.startsWith('http');
-          const res = await fetch('/api/justwatch/extract', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              justWatchUrl: isUrl ? targetLink : '',
-              title: isUrl ? '' : targetLink,
-            }),
-          });
+          const { ok, data: extracted } = await safeApiFetchJson<any>(
+            '/api/justwatch/extract',
+            {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                justWatchUrl: isUrl ? targetLink : '',
+                title: isUrl ? '' : targetLink,
+              }),
+            }
+          );
 
-          const extracted = await res.json();
-          if (!res.ok || !extracted?.title) {
+          if (!ok || !extracted?.title) {
             throw new Error(
               extracted?.error || 'Could not extract from JustWatch link'
             );
@@ -1390,20 +1389,22 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setStatusMessage(null);
 
     try {
-      const res = await fetch('/api/justwatch/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          justWatchUrl: targetUrl,
-          title: targetTitle,
-          mediaType: overrideType,
-        }),
-      });
+      const { ok, data } = await safeApiFetchJson<any>(
+        '/api/justwatch/extract',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            justWatchUrl: targetUrl,
+            title: targetTitle,
+            mediaType: overrideType,
+          }),
+        }
+      );
 
-      const data = await res.json();
-      if (!res.ok) {
+      if (!ok || !data) {
         setErrorMessage(
-          data.error || 'Could not extract details from JustWatch.'
+          data?.error || 'Could not extract details from JustWatch.'
         );
         return;
       }
@@ -1549,16 +1550,19 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setPublishingCardKey(cardKey);
 
     try {
-      const res = await fetch('/api/justwatch/extract', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          justWatchUrl: card.justWatchUrl,
-          title: card.title,
-          mediaType: 'movie',
-        }),
-      });
-      const extracted = res.ok ? await res.json() : card;
+      const { ok, data } = await safeApiFetchJson<any>(
+        '/api/justwatch/extract',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            justWatchUrl: card.justWatchUrl,
+            title: card.title,
+            mediaType: 'movie',
+          }),
+        }
+      );
+      const extracted = ok && data ? data : card;
       const { item, serializedCredits } =
         buildMediaItemFromExtractedData(extracted);
 

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef, useMemo } from 'react';
 import { Film } from 'lucide-react';
 import { MediaItem } from '../types/media';
 
@@ -11,6 +11,30 @@ interface MediaArtworkProps {
   priority?: boolean;
 }
 
+/**
+ * Normalizes and sanitizes artwork URLs so JustWatch / TMDB / Wikimedia / data URIs
+ * never fail due to unresolved placeholders or mixed-content http URLs.
+ */
+function normalizeArtworkUrl(rawUrl: string | undefined | null, aspectRatio: 'poster' | 'backdrop'): string {
+  if (!rawUrl || typeof rawUrl !== 'string') return '';
+  let cleaned = rawUrl.trim();
+  if (!cleaned || cleaned === 'undefined' || cleaned === 'null') return '';
+
+  // Fix unresolved JustWatch template placeholders if any exist in stored Firestore docs
+  if (cleaned.includes('{profile}')) {
+    cleaned = cleaned.replace('{profile}', aspectRatio === 'backdrop' ? 's1920' : 's718');
+  }
+  if (cleaned.includes('{format}')) {
+    cleaned = cleaned.replace(/\.?\{format\}/g, '.webp');
+  }
+  if (cleaned.startsWith('//')) {
+    cleaned = `https:${cleaned}`;
+  } else if (cleaned.startsWith('http://')) {
+    cleaned = `https://${cleaned.slice(7)}`;
+  }
+  return cleaned;
+}
+
 export const MediaArtwork: React.FC<MediaArtworkProps> = ({
   src,
   alt,
@@ -19,22 +43,92 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
   className = '',
   priority = false,
 }) => {
-  const [hasError, setHasError] = useState(false);
-  const [isLoaded, setIsLoaded] = useState(priority);
+  const isBackdropOrPriority = aspectRatio === 'backdrop' || priority;
+  const imgRef = useRef<HTMLImageElement | null>(null);
+
+  // Build ordered candidate URLs so if a backdrop URL fails or times out,
+  // it seamlessly falls back to the alternate URL (e.g. posterUrl or backdropUrl) before showing the stylized card.
+  const candidateUrls = useMemo(() => {
+    const primary = normalizeArtworkUrl(src, aspectRatio);
+    const secondary = normalizeArtworkUrl(
+      aspectRatio === 'backdrop' ? item.posterUrl : item.backdropUrl,
+      aspectRatio
+    );
+    const tertiary = normalizeArtworkUrl(
+      aspectRatio === 'backdrop' ? item.backdropUrl : item.posterUrl,
+      aspectRatio
+    );
+    const unique: string[] = [];
+    for (const url of [primary, tertiary, secondary]) {
+      if (url && !unique.includes(url)) {
+        unique.push(url);
+      }
+    }
+    return unique;
+  }, [src, item.posterUrl, item.backdropUrl, aspectRatio]);
+
+  const [candidateIndex, setCandidateIndex] = useState<number>(0);
+  const [allFailed, setAllFailed] = useState<boolean>(false);
+  const [isLoaded, setIsLoaded] = useState<boolean>(true);
+
+  const activeUrl = candidateUrls[candidateIndex] || '';
 
   useEffect(() => {
-    setHasError(false);
-    setIsLoaded(priority);
-  }, [src, priority]);
+    setCandidateIndex(0);
+    setAllFailed(candidateUrls.length === 0);
+  }, [candidateUrls]);
 
-  if (hasError || !src) {
+  // Immediately mark loaded if the browser already has the image in memory cache,
+  // and guard against stalled/hanging network requests with a fallback timer.
+  useEffect(() => {
+    if (!activeUrl) {
+      setAllFailed(true);
+      return;
+    }
+
+    const imgEl = imgRef.current;
+    if (imgEl && imgEl.complete && imgEl.naturalWidth > 0) {
+      setIsLoaded(true);
+      return;
+    }
+
+    // Backdrops and priority images stay visible immediately while decoding so they never flash blank
+    setIsLoaded(isBackdropOrPriority);
+
+    const timeoutMs = aspectRatio === 'backdrop' ? 4500 : 6500;
+    const stallTimer = window.setTimeout(() => {
+      const currentImg = imgRef.current;
+      if (currentImg && (!currentImg.complete || currentImg.naturalWidth === 0)) {
+        if (candidateIndex + 1 < candidateUrls.length) {
+          setCandidateIndex((prev) => prev + 1);
+        } else {
+          setIsLoaded(true);
+        }
+      }
+    }, timeoutMs);
+
+    return () => window.clearTimeout(stallTimer);
+  }, [activeUrl, candidateIndex, candidateUrls.length, isBackdropOrPriority, aspectRatio]);
+
+  const handleImageError = () => {
+    if (candidateIndex + 1 < candidateUrls.length) {
+      setCandidateIndex((prev) => prev + 1);
+    } else {
+      setAllFailed(true);
+    }
+  };
+
+  const primaryHex = item.visualTheme?.primaryHex || '#14161D';
+  const accentHex = item.visualTheme?.accentHex || '#FFB800';
+
+  if (allFailed || !activeUrl) {
     return (
       <div
         className={`relative overflow-hidden flex flex-col justify-end p-4 sm:p-5 select-none ${
           aspectRatio === 'poster' ? 'aspect-[2/3]' : 'aspect-video'
         } ${className}`}
         style={{
-          background: `radial-gradient(circle at 65% 28%, ${item.visualTheme.accentHex}38, ${item.visualTheme.primaryHex} 58%, #08090D 100%)`,
+          background: `radial-gradient(circle at 65% 28%, ${accentHex}38, ${primaryHex} 58%, #08090D 100%)`,
         }}
         role="img"
         aria-label={alt}
@@ -56,16 +150,21 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
 
   return (
     <img
-      src={src}
+      ref={imgRef}
+      src={activeUrl}
       alt={alt}
       referrerPolicy="no-referrer"
-      loading={priority ? 'eager' : 'lazy'}
-      decoding={priority ? 'sync' : 'async'}
+      loading={isBackdropOrPriority ? 'eager' : 'lazy'}
+      decoding={isBackdropOrPriority ? 'sync' : 'async'}
+      fetchPriority={isBackdropOrPriority ? 'high' : 'auto'}
       onLoad={() => setIsLoaded(true)}
-      onError={() => setHasError(true)}
-      className={`object-cover transition-opacity duration-500 ease-out ${
+      onError={handleImageError}
+      style={{
+        background: `radial-gradient(circle at 60% 30%, ${accentHex}22, ${primaryHex} 70%, #08090D 100%)`,
+      }}
+      className={`object-cover transition-opacity duration-300 ease-out ${
         aspectRatio === 'poster' ? 'aspect-[2/3]' : 'aspect-video'
-      } ${isLoaded ? 'opacity-100' : 'opacity-0 zf-skeleton-shimmer'} ${className}`}
+      } ${isLoaded ? 'opacity-100' : 'opacity-90 zf-skeleton-shimmer'} ${className}`}
     />
   );
 };

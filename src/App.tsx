@@ -36,6 +36,9 @@ import {
   CheckCircle2,
   Loader2,
   RefreshCw,
+  Shuffle,
+  Edit3,
+  Camera,
 } from 'lucide-react';
 import { onAuthStateChanged, User } from 'firebase/auth';
 import {
@@ -67,6 +70,8 @@ import {
   handleGithubRedirectResult,
   getFriendlyAuthErrorMessage,
   getCachedUserProfile,
+  fetchUserProfileFromFirestore,
+  UserProfileData,
 } from './firebase';
 import {
   MediaItem,
@@ -99,7 +104,8 @@ import { AdminStudioModal } from './components/AdminStudioModal';
 import { VisualUiEditor } from './components/VisualUiEditor';
 import { MediaArtwork } from './components/MediaArtwork';
 import { AuthModal } from './components/AuthModal';
-import { CinematicSplashScreen } from './components/CinematicSplashScreen';
+import { ProfileSetupView } from './components/ProfileSetupView';
+import { safeApiFetchJson } from './utils/apiClient';
 
 type NavView =
   | 'home'
@@ -107,6 +113,7 @@ type NavView =
   | 'movies'
   | 'categories'
   | 'myspace'
+  | 'profile_setup'
   | 'support'
   | 'search'
   | 'watchlist'
@@ -203,26 +210,13 @@ const ZAPPY_FAQS = [
 
 export default function App() {
   const [currentUser, setCurrentUser] = useState<User | null>(null);
+  const [userProfile, setUserProfile] = useState<UserProfileData | null>(null);
+  const [isFirstTimeProfileSetup, setIsFirstTimeProfileSetup] =
+    useState<boolean>(false);
   const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
 
   const [catalog, setCatalog] = useState<MediaItem[]>([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(true);
-
-  // Starting logo reveal animation removed as requested (loads app directly and smoothly)
-  const [showSplash, setShowSplash] = useState<boolean>(false);
-
-  const handleSplashComplete = useCallback(() => {
-    setShowSplash(false);
-    try {
-      if (typeof window !== 'undefined') {
-        window.sessionStorage.setItem('zappy_splash_shown_v1', '1');
-      }
-    } catch {
-      // Ignore
-    }
-  }, []);
-
-  const isAppReady = isAuthReady && (!isLoadingCatalog || catalog.length > 0);
 
   const [videoAdConfig] = useState<VideoAdConfig>({
     imaEnabled: true,
@@ -455,10 +449,9 @@ export default function App() {
 
   // Fetch authoritative legal pages from /api/legal (backed by /src/data/legalDocuments.ts)
   useEffect(() => {
-    fetch('/api/legal')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.legalPages && typeof data.legalPages === 'object') {
+    safeApiFetchJson<{ legalPages?: Partial<LegalPagesConfig> }>('/api/legal')
+      .then(({ ok, data }) => {
+        if (ok && data?.legalPages && typeof data.legalPages === 'object') {
           setLegalPages((prev) =>
             normalizeLegalPagesConfig({
               ...prev,
@@ -574,11 +567,28 @@ export default function App() {
     setTimeout(() => setSessionToast(null), 3800);
   }, []);
 
+  // Redirects a newly signed-in GitHub user to the Profile Setup page to enter Name, Age & Profile Picture
+  const handleGithubUserOnboarding = useCallback(
+    async (user: User) => {
+      const cached = getCachedUserProfile(user.uid);
+      const remote = await fetchUserProfileFromFirestore(user.uid);
+      const resolved = remote || cached;
+      if (resolved) {
+        setUserProfile(resolved);
+      }
+      if (!resolved || !resolved.age || !resolved.onboardingCompleted) {
+        setIsFirstTimeProfileSetup(true);
+        setActiveView('profile_setup');
+      }
+    },
+    []
+  );
+
   // 1. Listen to Firebase Authentication State & Process GitHub Redirect Results
   useEffect(() => {
     // Process redirect result if arriving back from GitHub OAuth (mobile / Netlify)
     handleGithubRedirectResult()
-      .then((result) => {
+      .then(async (result) => {
         if (result && result.user) {
           const email = result.user.email || '';
           if (isUserAdmin(email, result.user.emailVerified)) {
@@ -588,6 +598,7 @@ export default function App() {
               `Signed in with GitHub as ${result.user.displayName || email || 'User'}`
             );
           }
+          await handleGithubUserOnboarding(result.user);
         }
       })
       .catch((err) => {
@@ -596,12 +607,20 @@ export default function App() {
         showToast(friendly);
       });
 
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
+    const unsubscribe = onAuthStateChanged(auth, async (user) => {
       setCurrentUser(user);
       setIsAuthReady(true);
+      if (user) {
+        const cached = getCachedUserProfile(user.uid);
+        if (cached) setUserProfile(cached);
+        const remote = await fetchUserProfileFromFirestore(user.uid);
+        if (remote) setUserProfile(remote);
+      } else {
+        setUserProfile(null);
+      }
     });
     return () => unsubscribe();
-  }, [showToast]);
+  }, [showToast, handleGithubUserOnboarding]);
 
   // 2. Real-time Cloud Firestore Catalog Subscription
   useEffect(() => {
@@ -825,16 +844,15 @@ export default function App() {
     }
     try {
       const idToken = await currentUser.getIdToken();
-      const res = await fetch('/api/support', {
+      const { ok, data } = await safeApiFetchJson<{
+        messages?: SupportMessageItem[];
+      }>('/api/support', {
         headers: {
           Authorization: `Bearer ${idToken}`,
         },
       });
-      if (res.ok) {
-        const data = await res.json();
-        if (Array.isArray(data.messages)) {
-          setServerSupportMessages(data.messages);
-        }
+      if (ok && Array.isArray(data?.messages)) {
+        setServerSupportMessages(data.messages);
       }
     } catch {
       // Ignore network error
@@ -1345,7 +1363,7 @@ export default function App() {
 
       // 1. Persist directly into source code (/src/data/legalDocuments.ts) via backend API
       try {
-        await fetch('/api/legal', {
+        await safeApiFetchJson('/api/legal', {
           method: 'PUT',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ legalPages: normalized }),
@@ -1509,16 +1527,16 @@ export default function App() {
 
     try {
       // 1. Send to backend /api/support so any user (guest or signed-in) reaches Admin Inbox immediately
-      const res = await fetch('/api/support', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(newTicket),
-      });
-      if (res.ok) {
-        const data = await res.json();
-        if (data.ticket) {
-          setServerSupportMessages((prev) => [data.ticket, ...prev]);
+      const { ok, data } = await safeApiFetchJson<{ ticket?: SupportMessageItem }>(
+        '/api/support',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(newTicket),
         }
+      );
+      if (ok && data?.ticket) {
+        setServerSupportMessages((prev) => [data.ticket!, ...prev]);
       }
 
       // 2. If signed in with a verified email, also persist in Cloud Firestore /support_messages/{messageId}
@@ -1561,15 +1579,18 @@ export default function App() {
     if (!currentUser || !isAdmin) return;
     try {
       const idToken = await currentUser.getIdToken();
-      const res = await fetch(`/api/support/${encodeURIComponent(msg.id)}`, {
-        method: 'PATCH',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${idToken}`,
-        },
-        body: JSON.stringify({ status: nextStatus }),
-      });
-      if (res.ok) {
+      const { ok } = await safeApiFetchJson(
+        `/api/support/${encodeURIComponent(msg.id)}`,
+        {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${idToken}`,
+          },
+          body: JSON.stringify({ status: nextStatus }),
+        }
+      );
+      if (ok) {
         setServerSupportMessages((prev) =>
           prev.map((m) => (m.id === msg.id ? { ...m, status: nextStatus } : m))
         );
@@ -1589,13 +1610,16 @@ export default function App() {
     if (!currentUser || !isAdmin) return;
     try {
       const idToken = await currentUser.getIdToken();
-      const res = await fetch(`/api/support/${encodeURIComponent(msg.id)}`, {
-        method: 'DELETE',
-        headers: {
-          Authorization: `Bearer ${idToken}`,
-        },
-      });
-      if (res.ok) {
+      const { ok } = await safeApiFetchJson(
+        `/api/support/${encodeURIComponent(msg.id)}`,
+        {
+          method: 'DELETE',
+          headers: {
+            Authorization: `Bearer ${idToken}`,
+          },
+        }
+      );
+      if (ok) {
         setServerSupportMessages((prev) => prev.filter((m) => m.id !== msg.id));
       }
 
@@ -1783,6 +1807,65 @@ export default function App() {
     () => catalog.filter((item) => activeWatchlistIds.includes(item.id)),
     [catalog, activeWatchlistIds]
   );
+
+  // Completed / Watched History movies
+  const completedItems = useMemo(
+    () => catalog.filter((item) => completedIds.includes(item.id)),
+    [catalog, completedIds]
+  );
+
+  // Personalized "Picked For You" Movies based on user's Favorite Genres & Watchlist
+  const recommendedForYouItems = useMemo(() => {
+    if (catalog.length === 0) return [];
+    const preferredGenres = new Set<string>(userProfile?.favoriteGenres || []);
+    watchlistItems.forEach((item) => {
+      item.genres.forEach((g) => preferredGenres.add(g));
+    });
+    completedItems.forEach((item) => {
+      item.genres.forEach((g) => preferredGenres.add(g));
+    });
+
+    if (preferredGenres.size === 0) return [];
+
+    return catalog
+      .filter((item) => !completedIds.includes(item.id))
+      .map((item) => {
+        const matchCount = item.genres.filter((g) =>
+          preferredGenres.has(g)
+        ).length;
+        return { item, matchCount };
+      })
+      .filter((entry) => entry.matchCount > 0)
+      .sort(
+        (a, b) =>
+          b.matchCount - a.matchCount ||
+          (b.item.popularScore || 0) - (a.item.popularScore || 0)
+      )
+      .map((entry) => entry.item)
+      .slice(0, 12);
+  }, [catalog, userProfile?.favoriteGenres, watchlistItems, completedItems, completedIds]);
+
+  // Surprise Me: Picks a random unwatched movie from the catalog
+  const handleSurpriseMe = useCallback(() => {
+    if (catalog.length === 0) return;
+    const unwatched = catalog.filter(
+      (item) => !completedIds.includes(item.id) && item.id !== selectedMedia?.id
+    );
+    const pool = unwatched.length > 0 ? unwatched : catalog;
+    const randomPick = pool[Math.floor(Math.random() * pool.length)];
+    if (randomPick) {
+      handleSelectMedia(randomPick, false, false);
+      showToast(`Surprise Pick: "${randomPick.title}" (${randomPick.releaseYear})`);
+    }
+  }, [catalog, completedIds, selectedMedia?.id, showToast]);
+
+  const userAvatarUrl =
+    userProfile?.photoURL || currentUser?.photoURL || '';
+  const userDisplayName =
+    userProfile?.displayName ||
+    currentUser?.displayName ||
+    currentUser?.email?.split('@')[0] ||
+    'Guest Viewer';
 
   const relatedForSelected = useMemo(() => {
     if (!selectedMedia) return [];
@@ -2357,26 +2440,26 @@ export default function App() {
               type="button"
               onClick={() => handleNavigate('myspace')}
               className="flex items-center gap-2.5 w-full px-2 py-2 rounded-xl hover:bg-[#252832] transition-colors cursor-pointer"
-              title={currentUser.displayName || currentUser.email || 'My Space'}
+              title={userDisplayName}
             >
-              {currentUser.photoURL ? (
+              {userAvatarUrl ? (
                 <img
-                  src={currentUser.photoURL}
+                  src={userAvatarUrl}
                   alt="User"
                   referrerPolicy="no-referrer"
                   className="w-8 h-8 rounded-full object-cover shrink-0 ring-1 ring-[#FFC400]/40"
                 />
               ) : (
                 <div className="w-8 h-8 rounded-full bg-[#FFC400]/20 text-[#FFC400] font-bold text-xs flex items-center justify-center shrink-0 border border-[#FFC400]/30">
-                  {currentUser.email?.slice(0, 2).toUpperCase() || 'ME'}
+                  {userDisplayName.slice(0, 2).toUpperCase() || 'ME'}
                 </div>
               )}
               <div className="text-left truncate min-w-0 flex-1">
                 <p className="text-xs font-bold text-white truncate">
-                  {currentUser.displayName || currentUser.email?.split('@')[0]}
+                  {userDisplayName}
                 </p>
                 <p className="text-[10px] text-[#747784] truncate">
-                  {isAdmin ? 'Admin' : 'My Space'}
+                  {isAdmin ? 'Admin' : userProfile?.age ? `Age ${userProfile.age}` : 'My Space'}
                 </p>
               </div>
             </button>
@@ -2444,15 +2527,16 @@ export default function App() {
             className="w-9 h-9 rounded-full overflow-hidden bg-[#252832] border border-[#292C35] flex items-center justify-center cursor-pointer"
             aria-label="Profile"
           >
-            {currentUser?.photoURL ? (
+            {userAvatarUrl ? (
               <img
-                src={currentUser.photoURL}
+                src={userAvatarUrl}
                 alt="Profile"
+                referrerPolicy="no-referrer"
                 className="w-full h-full object-cover"
               />
             ) : currentUser ? (
               <span className="text-[10px] font-bold text-[#FFC400]">
-                {currentUser.email?.slice(0, 2).toUpperCase()}
+                {userDisplayName.slice(0, 2).toUpperCase()}
               </span>
             ) : (
               <UserIcon className="w-4 h-4 text-[#FFC400]" />
@@ -2573,9 +2657,29 @@ export default function App() {
         ) : (
         <AnimatePresence mode="wait">
           {/* =========================================================
-              MOVIE & SHOW DETAILS + STREAMING PLAYER PAGE
+              PROFILE SETUP & AVATAR CUSTOMIZATION PAGE (POST-GITHUB LOGIN OR EDIT PROFILE)
           ========================================================= */}
-          {activeView === 'details' && selectedMedia ? (
+          {activeView === 'profile_setup' && currentUser ? (
+            <ProfileSetupView
+              key="profile-setup-view"
+              currentUser={currentUser}
+              existingProfile={userProfile}
+              isFirstTimeSetup={isFirstTimeProfileSetup}
+              onComplete={(updated) => {
+                setUserProfile(updated);
+                setIsFirstTimeProfileSetup(false);
+                showToast(`Profile saved! Welcome, ${updated.displayName}.`);
+                handleNavigate('home');
+              }}
+              onCancel={() => {
+                setIsFirstTimeProfileSetup(false);
+                handleNavigate('myspace');
+              }}
+            />
+          ) : /* =========================================================
+              MOVIE & SHOW DETAILS + STREAMING PLAYER PAGE
+          ========================================================= */
+          activeView === 'details' && selectedMedia ? (
             <div key={`details-${selectedMedia.id}`}>
               <DetailsView
                 item={selectedMedia}
@@ -2688,9 +2792,20 @@ export default function App() {
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
+                    {catalog.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={handleSurpriseMe}
+                        className="h-9 px-3 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/60 text-xs font-bold text-[#FFB800] flex items-center gap-1.5 cursor-pointer transition-colors"
+                        title="Pick a random movie"
+                      >
+                        <Shuffle className="w-3.5 h-3.5" />
+                        <span>Surprise Me</span>
+                      </button>
+                    )}
+
                     {(searchQuery.trim() !== '' ||
                       selectedGenre !== 'All' ||
-                      searchTypeFilter !== 'all' ||
                       searchSortBy !== 'relevance') && (
                       <motion.button
                         initial={{ opacity: 0, scale: 0.9 }}
@@ -2709,44 +2824,6 @@ export default function App() {
                         Reset
                       </motion.button>
                     )}
-
-                    {/* Animated Content Type Segmented Filter */}
-                    <div className="inline-flex items-center p-1 rounded-xl bg-[#08090D] border border-[#292C35]">
-                      {(
-                        [
-                          { id: 'all', label: 'All' },
-                          { id: 'movie', label: 'Movies' },
-                          { id: 'series', label: 'TV Shows' },
-                        ] as const
-                      ).map((tab) => {
-                        const isTabActive = searchTypeFilter === tab.id;
-                        return (
-                          <button
-                            key={tab.id}
-                            type="button"
-                            onClick={() => setSearchTypeFilter(tab.id)}
-                            className={`relative px-3 py-1.5 rounded-lg text-xs font-bold cursor-pointer transition-colors ${
-                              isTabActive
-                                ? 'text-[#08090D]'
-                                : 'text-[#A7A9B4] hover:text-white'
-                            }`}
-                          >
-                            {isTabActive && (
-                              <motion.span
-                                layoutId="search-type-active-pill"
-                                transition={{
-                                  type: 'spring',
-                                  stiffness: 380,
-                                  damping: 30,
-                                }}
-                                className="absolute inset-0 rounded-lg bg-[#FFB800]"
-                              />
-                            )}
-                            <span className="relative z-10">{tab.label}</span>
-                          </button>
-                        );
-                      })}
-                    </div>
 
                     {/* Sort Order */}
                     <select
@@ -2778,7 +2855,7 @@ export default function App() {
                     type="search"
                     value={searchQuery}
                     onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search movies, series, actors, directors, or release year..."
+                    placeholder="Search movies, actors, directors, or release year..."
                     className="w-full h-12 sm:h-13 pl-12 pr-12 rounded-xl bg-[#08090D] border border-[#292C35] text-sm sm:text-base text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/15 transition-all"
                   />
                   <AnimatePresence>
@@ -3105,16 +3182,28 @@ export default function App() {
                 <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight">
                   Movies
                 </h1>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => openAdminStudio(null, 'catalog')}
-                    className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Add Movies</span>
-                  </button>
-                )}
+                <div className="flex flex-wrap items-center gap-2">
+                  {moviesList.length > 1 && (
+                    <button
+                      type="button"
+                      onClick={handleSurpriseMe}
+                      className="px-4 py-2 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/50 text-[#FFB800] text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <Shuffle className="w-4 h-4" />
+                      <span>Surprise Me</span>
+                    </button>
+                  )}
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openAdminStudio(null, 'catalog')}
+                      className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add Movies</span>
+                    </button>
+                  )}
+                </div>
               </div>
 
               {moviesList.length === 0 ? (
@@ -3219,44 +3308,73 @@ export default function App() {
             >
               {/* Profile Card */}
               <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
-                <div className="flex items-center gap-4">
-                  {currentUser?.photoURL ? (
-                    <img
-                      src={currentUser.photoURL}
-                      alt="Profile"
-                      className="w-16 h-16 rounded-2xl object-cover ring-2 ring-[#FFC400]/40"
-                    />
-                  ) : (
-                    <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#FFC400] to-[#FFD54A] text-[#08090D] font-black text-xl flex items-center justify-center shadow-lg">
-                      {currentUser?.email ? currentUser.email.slice(0, 2).toUpperCase() : 'ZF'}
-                    </div>
-                  )}
+                <div className="flex items-center gap-4 min-w-0">
+                  <div className="relative group shrink-0">
+                    {userAvatarUrl ? (
+                      <img
+                        src={userAvatarUrl}
+                        alt="Profile"
+                        referrerPolicy="no-referrer"
+                        className="w-16 h-16 rounded-2xl object-cover ring-2 ring-[#FFC400]/50 bg-[#08090D]"
+                      />
+                    ) : (
+                      <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-[#FFC400] to-[#FFD54A] text-[#08090D] font-black text-xl flex items-center justify-center shadow-lg">
+                        {userDisplayName.slice(0, 2).toUpperCase()}
+                      </div>
+                    )}
+                    {currentUser && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsFirstTimeProfileSetup(false);
+                          handleNavigate('profile_setup');
+                        }}
+                        title="Change Profile Picture"
+                        className="absolute -bottom-1 -right-1 w-7 h-7 rounded-lg bg-[#FFB800] hover:bg-[#FFD54A] text-[#08090D] flex items-center justify-center shadow-md cursor-pointer transition-transform active:scale-95"
+                      >
+                        <Camera className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
 
-                  <div className="space-y-1">
-                    <div className="flex items-center gap-2">
-                      <h2 className="text-xl sm:text-2xl font-bold text-white font-display">
-                        {currentUser?.displayName || currentUser?.email || 'Guest Viewer'}
+                  <div className="space-y-1 min-w-0">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <h2 className="text-xl sm:text-2xl font-bold text-white font-display truncate">
+                        {userDisplayName}
                       </h2>
                       {isAdmin && (
-                        <span className="px-2.5 py-0.5 rounded-full bg-[#FFC400] text-[#08090D] text-[10px] font-black uppercase tracking-wider">
+                        <span className="px-2.5 py-0.5 rounded-full bg-[#FFC400] text-[#08090D] text-[10px] font-black uppercase tracking-wider shrink-0">
                           Admin
+                        </span>
+                      )}
+                      {userProfile?.age && (
+                        <span className="px-2.5 py-0.5 rounded-full bg-[#08090D] border border-[#292C35] text-[11px] font-bold text-[#FFB800] shrink-0">
+                          Age {userProfile.age}
                         </span>
                       )}
                     </div>
                     {currentUser?.email && (
-                      <p className="text-xs text-[#A7A9B4] flex flex-wrap items-center gap-2">
-                        <span>{currentUser.email}</span>
-                        {currentUser?.uid && getCachedUserProfile(currentUser.uid)?.age && (
-                          <span className="px-2 py-0.5 rounded-full bg-[#1A1D27] border border-[#2B3142] text-[10px] font-semibold text-[#FFC400]">
-                            Age {getCachedUserProfile(currentUser.uid)?.age}
-                          </span>
-                        )}
+                      <p className="text-xs text-[#A7A9B4] truncate">
+                        {currentUser.email}
                       </p>
                     )}
+                    {userProfile?.favoriteGenres &&
+                      userProfile.favoriteGenres.length > 0 && (
+                        <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                          {userProfile.favoriteGenres.map((g) => (
+                            <span
+                              key={g}
+                              className="px-2 py-0.5 rounded-md bg-[#08090D] border border-[#292C35] text-[10px] font-semibold text-[#D4D6DF]"
+                            >
+                              {g}
+                            </span>
+                          ))}
+                        </div>
+                      )}
                   </div>
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
+                <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
                   {!currentUser ? (
                     <button
                       type="button"
@@ -3267,23 +3385,65 @@ export default function App() {
                       <span>Sign In</span>
                     </button>
                   ) : (
-                    <button
-                      type="button"
-                      onClick={handleLogout}
-                      className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-2 cursor-pointer"
-                    >
-                      <LogOut className="w-4 h-4 text-[#FFC400]" />
-                      <span>Sign Out</span>
-                    </button>
+                    <>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setIsFirstTimeProfileSetup(false);
+                          handleNavigate('profile_setup');
+                        }}
+                        className="px-4 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#FFC400]/40 text-[#FFC400] text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <Edit3 className="w-3.5 h-3.5" />
+                        <span>Edit Profile &amp; Photo</span>
+                      </button>
+
+                      <button
+                        type="button"
+                        onClick={handleLogout}
+                        className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-2 cursor-pointer"
+                      >
+                        <LogOut className="w-4 h-4 text-[#FFC400]" />
+                        <span>Sign Out</span>
+                      </button>
+                    </>
                   )}
+                </div>
+              </div>
+
+              {/* Viewer Activity Stats Bar */}
+              <div className="grid grid-cols-3 gap-3">
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4]">
+                    Watchlist
+                  </span>
+                  <span className="text-xl sm:text-2xl font-black text-white font-display mt-1 tabular-nums">
+                    {watchlistItems.length}
+                  </span>
+                </div>
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4]">
+                    In Progress
+                  </span>
+                  <span className="text-xl sm:text-2xl font-black text-[#FFB800] font-display mt-1 tabular-nums">
+                    {continueWatchingItems.length}
+                  </span>
+                </div>
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 flex flex-col justify-between">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4]">
+                    Watched
+                  </span>
+                  <span className="text-xl sm:text-2xl font-black text-emerald-400 font-display mt-1 tabular-nums">
+                    {completedItems.length}
+                  </span>
                 </div>
               </div>
 
               {/* ADMIN CONTROL HUB */}
               {isAdmin && (
-                <div className="rounded-2xl bg-gradient-to-br from-[#252832]/80 via-[#14161D] to-[#14161D] border border-[#FFC400]/30 p-6 sm:p-8 space-y-6">
+                <div className="rounded-2xl bg-gradient-to-br from-[#252832]/80 via-[#14161D] to-[#14161D] border border-[#FFC400]/30 p-5 sm:p-6">
                   <div className="flex flex-wrap items-center justify-between gap-3">
-                    <h3 className="text-lg font-bold text-white flex items-center gap-2">
+                    <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
                       <ShieldCheck className="w-5 h-5 text-[#FFC400]" />
                       <span>Admin Studio</span>
                     </h3>
@@ -3295,7 +3455,7 @@ export default function App() {
                         className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20"
                       >
                         <SlidersHorizontal className="w-4 h-4" />
-                        <span>Open Admin Studio</span>
+                        <span>Manage Catalog</span>
                       </button>
 
                       <button
@@ -3304,7 +3464,7 @@ export default function App() {
                         className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-[#FFC400] text-xs font-bold flex items-center gap-2 cursor-pointer"
                       >
                         <FileText className="w-4 h-4" />
-                        <span>Edit Legal &amp; Policies</span>
+                        <span>Legal Pages</span>
                       </button>
 
                       <button
@@ -3313,7 +3473,7 @@ export default function App() {
                         className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-2 cursor-pointer"
                       >
                         <Palette className="w-4 h-4 text-[#FFC400]" />
-                        <span>Visual UI Editor</span>
+                        <span>UI Editor</span>
                       </button>
 
                       {confirmingPurgeCatalog ? (
@@ -3326,9 +3486,7 @@ export default function App() {
                           >
                             <Trash2 className="w-3.5 h-3.5" />
                             <span>
-                              {isPurgingCatalog
-                                ? 'Purging...'
-                                : 'Confirm Purge All'}
+                              {isPurgingCatalog ? 'Clearing...' : 'Confirm Clear'}
                             </span>
                           </button>
                           <button
@@ -3344,45 +3502,36 @@ export default function App() {
                           type="button"
                           disabled={isPurgingCatalog}
                           onClick={() => setConfirmingPurgeCatalog(true)}
-                          className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-red-600/30 border border-[#292C35] hover:border-red-500/40 text-[#A7A9B4] hover:text-white text-xs font-bold flex items-center gap-2 cursor-pointer transition-all disabled:opacity-50"
-                          title="Remove every movie and TV show from the database"
+                          className="px-3.5 py-2 rounded-xl bg-[#252832] hover:bg-red-600/30 border border-[#292C35] hover:border-red-500/40 text-[#A7A9B4] hover:text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
                         >
-                          <Trash2 className="w-4 h-4 text-red-400" />
-                          <span>
-                            {isPurgingCatalog
-                              ? 'Purging...'
-                              : 'Remove Every Movie & TV Show'}
-                          </span>
+                          <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                          <span>Clear Catalog</span>
                         </button>
                       )}
                     </div>
                   </div>
-
-                  {/* Hero Cycle Status */}
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-xs">
-                    <div>
-                      <span className="text-[#747784] block">Hero Rotation Cycle</span>
-                      <span className="font-bold text-white">Daily 8 Movies (Batch #{activeHeroBatchNumber})</span>
-                    </div>
-                    <div>
-                      <span className="text-[#747784] block">Tenure Window</span>
-                      <span className="font-bold text-white">28 Hours per Spotlight Movie</span>
-                    </div>
-                    <div className="flex items-center justify-between">
-                      <div>
-                        <span className="text-[#747784] block">Next Daily Batch</span>
-                        <span className="font-bold text-[#FFC400]">{hoursUntilNextHeroBatch}h remaining</span>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={handleAdvanceHeroBatch}
-                        className="px-2.5 py-1 rounded-lg bg-[#252832] hover:bg-[#FFC400] text-white hover:text-[#08090D] text-[11px] font-bold cursor-pointer transition-colors"
-                      >
-                        Rotate Now
-                      </button>
-                    </div>
-                  </div>
                 </div>
+              )}
+
+              {/* Continue Watching Shelf */}
+              {continueWatchingItems.length > 0 && (
+                <ContinueWatchingRow
+                  items={continueWatchingItems}
+                  onSelectMedia={handleSelectMedia}
+                  onSeeAll={() => handleNavigate('movies')}
+                  onRemoveProgress={handleRemoveWatchProgress}
+                />
+              )}
+
+              {/* Personalized Picked For You Row */}
+              {recommendedForYouItems.length > 0 && (
+                <CarouselRow
+                  title="Picked For You"
+                  items={recommendedForYouItems}
+                  watchlistIds={activeWatchlistIds}
+                  onSelectMedia={handleSelectMedia}
+                  onToggleWatchlist={handleToggleWatchlist}
+                />
               )}
 
               {/* Saved Watchlist Shelf */}
@@ -3404,9 +3553,9 @@ export default function App() {
                 </div>
 
                 {watchlistItems.length === 0 ? (
-                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-md mx-auto space-y-3">
+                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-6 text-center max-w-md mx-auto space-y-3">
                     <p className="text-xs sm:text-sm text-[#A7A9B4]">
-                      No saved titles
+                      Your watchlist is empty.
                     </p>
                     <button
                       type="button"
@@ -3431,86 +3580,48 @@ export default function App() {
                 )}
               </div>
 
-              {/* Continue Watching Shelf */}
-              {continueWatchingItems.length > 0 && (
-                <ContinueWatchingRow
-                  items={continueWatchingItems}
+              {/* Watched Movies History Shelf */}
+              {completedItems.length > 0 && (
+                <CarouselRow
+                  title={`Watched History (${completedItems.length})`}
+                  items={completedItems}
+                  watchlistIds={activeWatchlistIds}
                   onSelectMedia={handleSelectMedia}
-                  onSeeAll={() => handleNavigate('movies_shows')}
-                  onRemoveProgress={handleRemoveWatchProgress}
+                  onToggleWatchlist={handleToggleWatchlist}
                 />
               )}
 
-              {/* App Preferences & Legal / Help */}
-              <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 space-y-4">
-                <h3 className="text-base font-bold text-white font-display">
-                  Preferences, Legal &amp; Contact
-                </h3>
-                <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-3">
-                  <button
-                    type="button"
-                    onClick={() => setAdsEnabled((prev) => !prev)}
-                    className="p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-left flex items-center justify-between cursor-pointer hover:border-[#FFC400]/50 transition-colors"
-                  >
-                    <div>
-                      <p className="text-xs font-bold text-white">Display Preferences</p>
-                      <p className="text-[11px] text-[#A7A9B4]">{adsEnabled ? 'Standard Mode' : 'Clean Mode'}</p>
-                    </div>
-                    <span className={`w-3 h-3 rounded-full shrink-0 ${adsEnabled ? 'bg-[#FFC400]' : 'bg-[#747784]'}`} />
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => handleNavigate('support')}
-                    className="p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-left flex items-center justify-between cursor-pointer hover:border-[#FFC400]/50 transition-colors"
-                  >
-                    <div className="min-w-0 pr-2">
-                      <p className="text-xs font-bold text-white">Support &amp; Contact</p>
-                      <p className="text-[11px] text-[#FFC400] truncate">
-                        {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
-                      </p>
-                    </div>
-                    <MessageSquare className="w-4 h-4 text-[#FFC400] shrink-0" />
-                  </button>
-
-                  <a
-                    href="/Terms-of-use"
-                    onClick={(e) => {
-                      e.preventDefault();
-                      openLegalPage('terms');
-                    }}
-                    className="p-4 rounded-xl bg-[#08090D] border border-[#292C35] text-left flex items-center justify-between cursor-pointer hover:border-[#FFC400]/50 transition-colors"
-                  >
-                    <div>
-                      <p className="text-xs font-bold text-white">Terms &amp; Privacy Policy</p>
-                      <p className="text-[11px] text-[#A7A9B4]">/Terms-of-use · /Privacy-policy</p>
-                    </div>
-                    <FileText className="w-4 h-4 text-[#FFC400] shrink-0" />
-                  </a>
-                </div>
-              </div>
-
-              {/* Account & Data Privacy Controls (Self-Service Account Deletion + Local Data Clear) */}
+              {/* Support, Legal & Account Controls */}
               <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 sm:p-6 space-y-4">
                 <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <h3 className="text-base font-bold text-white font-display flex items-center gap-2">
-                      <ShieldCheck className="w-4 h-4 text-[#FFC400]" />
-                      <span>Account &amp; Personal Data Controls</span>
-                    </h3>
-                    <p className="text-xs text-[#A7A9B4] mt-0.5">
-                      Manage your local browser watch data or permanently delete your ZappyFun account and cloud watchlist.
-                    </p>
+                  <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                      type="button"
+                      onClick={() => handleNavigate('support')}
+                      className="px-4 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <MessageSquare className="w-4 h-4 text-[#FFC400]" />
+                      <span>Support &amp; Help</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => openLegalPage('terms')}
+                      className="px-4 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors"
+                    >
+                      <FileText className="w-4 h-4 text-[#FFC400]" />
+                      <span>Terms &amp; Privacy</span>
+                    </button>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2.5">
                     <button
                       type="button"
                       onClick={handleClearLocalViewerDataOnly}
-                      className="px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#D4D6DF] hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
+                      className="px-3.5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#D4D6DF] hover:text-white flex items-center gap-1.5 cursor-pointer transition-colors"
                     >
                       <Trash2 className="w-3.5 h-3.5 text-[#FFC400]" />
-                      <span>Clear Local Watch History</span>
+                      <span>Clear Watch History</span>
                     </button>
 
                     {currentUser && !showDeleteAccountConfirm && (
@@ -3521,10 +3632,10 @@ export default function App() {
                           setDeleteAccountError(null);
                           setDeleteAccountSuccessBanner(null);
                         }}
-                        className="px-4 py-2 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 hover:text-red-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
+                        className="px-4 py-2.5 rounded-xl bg-red-500/15 hover:bg-red-500/25 border border-red-500/40 text-red-300 hover:text-red-200 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
                       >
                         <Trash2 className="w-3.5 h-3.5" />
-                        <span>Delete Account &amp; Data</span>
+                        <span>Delete Account</span>
                       </button>
                     )}
                   </div>
@@ -3536,83 +3647,36 @@ export default function App() {
                     className="rounded-xl bg-emerald-500/10 border border-emerald-500/40 p-4 flex items-start gap-3 text-xs text-emerald-200"
                   >
                     <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
-                    <div className="space-y-1">
-                      <p className="font-bold text-white">
-                        Account &amp; Personal Data Deleted
-                      </p>
-                      <p className="leading-relaxed">
-                        {deleteAccountSuccessBanner}
-                      </p>
-                    </div>
+                    <p className="leading-relaxed">
+                      {deleteAccountSuccessBanner}
+                    </p>
                   </div>
                 )}
 
                 {currentUser && showDeleteAccountConfirm && (
-                  <div className="rounded-xl bg-[#08090D] border border-red-500/40 p-4 sm:p-5 space-y-4">
+                  <div className="rounded-xl bg-[#08090D] border border-red-500/40 p-4 space-y-3">
                     <div className="flex items-start gap-3">
-                      <div className="w-9 h-9 rounded-xl bg-red-500/15 border border-red-500/30 text-red-400 flex items-center justify-center shrink-0">
-                        <AlertTriangle className="w-5 h-5" />
-                      </div>
-                      <div className="space-y-1.5">
+                      <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
                         <h4 className="text-sm font-bold text-white">
-                          Permanently Delete Your ZappyFun Account ({currentUser.email})?
+                          Delete account ({currentUser.email})?
                         </h4>
-                        <p className="text-xs text-[#A7A9B4] leading-relaxed">
-                          This action is permanent and cannot be undone. Please review what will be removed immediately and what requires a separate support request:
+                        <p className="text-xs text-[#A7A9B4]">
+                          This permanently deletes your account, saved watchlist, and watch history.
                         </p>
-                      </div>
-                    </div>
-
-                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
-                      <div className="rounded-xl bg-[#14161D] border border-[#292C35] p-3.5 space-y-1.5">
-                        <span className="font-bold text-emerald-400 block">
-                          Deleted Immediately by Self-Service:
-                        </span>
-                        <ul className="list-disc pl-4 space-y-1 text-[#D4D6DF]">
-                          <li>
-                            Your Cloud Firestore watchlist documents (<code className="text-[#FFC400]">/watchlists</code> where <code className="text-[#FFC400]">ownerId == {currentUser.uid.slice(0, 8)}…</code>).
-                          </li>
-                          <li>
-                            Your browser&apos;s local watchlist (<code className="text-[#FFC400]">zappy_watchlist_v2</code>), completed titles (<code className="text-[#FFC400]">zappy_completed_v1</code>), and Continue Watching progress (<code className="text-[#FFC400]">zappy_watch_progress_v2</code>).
-                          </li>
-                          <li>
-                            Your Firebase Authentication user account (<code className="text-[#FFC400]">{currentUser.email}</code>).
-                          </li>
-                        </ul>
-                      </div>
-
-                      <div className="rounded-xl bg-[#14161D] border border-[#292C35] p-3.5 space-y-1.5">
-                        <span className="font-bold text-[#FFC400] block">
-                          Requires Separate Deletion Request:
-                        </span>
-                        <ul className="list-disc pl-4 space-y-1 text-[#D4D6DF]">
-                          <li>
-                            Previously submitted support messages stored in <code className="text-[#FFC400]">/support_messages</code> or server memory cannot be self-deleted by client accounts (to protect other users&apos; support tickets). Email{' '}
-                            <a
-                              href={`mailto:${legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}`}
-                              className="text-[#FFC400] underline font-semibold"
-                            >
-                              {legalPages.contactEmail || OFFICIAL_CONTACT_EMAIL}
-                            </a>{' '}
-                            to request support ticket erasure.
-                          </li>
-                          <li>
-                            Third-party embedded player (<code className="text-[#FFC400]">vidly.pro</code>) browser storage is governed by that third-party domain and can be cleared via your browser settings.
-                          </li>
-                        </ul>
                       </div>
                     </div>
 
                     {deleteAccountError && (
                       <div
                         role="alert"
-                        className="rounded-xl bg-red-500/10 border border-red-500/40 p-3.5 text-xs text-red-200 leading-relaxed"
+                        className="rounded-xl bg-red-500/10 border border-red-500/40 p-3 text-xs text-red-200"
                       >
                         {deleteAccountError}
                       </div>
                     )}
 
-                    <div className="flex flex-wrap items-center justify-end gap-2.5 pt-1">
+                    <div className="flex flex-wrap items-center justify-end gap-2">
                       <button
                         type="button"
                         disabled={isDeletingAccount}
@@ -3639,19 +3703,14 @@ export default function App() {
                             type="button"
                             disabled={isDeletingAccount || !deleteAccountPassword}
                             onClick={() => handleDeleteAccountAndData(true)}
-                            className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-50"
+                            className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-50"
                           >
                             {isDeletingAccount ? (
-                              <>
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                <span>Verifying &amp; Deleting...</span>
-                              </>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
                             ) : (
-                              <>
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Confirm Password &amp; Delete</span>
-                              </>
+                              <Trash2 className="w-3.5 h-3.5" />
                             )}
+                            <span>Confirm &amp; Delete</span>
                           </button>
                         </div>
                       ) : (
@@ -3659,19 +3718,14 @@ export default function App() {
                           type="button"
                           disabled={isDeletingAccount}
                           onClick={() => handleDeleteAccountAndData(false)}
-                          className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-red-600/25 disabled:opacity-50"
+                          className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-2 cursor-pointer disabled:opacity-50"
                         >
                           {isDeletingAccount ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                              <span>Deleting Account &amp; Data...</span>
-                            </>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
                           ) : (
-                            <>
-                              <Trash2 className="w-3.5 h-3.5" />
-                              <span>Permanently Delete My Account</span>
-                            </>
+                            <Trash2 className="w-3.5 h-3.5" />
                           )}
+                          <span>Delete My Account</span>
                         </button>
                       )}
                     </div>
@@ -3968,8 +4022,19 @@ export default function App() {
                     <ContinueWatchingRow
                       items={continueWatchingItems}
                       onSelectMedia={handleSelectMedia}
-                      onSeeAll={() => handleNavigate('movies_shows')}
+                      onSeeAll={() => handleNavigate('movies')}
                       onRemoveProgress={handleRemoveWatchProgress}
+                    />
+                  )}
+
+                  {/* Personalized Picked For You Row */}
+                  {recommendedForYouItems.length > 0 && (
+                    <CarouselRow
+                      title="Picked For You"
+                      items={recommendedForYouItems}
+                      watchlistIds={activeWatchlistIds}
+                      onSelectMedia={handleSelectMedia}
+                      onToggleWatchlist={handleToggleWatchlist}
                     />
                   )}
 
@@ -4307,15 +4372,6 @@ export default function App() {
               >
                 Disclaimer &amp; Copyright Policy
               </a>
-              <span className="text-[#292C35]">|</span>
-              <button
-                type="button"
-                onClick={() => setShowSplash(true)}
-                className="hover:text-[#FFB800] transition-colors cursor-pointer flex items-center gap-1 text-[11px] text-[#A7A9B4]"
-                title="Replay ZappyFun Cinematic Opening"
-              >
-                <span>🎬 Replay Intro</span>
-              </button>
             </div>
           </div>
         </div>
@@ -4367,7 +4423,7 @@ export default function App() {
         onClose={() => setActiveModal(null)}
       />
 
-      {/* EMAIL / OTP AUTHENTICATION MODAL */}
+      {/* EMAIL / OTP / GITHUB AUTHENTICATION MODAL */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
@@ -4375,18 +4431,13 @@ export default function App() {
         onSuccess={() => {
           showToast('Signed in successfully!');
         }}
+        onGithubLoginSuccess={(user) => {
+          showToast(
+            `Signed in with GitHub as ${user.displayName || user.email || 'User'}`
+          );
+          handleGithubUserOnboarding(user);
+        }}
       />
-
-      {/* CINEMATIC STARTUP SPLASH SCREEN & ANIMATED LOGO REVEAL */}
-      <AnimatePresence>
-        {showSplash && (
-          <CinematicSplashScreen
-            isReady={isAppReady}
-            minDurationMs={7000}
-            onComplete={handleSplashComplete}
-          />
-        )}
-      </AnimatePresence>
     </div>
   );
 }

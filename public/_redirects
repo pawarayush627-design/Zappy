@@ -1,2 +1,2 @@
-/api/*  /.netlify/functions/api/:splat  200
-/*      /index.html                     200
+/api/*  https://ais-pre-h3khdspljkh5i75p226uvc-268382957607.asia-east1.run.app/api/:splat  200!
+/*      /index.html                                                                        200

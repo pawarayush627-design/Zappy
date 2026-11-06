@@ -186,9 +186,18 @@ export interface UserProfileData {
   email: string;
   displayName: string;
   age: number;
+  photoURL?: string;
+  favoriteGenres?: string[];
+  onboardingCompleted?: boolean;
+  updatedAtMs?: number;
 }
 
 export async function saveUserProfile(profile: UserProfileData): Promise<void> {
+  const cleanPhotoUrl = profile.photoURL ? profile.photoURL.trim() : '';
+  const cleanGenres = Array.isArray(profile.favoriteGenres)
+    ? profile.favoriteGenres.slice(0, 8)
+    : [];
+
   // 1. Cache in browser localStorage for immediate UI display
   try {
     if (typeof window !== 'undefined') {
@@ -199,43 +208,133 @@ export async function saveUserProfile(profile: UserProfileData): Promise<void> {
           email: profile.email,
           displayName: profile.displayName,
           age: profile.age,
+          photoURL: cleanPhotoUrl,
+          favoriteGenres: cleanGenres,
+          onboardingCompleted: true,
           savedAt: Date.now(),
         })
       );
+      if (profile.email) {
+        window.localStorage.setItem(
+          `zappy_known_email_${profile.email.trim().toLowerCase()}`,
+          '1'
+        );
+      }
     }
   } catch {
     // Ignore storage quota errors
   }
 
-  // 2. Persist to Cloud Firestore /users/{uid}
+  // 2. Update Firebase Auth user profile (only pass photoURL if HTTP/S <= 2000 chars)
+  try {
+    if (auth.currentUser && auth.currentUser.uid === profile.uid) {
+      const authUpdate: { displayName?: string; photoURL?: string } = {
+        displayName: profile.displayName.trim(),
+      };
+      if (
+        cleanPhotoUrl &&
+        cleanPhotoUrl.length <= 2000 &&
+        /^https?:\/\//i.test(cleanPhotoUrl)
+      ) {
+        authUpdate.photoURL = cleanPhotoUrl;
+      }
+      await updateProfile(auth.currentUser, authUpdate);
+    }
+  } catch (err) {
+    console.warn('Notice updating Firebase Auth profile:', err);
+  }
+
+  // 3. Persist to Cloud Firestore /users/{uid}
   try {
     const userRef = doc(db, 'users', profile.uid);
-    await setDoc(
-      userRef,
-      {
-        uid: profile.uid,
-        email: profile.email.trim().toLowerCase(),
-        displayName: profile.displayName.trim(),
-        age: Number(profile.age) || 18,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      },
-      { merge: true }
-    );
+    const payload: Record<string, any> = {
+      uid: profile.uid,
+      email: profile.email.trim().toLowerCase(),
+      displayName: profile.displayName.trim(),
+      age: Number(profile.age) || 18,
+      onboardingCompleted: true,
+      updatedAt: serverTimestamp(),
+    };
+    if (cleanPhotoUrl) {
+      payload.photoURL = cleanPhotoUrl;
+    }
+    if (cleanGenres.length > 0) {
+      payload.favoriteGenres = cleanGenres;
+    }
+    await setDoc(userRef, payload, { merge: true });
   } catch (err) {
     console.warn('Notice saving user profile to Cloud Firestore:', err);
   }
 }
 
-export function getCachedUserProfile(
-  uid: string
-): { displayName?: string; age?: number; email?: string } | null {
+export function getCachedUserProfile(uid: string): UserProfileData | null {
   try {
     if (typeof window !== 'undefined') {
       const raw = window.localStorage.getItem(`zappy_user_profile_${uid}`);
-      if (raw) return JSON.parse(raw);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') {
+          return {
+            uid: parsed.uid || uid,
+            email: parsed.email || '',
+            displayName: parsed.displayName || '',
+            age: Number(parsed.age) || 0,
+            photoURL: parsed.photoURL,
+            favoriteGenres: Array.isArray(parsed.favoriteGenres)
+              ? parsed.favoriteGenres
+              : undefined,
+            onboardingCompleted: parsed.onboardingCompleted,
+          };
+        }
+      }
     }
   } catch {}
+  return null;
+}
+
+export async function fetchUserProfileFromFirestore(
+  uid: string
+): Promise<UserProfileData | null> {
+  const cached = getCachedUserProfile(uid);
+  try {
+    const snap = await getDoc(doc(db, 'users', uid));
+    if (snap.exists()) {
+      const data = snap.data();
+      const loaded: UserProfileData = {
+        uid,
+        email: String(data.email || cached?.email || ''),
+        displayName: String(data.displayName || cached?.displayName || ''),
+        age: Number(data.age || cached?.age || 0),
+        photoURL: String(data.photoURL || cached?.photoURL || ''),
+        favoriteGenres: Array.isArray(data.favoriteGenres)
+          ? data.favoriteGenres
+          : cached?.favoriteGenres || [],
+        onboardingCompleted: Boolean(
+          data.onboardingCompleted ?? (data.displayName && data.age)
+        ),
+      };
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(
+          `zappy_user_profile_${uid}`,
+          JSON.stringify({ ...loaded, savedAt: Date.now() })
+        );
+      }
+      return loaded;
+    }
+  } catch {
+    // Fallback to cached profile if offline
+  }
+  if (cached && cached.displayName && cached.age) {
+    return {
+      uid,
+      email: cached.email || '',
+      displayName: cached.displayName,
+      age: cached.age,
+      photoURL: cached.photoURL || '',
+      favoriteGenres: cached.favoriteGenres || [],
+      onboardingCompleted: Boolean(cached.onboardingCompleted ?? true),
+    };
+  }
   return null;
 }
 
