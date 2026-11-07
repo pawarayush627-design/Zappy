@@ -674,7 +674,7 @@ export async function verifyOtpChallengeInFirestore(
     return { valid: true, registrationToken };
   } catch (err) {
     console.warn('Notice verifying OTP challenge in Firestore:', err);
-    return { valid: false, reason: 'Verification failed. Please try again.' };
+    return { valid: false, reason: 'INCONCLUSIVE' };
   }
 }
 

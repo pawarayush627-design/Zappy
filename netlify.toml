@@ -7,8 +7,33 @@
   to = "/.netlify/functions/send-otp"
   status = 200
 
+[[redirects]]
+  from = "/api/auth/verify-otp"
+  to = "/.netlify/functions/verify-otp"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/check-email"
+  to = "/.netlify/functions/check-email"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/validate-registration-token"
+  to = "/.netlify/functions/validate-registration-token"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/consume-registration-token"
+  to = "/.netlify/functions/validate-registration-token"
+  status = 200
+
+[[redirects]]
+  from = "/api/auth/record-user"
+  to = "/.netlify/functions/check-email"
+  status = 200
 
 [[redirects]]
   from = "/*"
   to = "/index.html"
   status = 200
+

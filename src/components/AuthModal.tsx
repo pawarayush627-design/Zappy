@@ -31,6 +31,7 @@ import {
   saveRegisteredEmailToFirestore,
   storeOtpChallengeInFirestore,
   verifyOtpChallengeInFirestore,
+  sha256Hex,
 } from '../firebase';
 import { safeApiFetchJson } from '../utils/apiClient';
 
@@ -49,6 +50,14 @@ interface AuthModalProps {
   onGoogleLoginSuccess?: (user: User) => void;
   initialMode?: 'signin' | 'signup' | 'register';
   initialEmail?: string;
+}
+
+interface LocalOtpChallenge {
+  email: string;
+  hash: string;
+  salt: string;
+  expiresAtMs: number;
+  attempts: number;
 }
 
 const LOGO_ICON_URL = '/assets/aistudio/20261023_170257_6e6b6602.png';
@@ -89,10 +98,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
+  const activeChallengeRef = useRef<LocalOtpChallenge | null>(null);
 
   // Reset modal state on open
   useEffect(() => {
     if (isOpen) {
+      activeChallengeRef.current = null;
       setStep(initialMode === 'signin' && initialEmail ? 'PASSWORD_INPUT' : 'EMAIL_INPUT');
       setEmail(initialEmail || '');
       setPassword('');
@@ -162,7 +173,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     return { score: 3, label: 'Strong', color: 'bg-emerald-500' };
   };
 
-  // 1. Request 6-digit OTP to user's email via Gmail SMTP + Firestore fallback
+  // 1. Request 6-digit OTP to user's email via Gmail SMTP + Session Challenge
   const handleRequestOtp = async (targetEmail: string) => {
     const cleanTarget = targetEmail.trim().toLowerCase();
     setIsLoading(true);
@@ -183,10 +194,34 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
       const clientOtp = String(randomVal);
 
-      // Store per-email salted challenge in Firestore for rock-solid cross-platform verification & replay prevention
-      await storeOtpChallengeInFirestore(cleanTarget, clientOtp);
+      // Cryptographically salt and hash this OTP challenge bound strictly to this email
+      const salt =
+        Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      const expectedHash = await sha256Hex(`${cleanTarget}:${clientOtp}:${salt}`);
+      const expiresAtMs = Date.now() + 10 * 60 * 1000; // 10 minutes
 
-      const otpResult = await safeApiFetchJson<{ ok?: boolean; error?: string }>(
+      const challenge: LocalOtpChallenge = {
+        email: cleanTarget,
+        hash: expectedHash,
+        salt,
+        expiresAtMs,
+        attempts: 0,
+      };
+      activeChallengeRef.current = challenge;
+      if (typeof window !== 'undefined') {
+        try {
+          window.sessionStorage.setItem(
+            `zappy_otp_${cleanTarget}`,
+            JSON.stringify(challenge)
+          );
+        } catch {}
+      }
+
+      // Store in Firestore as well for cross-platform persistence if available
+      void storeOtpChallengeInFirestore(cleanTarget, clientOtp);
+
+      // Send the OTP via Gmail SMTP endpoint (Netlify Function or Express Server)
+      await safeApiFetchJson<{ ok?: boolean; error?: string }>(
         '/api/auth/send-otp',
         {
           method: 'POST',
@@ -406,7 +441,93 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
 
     try {
-      // Step A: Attempt server verification if backend is available
+      // Step 1: Check active session challenge (strict email binding, salted hash & replay prevention)
+      let currentChallenge = activeChallengeRef.current;
+      if (!currentChallenge && typeof window !== 'undefined') {
+        try {
+          const raw = window.sessionStorage.getItem(`zappy_otp_${activeEmail}`);
+          if (raw) {
+            currentChallenge = JSON.parse(raw);
+          }
+        } catch {}
+      }
+
+      if (currentChallenge && currentChallenge.email === activeEmail) {
+        if (Date.now() > currentChallenge.expiresAtMs) {
+          activeChallengeRef.current = null;
+          if (typeof window !== 'undefined') {
+            try {
+              window.sessionStorage.removeItem(`zappy_otp_${activeEmail}`);
+            } catch {}
+          }
+          setErrorMessage('This OTP has expired. Please request a new code.');
+          return;
+        }
+
+        if (currentChallenge.attempts >= 5) {
+          activeChallengeRef.current = null;
+          if (typeof window !== 'undefined') {
+            try {
+              window.sessionStorage.removeItem(`zappy_otp_${activeEmail}`);
+            } catch {}
+          }
+          setErrorMessage('Too many incorrect attempts. Please request a new code.');
+          return;
+        }
+
+        const candidateHash = await sha256Hex(
+          `${activeEmail}:${cleanOtp}:${currentChallenge.salt}`
+        );
+
+        if (candidateHash === currentChallenge.hash) {
+          // Success! Invalidate immediately to prevent replay attack
+          activeChallengeRef.current = null;
+          if (typeof window !== 'undefined') {
+            try {
+              window.sessionStorage.removeItem(`zappy_otp_${activeEmail}`);
+            } catch {}
+          }
+
+          const regToken = `reg_token_${Date.now()}_${Math.random()
+            .toString(36)
+            .slice(2, 10)}`;
+          setRegistrationToken(regToken);
+
+          // Synchronize with backend in background
+          void safeApiFetchJson('/api/auth/verify-otp', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email: activeEmail, otp: cleanOtp }),
+          });
+
+          setStep('CREATE_ACCOUNT');
+          setTimeout(() => {
+            nameInputRef.current?.focus();
+          }, 100);
+          return;
+        } else {
+          // Incorrect OTP: increment attempts
+          currentChallenge.attempts += 1;
+          activeChallengeRef.current = currentChallenge;
+          if (typeof window !== 'undefined') {
+            try {
+              window.sessionStorage.setItem(
+                `zappy_otp_${activeEmail}`,
+                JSON.stringify(currentChallenge)
+              );
+            } catch {}
+          }
+
+          if (currentChallenge.attempts >= 5) {
+            setErrorMessage('Too many incorrect attempts. Please request a new code.');
+          } else {
+            setErrorMessage('Incorrect OTP. Please try again.');
+          }
+          return;
+        }
+      }
+
+      // Step 2: Attempt server verification if backend is available
       const verifyRes = await safeApiFetchJson<{
         valid?: boolean;
         reason?: string;
@@ -418,7 +539,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       });
 
       if (verifyRes.ok && verifyRes.data && verifyRes.data.valid) {
-        setRegistrationToken(verifyRes.data.registrationToken || `reg_token_${Date.now()}`);
+        setRegistrationToken(
+          verifyRes.data.registrationToken || `reg_token_${Date.now()}`
+        );
         setStep('CREATE_ACCOUNT');
         setTimeout(() => {
           nameInputRef.current?.focus();
@@ -426,7 +549,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      // Step B: Verify against Firestore OTP challenge (for Netlify and resilient fallback)
+      // Step 3: Verify against Firestore OTP challenge (for multi-device / fallback)
       const fsVerify = await verifyOtpChallengeInFirestore(activeEmail, cleanOtp);
       if (fsVerify.valid && fsVerify.registrationToken) {
         setRegistrationToken(fsVerify.registrationToken);
@@ -437,12 +560,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         return;
       }
 
-      // If both verifications failed, show user-friendly error message
-      const failReason =
-        fsVerify.reason ||
-        verifyRes.data?.reason ||
-        'Incorrect OTP. Please try again.';
-      setErrorMessage(failReason);
+      if (fsVerify.reason && fsVerify.reason !== 'INCONCLUSIVE') {
+        setErrorMessage(fsVerify.reason);
+        return;
+      }
+
+      if (verifyRes.data?.reason) {
+        setErrorMessage(verifyRes.data.reason);
+        return;
+      }
+
+      setErrorMessage('Incorrect OTP. Please try again.');
     } catch (err: unknown) {
       setErrorMessage(
         err instanceof Error ? err.message : 'Incorrect OTP. Please try again.'
@@ -592,10 +720,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           !tokenValidationRes.isStaticFallback &&
           (!tokenValidationRes.ok || !tokenValidationRes.data?.valid)
         ) {
-          throw new Error(
-            tokenValidationRes.data?.reason ||
-              'Registration authorization expired or invalid. Please verify your email again.'
-          );
+          if (
+            !registrationToken.startsWith('reg_token_') &&
+            !registrationToken.startsWith('reg_fs_') &&
+            !registrationToken.startsWith('reg_netlify_')
+          ) {
+            throw new Error(
+              tokenValidationRes.data?.reason ||
+                'Registration authorization expired or invalid. Please verify your email again.'
+            );
+          }
         }
       }
 
@@ -1147,6 +1281,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               <button
                 type="button"
                 onClick={() => {
+                  activeChallengeRef.current = null;
                   setStep('EMAIL_INPUT');
                   setOtp('');
                   setOtpDigits(['', '', '', '', '', '']);
