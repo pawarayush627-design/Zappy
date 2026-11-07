@@ -25,6 +25,7 @@ export interface LegalPagesConfig {
 }
 
 export const OFFICIAL_CONTACT_EMAIL = 'ContactZappyFun@gmail.com';
+export const OFFICIAL_WEBSITE_URL = 'https://zappyfun.netlify.app/';
 
 export const LEGAL_ROUTE_SLUGS: Record<LegalSectionKey, string> = {
   terms: '/Terms-of-use',
@@ -48,18 +49,20 @@ export const CODE_LEGAL_PAGES: LegalPagesConfig = {
     slug: '/About',
     body: `1. Platform Overview
 ZappyFun is a modern web-based movie and television series catalog discovery and streaming interface built with React, TypeScript, Express, Firebase Authentication, and Cloud Firestore. Our goal is to provide a clean, fast, and responsive viewing experience across desktops, laptops, tablets, smartphones, and smart TV browsers.
+Official Website: https://zappyfun.netlify.app/
 
 2. Core Capabilities & Features
 • Curated Movie & TV Series Discovery: Browse trending releases, top-rated classics, and genre-specific collections with detailed cast, director, release year, maturity rating, and runtime metadata.
 • Multi-Server Third-Party Embed Playback: Watch movies and series episodes through integrated third-party embedded video players with instant server switching and theater mode controls.
-• Personal Cloud Watchlist: Sign in with your registered email and password (with 4-digit email OTP verification) or via GitHub OAuth using Firebase Authentication to save and synchronize your personal Watchlist across devices.
+• Personal Cloud Watchlist: Sign in with your registered email and password (with 6-digit email OTP verification) or via Google and GitHub OAuth using Firebase Authentication to save and synchronize your personal Watchlist across devices.
 • Device-Local Continue Watching: Automatically resume where you left off using privacy-conscious local browser storage on your active device.
 • Direct Customer Support & Transparency: Reach the ZappyFun administration team directly through our Support center or via our official contact email.
 
 3. Metadata & Attribution
 Catalog artwork, synopses, release dates, ratings, and cast/director credits displayed on ZappyFun are aggregated from public entertainment metadata sources including JustWatch, The Movie Database (TMDB), IMDb Suggestion API, TVMaze, and Wikipedia/Wikimedia Commons.
 
-4. Official Contact Information
+4. Official Contact & Platform Links
+Official Website: https://zappyfun.netlify.app/
 For general inquiries, feedback, partnership questions, or technical support, please contact us at:
 Email: ContactZappyFun@gmail.com`,
   },
@@ -69,17 +72,18 @@ Email: ContactZappyFun@gmail.com`,
     slug: '/Terms-of-use',
     body: `Effective Date: October 2026
 Platform Name: ZappyFun
+Official Website: https://zappyfun.netlify.app/
 Official Contact Email: ContactZappyFun@gmail.com
 
 1. Acceptance of Terms
-Welcome to ZappyFun. By accessing, browsing, or using the ZappyFun website, web application, or any associated services (collectively, the "Service"), you acknowledge that you have read, understood, and agree to be bound by these Terms of Use ("Terms") and our Privacy Policy. If you do not agree to these Terms, please discontinue use of the Service immediately.
+Welcome to ZappyFun. By accessing, browsing, or using the ZappyFun website (https://zappyfun.netlify.app/), web application, or any associated services (collectively, the "Service"), you acknowledge that you have read, understood, and agree to be bound by these Terms of Use ("Terms") and our Privacy Policy. If you do not agree to these Terms, please discontinue use of the Service immediately.
 
 2. Nature of the Service & Third-Party Playback
-ZappyFun operates as an entertainment metadata index and catalog discovery interface. Video playback within the Service is provided via embedded third-party iframe players (such as vidly.pro). ZappyFun does not host, upload, store, transcode, or distribute media files on its own servers. ZappyFun makes no representation or warranty regarding the availability, quality, or licensing status of streams served by external third-party embed providers.
+ZappyFun operates as an entertainment metadata index and catalog discovery interface accessible at https://zappyfun.netlify.app/. Video playback within the Service is provided via embedded third-party iframe players (such as vidly.pro). ZappyFun does not host, upload, store, transcode, or distribute media files on its own servers. ZappyFun makes no representation or warranty regarding the availability, quality, or licensing status of streams served by external third-party embed providers.
 
 3. User Accounts & Authentication
 • Guest Browsing: You may browse the catalog, search titles, and view public pages without registering for an account.
-• Authentication Methods: To synchronize your personal Watchlist across sessions and devices, you may register or sign in using your email and password (verified via a secure 4-digit OTP code sent from ZappyFun's official email via Gmail SMTP) or authenticate seamlessly via GitHub OAuth through Firebase Authentication.
+• Authentication Methods: To synchronize your personal Watchlist across sessions and devices, you may register or sign in using your email and password (verified via a secure 6-digit OTP code sent from ZappyFun's official email via Gmail SMTP) or authenticate seamlessly via Google and GitHub OAuth through Firebase Authentication.
 • Account Responsibility: You are responsible for maintaining the security of your account credentials and for all activity that occurs under your signed-in session.
 • Account Termination & Self-Service Deletion: You may sign out at any time or permanently delete your ZappyFun account and associated Cloud Firestore watchlist records through the "My Space" section of the application.
 
@@ -88,7 +92,7 @@ ZappyFun operates as an entertainment metadata index and catalog discovery inter
 • Device-Local Progress: Your "Continue Watching" playback progress and completed-title markers are stored locally in your browser's localStorage on your current device only. Clearing your browser data will reset local playback progress.
 
 5. Acceptable Use Conduct
-When using ZappyFun, you agree not to:
+When using ZappyFun (https://zappyfun.netlify.app/), you agree not to:
 • Attempt to bypass, disable, or interfere with security-related features of the Service or Cloud Firestore security rules.
 • Use automated scrapers, bots, or scripts to flood the server or abuse API endpoints.
 • Submit false, abusive, defamatory, or unlawful content through the Support & Contact form.
@@ -101,9 +105,10 @@ Displayed maturity classifications (such as G, PG, PG-13, TV-PG, or TV-14) are i
 The Service is provided on an "AS IS" and "AS AVAILABLE" basis without warranties of any kind, whether express or implied. To the fullest extent permitted by applicable law, ZappyFun and its operators shall not be liable for any indirect, incidental, special, consequential, or punitive damages arising out of your access to or use of the Service or any third-party embedded players.
 
 8. Changes to These Terms
-We may update these Terms of Use from time to time to reflect changes in our features, technology, or legal requirements. Updated Terms will be posted on this page (/Terms-of-use) with a revised effective date.
+We may update these Terms of Use from time to time to reflect changes in our features, technology, or legal requirements. Updated Terms will be posted on this page (/Terms-of-use) on https://zappyfun.netlify.app/ with a revised effective date.
 
 9. Contact Us
+Official Website: https://zappyfun.netlify.app/
 If you have any questions or concerns regarding these Terms of Use, please contact us at ContactZappyFun@gmail.com.`,
   },
   privacy: {
@@ -111,17 +116,19 @@ If you have any questions or concerns regarding these Terms of Use, please conta
     subtitle: 'Effective Date: October 2026 · How ZappyFun collects, uses, stores, and protects your information.',
     slug: '/Privacy-policy',
     body: `Effective Date: October 2026
+Platform Name: ZappyFun
+Official Website: https://zappyfun.netlify.app/
 Official Privacy & Grievance Contact: ContactZappyFun@gmail.com
 
 1. Introduction
-ZappyFun respects your privacy and is committed to complete transparency regarding the personal data and browser storage processed when you use our web application. This Privacy Policy explains what information is collected, how it is stored, how third-party services interact with your browser, and how you can delete your account and data at any time.
+ZappyFun (https://zappyfun.netlify.app/) respects your privacy and is committed to complete transparency regarding the personal data and browser storage processed when you use our web application. This Privacy Policy explains what information is collected, how it is stored, how third-party services interact with your browser, and how you can delete your account and data at any time.
 
 2. Information We Collect & Process
 A. User Account Authentication Data (Optional)
-When you register or sign in using email and password (with 4-digit email verification) or via Sign in with GitHub through Firebase Authentication, the application processes your:
+When you register or sign in using email and password (with 6-digit email verification) or via Sign in with Google or GitHub through Firebase Authentication, the application processes your:
 • Unique Firebase User Identifier (UID)
 • Email address and email-verification status
-• Public profile display name and avatar (when authenticating via GitHub)
+• Public profile display name and avatar (when authenticating via Google or GitHub)
 This information is used solely to authenticate your session, display your profile in "My Space", and secure your personal Watchlist in Cloud Firestore.
 
 B. Cloud Firestore Watchlist Records
@@ -152,7 +159,7 @@ ZappyFun does not use invasive first-party tracking cookies. Instead, we use sta
 • Metadata & Artwork CDNs: Your browser may fetch movie posters, backdrops, cast portraits, and fonts directly from JustWatch (images.justwatch.com), TMDB (image.tmdb.org), Wikimedia Commons, TVMaze, and Google Fonts.
 
 5. Self-Service Account & Data Deletion
-You have full control over your data on ZappyFun:
+You have full control over your data on ZappyFun (https://zappyfun.netlify.app/):
 • Clear Local Data: In "My Space", click "Clear Local Watch History" at any time to wipe your browser's local watch progress, completed markers, and local watchlist cache.
 • Permanent Account & Cloud Data Deletion: Signed-in users can click "Delete Account & Data" in "My Space" to permanently delete all of their Cloud Firestore /watchlists documents, clear their local browser watch history, and permanently delete their Firebase Authentication user record.
 • Support Ticket Erasure: To request deletion of a previously submitted support message, please email ContactZappyFun@gmail.com from the email address used in your ticket.
@@ -161,6 +168,7 @@ You have full control over your data on ZappyFun:
 We implement industry-standard security controls, including HTTPS encryption in transit, Firebase Authentication token verification on administrative API endpoints, and strict Firestore Security Rules that block unauthorized access to user watchlists and support messages.
 
 7. Contact Us
+Official Website: https://zappyfun.netlify.app/
 For any privacy-related questions, data access requests, or grievance inquiries, please contact us at ContactZappyFun@gmail.com.`,
   },
   disclaimer: {
@@ -168,10 +176,12 @@ For any privacy-related questions, data access requests, or grievance inquiries,
     subtitle: 'Effective Date: October 2026 · Third-party streaming embeds, DMCA takedown procedures, and copyright disclosures.',
     slug: '/Disclaimer-and-copyright-policy',
     body: `Effective Date: October 2026
+Platform Name: ZappyFun
+Official Website: https://zappyfun.netlify.app/
 Designated Copyright & Takedown Contact: ContactZappyFun@gmail.com
 
 1. No Media Hosting or File Storage
-ZappyFun is a catalog indexing and metadata discovery web application. ZappyFun does not host, upload, store, transcode, or control any video files or media streams on its own servers or cloud infrastructure. All video playback functionality is provided exclusively via client-side embeds pointing to third-party external streaming providers (such as vidly.pro).
+ZappyFun (https://zappyfun.netlify.app/) is a catalog indexing and metadata discovery web application. ZappyFun does not host, upload, store, transcode, or control any video files or media streams on its own servers or cloud infrastructure. All video playback functionality is provided exclusively via client-side embeds pointing to third-party external streaming providers (such as vidly.pro).
 
 2. No Claim of Stream Licensing or Endorsement
 ZappyFun does not claim ownership of, nor does it represent or warrant that it holds distribution licenses for, third-party embedded video streams. The presence of an embedded player or a metadata listing on ZappyFun does not constitute a representation of verified copyright authorization. Users access third-party embedded streams at their own discretion.
@@ -184,7 +194,7 @@ ZappyFun respects the intellectual property rights of content creators and copyr
 
 To submit a copyright removal or takedown notice, please send a written communication to ContactZappyFun@gmail.com containing:
 • Identification of the copyrighted work claimed to have been infringed.
-• The exact title and ZappyFun URL (or catalog ID) of the listing you wish to have removed from our index.
+• The exact title and ZappyFun URL (https://zappyfun.netlify.app/) or catalog ID of the listing you wish to have removed from our index.
 • Your contact information, including your full name, organization, mailing address, telephone number, and email address.
 • A statement that you have a good-faith belief that the disputed reference is not authorized by the copyright owner, its agent, or the law.
 • A statement that the information in your notice is accurate and, under penalty of perjury, that you are the copyright owner or authorized to act on the copyright owner's behalf.
@@ -193,6 +203,7 @@ To submit a copyright removal or takedown notice, please send a written communic
 The Service may contain links or embeds pointing to external websites and third-party services that are not provided or maintained by ZappyFun. ZappyFun does not guarantee the accuracy, relevance, timeliness, or completeness of any information or media on these external websites.
 
 6. Contact Information
+Official Website: https://zappyfun.netlify.app/
 All legal notices, copyright inquiries, and takedown requests should be directed to:
 Email: ContactZappyFun@gmail.com`,
   },
@@ -201,10 +212,12 @@ Email: ContactZappyFun@gmail.com`,
     subtitle: 'Effective Date: October 2026 · Browser localStorage keys, third-party embeds, and display preferences.',
     slug: '/Cookie-policy',
     body: `Effective Date: October 2026
+Platform Name: ZappyFun
+Official Website: https://zappyfun.netlify.app/
 Official Contact: ContactZappyFun@gmail.com
 
 1. First-Party Browser Storage (localStorage)
-ZappyFun does not set intrusive first-party advertising or cross-site tracking cookies. Instead, the application relies on standard HTML5 browser localStorage on your device to remember your preferences and playback progress:
+ZappyFun (https://zappyfun.netlify.app/) does not set intrusive first-party advertising or cross-site tracking cookies. Instead, the application relies on standard HTML5 browser localStorage on your device to remember your preferences and playback progress:
 • zappy_watch_progress_v2: Saves your device-local "Continue Watching" episode and timestamp progress.
 • zappy_watchlist_v2: Caches your saved Watchlist items for instant loading.
 • zappy_completed_v1: Remembers titles you have finished watching so they are automatically cleared from your active Watchlist.
@@ -212,11 +225,11 @@ ZappyFun does not set intrusive first-party advertising or cross-site tracking c
 • zappy_legal_pages_v2: Caches the latest legal disclosures and contact details.
 
 2. Third-Party Authentication & Embedded Player Storage
-• Firebase Authentication (Email & Password): When you sign in, Firebase uses browser storage (IndexedDB / localStorage) to maintain your authenticated session token securely.
+• Firebase Authentication (Email & Password, Google, GitHub): When you sign in, Firebase uses browser storage (IndexedDB / localStorage) to maintain your authenticated session token securely.
 • Third-Party Video Embeds (vidly.pro): When you launch the embedded video player, the third-party iframe operates within its own domain context and may set cookies or local storage governed by its own privacy and cookie policies.
 
 3. Managing or Clearing Your Browser Storage
-You can clear ZappyFun's viewer storage at any time by visiting "My Space" and clicking "Clear Local Watch History", or by clearing site data in your web browser settings.`,
+You can clear ZappyFun's viewer storage at any time by visiting "My Space" on https://zappyfun.netlify.app/ and clicking "Clear Local Watch History", or by clearing site data in your web browser settings.`,
   },
 };
 

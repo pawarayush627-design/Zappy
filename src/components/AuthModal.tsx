@@ -66,6 +66,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [confirmPassword, setConfirmPassword] = useState('');
   const [otp, setOtp] = useState('');
   const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
+  const [otpTargetEmail, setOtpTargetEmail] = useState('');
   const [fullName, setFullName] = useState('');
   const [age, setAge] = useState('');
   const [registrationToken, setRegistrationToken] = useState('');
@@ -94,6 +95,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setConfirmPassword('');
       setOtp('');
       setOtpDigits(['', '', '', '', '', '']);
+      setOtpTargetEmail('');
       setFullName('');
       setAge('');
       setRegistrationToken('');
@@ -158,9 +160,12 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   // 1. Request 6-digit OTP to user's email via Gmail SMTP (with Netlify static fallback)
   const handleRequestOtp = async (targetEmail: string) => {
+    const cleanTarget = targetEmail.trim().toLowerCase();
     setIsLoading(true);
     setErrorMessage('');
     setInfoMessage('');
+    setOtpTargetEmail(cleanTarget);
+    setEmail(cleanTarget);
 
     try {
       const otpResult = await safeApiFetchJson<{ ok?: boolean; error?: string }>(
@@ -168,7 +173,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: targetEmail.trim() }),
+          body: JSON.stringify({ email: cleanTarget }),
         }
       );
 
@@ -252,17 +257,19 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
       // Step B: Query Firebase Auth client SDK if server check was inconclusive
       if (isRegistered === null) {
-        const methods = await checkEmailSignInMethods(cleanEmail);
-        if (methods.length > 0) {
-          isRegistered = true;
-          if (methods.includes('github.com') && !methods.includes('password')) {
-            isGithubOnly = true;
+        try {
+          const methods = await checkEmailSignInMethods(cleanEmail);
+          if (methods.length > 0) {
+            isRegistered = true;
+            if (methods.includes('github.com') && !methods.includes('password')) {
+              isGithubOnly = true;
+            }
+          } else {
+            // Unregistered email: always proceed to OTP verification / registration
+            isRegistered = false;
           }
-        } else if (checkRes.isStaticFallback) {
-          // On static hosting when enumeration protection is active, default to password screen
-          // with a 1-click option to create a new account if they don't have one yet.
-          isRegistered = true;
-        } else {
+        } catch {
+          // If methods query fails, treat as unregistered new user so OTP is sent
           isRegistered = false;
         }
       }
@@ -351,6 +358,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setErrorMessage('');
     setInfoMessage('');
 
+    const activeEmail = (otpTargetEmail || email).trim().toLowerCase();
+    if (
+      otpTargetEmail &&
+      email.trim().toLowerCase() !== otpTargetEmail.trim().toLowerCase()
+    ) {
+      setErrorMessage(
+        'Email address has changed. Please request a new verification code.'
+      );
+      return;
+    }
+
     const cleanOtp = (directCode || otp || otpDigits.join('')).trim();
     if (cleanOtp.length !== 6 || !/^\d{6}$/.test(cleanOtp)) {
       setErrorMessage('Please enter all 6 digits of the verification code.');
@@ -372,7 +390,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }>('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: email.trim(), otp: cleanOtp }),
+        body: JSON.stringify({ email: activeEmail, otp: cleanOtp }),
       });
 
       if (verifyRes.isStaticFallback) {
@@ -1082,6 +1100,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 type="button"
                 onClick={() => {
                   setStep('EMAIL_INPUT');
+                  setOtp('');
+                  setOtpDigits(['', '', '', '', '', '']);
+                  setOtpTargetEmail('');
                   setErrorMessage('');
                   setInfoMessage('');
                 }}
@@ -1109,7 +1130,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   type="text"
                   value={fullName}
                   onChange={(e) => setFullName(e.target.value)}
-                  placeholder="e.g. Ayush Pawar"
+                  placeholder="e.g. XYZ ABC"
                   required
                   autoFocus
                   className="w-full pl-10 pr-4 py-2.5 bg-[#0D0B12] border border-[#231E30] rounded-xl text-sm text-white placeholder-[#7A7686] focus:outline-none focus:border-[#FF5A36]"

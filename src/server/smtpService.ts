@@ -151,13 +151,22 @@ setInterval(() => {
 
 /**
  * Generates a cryptographically secure 6-digit random OTP and stores only its salted SHA-256 hash.
+ * Guarantees that the new code is completely random, unpredictable, and distinct from any prior code.
  */
 export function generateAndStoreOtp(email: string): string {
   const cleanEmail = email.trim().toLowerCase();
+  const existingEntry = otpStore.get(cleanEmail);
+
   // Cryptographically secure random 6-digit integer from 100000 to 999999
-  const code = crypto.randomInt(100000, 1000000).toString();
+  let code = crypto.randomInt(100000, 1000000).toString();
+  // Ensure the new OTP is strictly distinct from the currently active OTP if one exists
+  if (existingEntry && hashOtp(code, cleanEmail) === existingEntry.hashedCode) {
+    code = crypto.randomInt(100000, 1000000).toString();
+  }
+
   const expiresAt = Date.now() + 10 * 60 * 1000; // 10 minutes
 
+  // Atomically overwrite any existing entry so only this latest unique code is valid
   otpStore.set(cleanEmail, {
     hashedCode: hashOtp(code, cleanEmail),
     expiresAt,

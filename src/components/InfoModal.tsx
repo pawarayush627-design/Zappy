@@ -19,6 +19,7 @@ import {
 import {
   CODE_LEGAL_PAGES,
   OFFICIAL_CONTACT_EMAIL,
+  OFFICIAL_WEBSITE_URL,
   LEGAL_ROUTE_SLUGS,
   normalizeLegalPagesConfig,
   resolveLegalSectionFromLocation,
@@ -32,6 +33,7 @@ export {
   CODE_LEGAL_PAGES,
   CODE_LEGAL_PAGES as DEFAULT_LEGAL_PAGES,
   OFFICIAL_CONTACT_EMAIL,
+  OFFICIAL_WEBSITE_URL,
   LEGAL_ROUTE_SLUGS,
   normalizeLegalPagesConfig,
   resolveLegalSectionFromLocation,
