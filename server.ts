@@ -2127,7 +2127,7 @@ async function startServer() {
     }
   });
 
-  // 2. Request cryptographically secure 6-digit OTP for email verification
+  // 2. Request cryptographically secure 6-digit OTP for email verification or password reset
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
       const email = req.body?.email;
@@ -2139,8 +2139,10 @@ async function startServer() {
       const clientOtp = typeof req.body?.otp === 'string' && /^\d{6}$/.test(req.body.otp.trim())
         ? req.body.otp.trim()
         : undefined;
+      const purpose = req.body?.purpose === 'reset' ? 'reset' : 'signup';
+      const resetUrl = typeof req.body?.resetUrl === 'string' ? req.body.resetUrl.trim() : undefined;
       const otp = generateAndStoreOtp(cleanEmail, clientOtp);
-      const result = await sendOtpEmail(cleanEmail, otp);
+      const result = await sendOtpEmail(cleanEmail, otp, { purpose, resetUrl });
       if (!result.success) {
         res.status(500).json({
           ok: false,
@@ -2152,7 +2154,7 @@ async function startServer() {
       }
       res.json({
         ok: true,
-        message: `6-digit verification code sent to ${cleanEmail}.`,
+        message: `6-digit ${purpose === 'reset' ? 'password reset' : 'verification'} code sent to ${cleanEmail}.`,
       });
     } catch (err) {
       res.status(500).json({

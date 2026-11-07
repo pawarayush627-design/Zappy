@@ -8,7 +8,6 @@ const REGISTERED_FILE = path.resolve(__dirname, '../../registered-emails.json');
 
 const INITIAL_EMAILS = [
   'pawarayushai1@gmail.com',
-  'contactzappyfun@gmail.com',
   'admin@zappy.app',
 ];
 

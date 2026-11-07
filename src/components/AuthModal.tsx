@@ -31,6 +31,7 @@ import {
   saveRegisteredEmailToFirestore,
   storeOtpChallengeInFirestore,
   verifyOtpChallengeInFirestore,
+  resetUserPasswordWithVerifiedOtp,
   sha256Hex,
 } from '../firebase';
 import { safeApiFetchJson } from '../utils/apiClient';
@@ -40,7 +41,9 @@ export type AuthStep =
   | 'PASSWORD_INPUT'
   | 'OTP_VERIFICATION'
   | 'CREATE_ACCOUNT'
-  | 'FORGOT_PASSWORD';
+  | 'FORGOT_PASSWORD'
+  | 'RESET_OTP_VERIFICATION'
+  | 'RESET_NEW_PASSWORD';
 
 interface AuthModalProps {
   isOpen: boolean;
@@ -100,12 +103,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const passwordInputRef = useRef<HTMLInputElement>(null);
   const activeChallengeRef = useRef<LocalOtpChallenge | null>(null);
 
-  // Reset modal state on open
+  // Reset modal state on open (and support direct password reset URL parameters)
   useEffect(() => {
     if (isOpen) {
       activeChallengeRef.current = null;
-      setStep(initialMode === 'signin' && initialEmail ? 'PASSWORD_INPUT' : 'EMAIL_INPUT');
-      setEmail(initialEmail || '');
       setPassword('');
       setConfirmPassword('');
       setOtp('');
@@ -120,6 +121,30 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setOtpExpirySeconds(600);
       setIsGithubLoading(false);
       setIsGoogleLoading(false);
+
+      if (typeof window !== 'undefined') {
+        try {
+          const params = new URLSearchParams(window.location.search);
+          const resetEmailParam = (params.get('resetEmail') || '').trim().toLowerCase();
+          const resetCodeParam = (params.get('resetCode') || '').trim();
+          if (resetEmailParam && resetEmailParam.includes('@')) {
+            setEmail(resetEmailParam);
+            setOtpTargetEmail(resetEmailParam);
+            if (/^\d{6}$/.test(resetCodeParam)) {
+              setOtp(resetCodeParam);
+              setOtpDigits(resetCodeParam.split(''));
+              setStep('RESET_NEW_PASSWORD');
+              setInfoMessage('Email reset link verified. Enter your new password below.');
+              return;
+            }
+            setStep('FORGOT_PASSWORD');
+            return;
+          }
+        } catch {}
+      }
+
+      setStep(initialMode === 'signin' && initialEmail ? 'PASSWORD_INPUT' : 'EMAIL_INPUT');
+      setEmail(initialEmail || '');
     }
   }, [isOpen, initialEmail, initialMode]);
 
@@ -134,7 +159,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
   // 10-minute OTP countdown timer
   useEffect(() => {
-    if (step !== 'OTP_VERIFICATION') return;
+    if (step !== 'OTP_VERIFICATION' && step !== 'RESET_OTP_VERIFICATION') return;
     const timer = setInterval(() => {
       setOtpExpirySeconds((prev) => {
         if (prev <= 1) {
@@ -602,7 +627,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       const nextFocus = Math.min(index + chars.length, 5);
       otpInputRefs.current[nextFocus]?.focus();
       if (combined.length === 6) {
-        void handleVerifyOtp(undefined, combined);
+        if (step === 'RESET_OTP_VERIFICATION') {
+          void handleVerifyResetOtp(undefined, combined);
+        } else {
+          void handleVerifyOtp(undefined, combined);
+        }
       }
       return;
     }
@@ -659,7 +688,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     const focusIndex = Math.min(pasted.length, 5);
     otpInputRefs.current[focusIndex]?.focus();
     if (combined.length === 6) {
-      void handleVerifyOtp(undefined, combined);
+      if (step === 'RESET_OTP_VERIFICATION') {
+        void handleVerifyResetOtp(undefined, combined);
+      } else {
+        void handleVerifyOtp(undefined, combined);
+      }
     }
   };
 
@@ -783,6 +816,32 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     } catch (err: unknown) {
       const errObj = err as { code?: string; message?: string };
       if (errObj.code === 'auth/email-already-in-use') {
+        try {
+          const fallbackCred = await resetUserPasswordWithVerifiedOtp(cleanEmail, password);
+          if (fallbackCred.user) {
+            try {
+              await updateUserProfile(fallbackCred.user, { displayName: cleanName });
+            } catch {}
+            await saveUserProfile({
+              uid: fallbackCred.user.uid,
+              email: cleanEmail,
+              displayName: cleanName,
+              age: numAge,
+              onboardingCompleted: true,
+            });
+            await saveRegisteredEmailToFirestore(cleanEmail, {
+              displayName: cleanName,
+              uid: fallbackCred.user.uid,
+            });
+            if (typeof window !== 'undefined') {
+              window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
+            }
+            onSuccess?.();
+            onClose();
+            return;
+          }
+        } catch {}
+
         await saveRegisteredEmailToFirestore(cleanEmail);
         if (typeof window !== 'undefined') {
           window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
@@ -801,10 +860,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  // 6. Handle Forgot Password
-  const handleForgotPassword = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!validateEmail(email)) {
+  // 6. Handle Forgot Password (sends instant 6-digit reset code + link via verified Gmail SMTP AND Firebase Reset)
+  const handleRequestPasswordResetOtp = async (targetEmail: string) => {
+    const cleanTarget = targetEmail.trim().toLowerCase();
+    if (!validateEmail(cleanTarget)) {
       setErrorMessage('Please enter a valid email address.');
       return;
     }
@@ -812,15 +871,234 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setIsLoading(true);
     setErrorMessage('');
     setInfoMessage('');
+    setOtpTargetEmail(cleanTarget);
+    setEmail(cleanTarget);
 
     try {
-      await sendPasswordReset(email.trim());
-      setInfoMessage(
-        `Password reset link sent to ${email.trim()}. Check your inbox.`
+      let randomVal = 0;
+      if (typeof window !== 'undefined' && window.crypto && window.crypto.getRandomValues) {
+        const arr = new Uint32Array(1);
+        window.crypto.getRandomValues(arr);
+        randomVal = 100000 + (arr[0] % 900000);
+      } else {
+        randomVal = 100000 + Math.floor(Math.random() * 900000);
+      }
+      const resetOtp = String(randomVal);
+
+      const salt =
+        Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+      const expectedHash = await sha256Hex(`${cleanTarget}:${resetOtp}:${salt}`);
+      const expiresAtMs = Date.now() + 10 * 60 * 1000;
+
+      const challenge: LocalOtpChallenge = {
+        email: cleanTarget,
+        hash: expectedHash,
+        salt,
+        expiresAtMs,
+        attempts: 0,
+      };
+      activeChallengeRef.current = challenge;
+      if (typeof window !== 'undefined') {
+        try {
+          window.sessionStorage.setItem(
+            `zappy_otp_${cleanTarget}`,
+            JSON.stringify(challenge)
+          );
+        } catch {}
+      }
+
+      void storeOtpChallengeInFirestore(cleanTarget, resetOtp);
+
+      const origin =
+        typeof window !== 'undefined' && window.location.origin
+          ? window.location.origin
+          : 'https://zappyfun.netlify.app';
+      const resetUrl = `${origin}/?resetEmail=${encodeURIComponent(cleanTarget)}&resetCode=${resetOtp}`;
+
+      await safeApiFetchJson<{ ok?: boolean; error?: string }>(
+        '/api/auth/send-otp',
+        {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: cleanTarget,
+            otp: resetOtp,
+            purpose: 'reset',
+            resetUrl,
+          }),
+        }
       );
+
+      void sendPasswordReset(cleanTarget).catch(() => {});
+
+      setStep('RESET_OTP_VERIFICATION');
+      setResendCooldown(60);
+      setOtpExpirySeconds(600);
+      setOtp('');
+      setOtpDigits(['', '', '', '', '', '']);
+      setInfoMessage(
+        `Password reset code sent to ${cleanTarget}. Please check your email inbox.`
+      );
+      setTimeout(() => {
+        otpInputRefs.current[0]?.focus();
+      }, 100);
     } catch (err: unknown) {
       setErrorMessage(
-        getFriendlyAuthErrorMessage(err) || 'Could not send reset email.'
+        getFriendlyAuthErrorMessage(err) || 'Could not send password reset email.'
+      );
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleForgotPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    await handleRequestPasswordResetOtp(email);
+  };
+
+  const handleVerifyResetOtp = async (e?: React.FormEvent, directCode?: string) => {
+    if (e) e.preventDefault();
+    setErrorMessage('');
+    setInfoMessage('');
+
+    const activeEmail = (otpTargetEmail || email).trim().toLowerCase();
+    const cleanOtp = (directCode || otp || otpDigits.join('')).trim();
+    if (cleanOtp.length !== 6 || !/^\d{6}$/.test(cleanOtp)) {
+      setErrorMessage('Please enter all 6 digits of the password reset code.');
+      return;
+    }
+
+    if (otpExpirySeconds <= 0) {
+      setErrorMessage('This reset code has expired. Please request a new code.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      let currentChallenge = activeChallengeRef.current;
+      if (!currentChallenge && typeof window !== 'undefined') {
+        try {
+          const raw = window.sessionStorage.getItem(`zappy_otp_${activeEmail}`);
+          if (raw) {
+            currentChallenge = JSON.parse(raw);
+          }
+        } catch {}
+      }
+
+      if (currentChallenge && currentChallenge.email === activeEmail) {
+        if (Date.now() > currentChallenge.expiresAtMs) {
+          activeChallengeRef.current = null;
+          setErrorMessage('This reset code has expired. Please request a new code.');
+          return;
+        }
+        if (currentChallenge.attempts >= 5) {
+          activeChallengeRef.current = null;
+          setErrorMessage('Too many incorrect attempts. Please request a new code.');
+          return;
+        }
+
+        const candidateHash = await sha256Hex(
+          `${activeEmail}:${cleanOtp}:${currentChallenge.salt}`
+        );
+
+        if (candidateHash === currentChallenge.hash) {
+          activeChallengeRef.current = null;
+          if (typeof window !== 'undefined') {
+            try {
+              window.sessionStorage.removeItem(`zappy_otp_${activeEmail}`);
+            } catch {}
+          }
+          setPassword('');
+          setConfirmPassword('');
+          setInfoMessage('Code verified! Enter your new password below.');
+          setStep('RESET_NEW_PASSWORD');
+          return;
+        } else {
+          currentChallenge.attempts += 1;
+          activeChallengeRef.current = currentChallenge;
+          if (typeof window !== 'undefined') {
+            try {
+              window.sessionStorage.setItem(
+                `zappy_otp_${activeEmail}`,
+                JSON.stringify(currentChallenge)
+              );
+            } catch {}
+          }
+          setErrorMessage(
+            currentChallenge.attempts >= 5
+              ? 'Too many incorrect attempts. Please request a new code.'
+              : 'Incorrect reset code. Please try again.'
+          );
+          return;
+        }
+      }
+
+      const verifyRes = await safeApiFetchJson<{
+        valid?: boolean;
+        reason?: string;
+      }>('/api/auth/verify-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: activeEmail, otp: cleanOtp }),
+      });
+
+      if (verifyRes.ok && verifyRes.data?.valid) {
+        setPassword('');
+        setConfirmPassword('');
+        setInfoMessage('Code verified! Enter your new password below.');
+        setStep('RESET_NEW_PASSWORD');
+        return;
+      }
+
+      const fsVerify = await verifyOtpChallengeInFirestore(activeEmail, cleanOtp);
+      if (fsVerify.valid) {
+        setPassword('');
+        setConfirmPassword('');
+        setInfoMessage('Code verified! Enter your new password below.');
+        setStep('RESET_NEW_PASSWORD');
+        return;
+      }
+
+      setErrorMessage('Incorrect reset code. Please try again.');
+    } catch {
+      setErrorMessage('Incorrect reset code. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleCompletePasswordReset = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setErrorMessage('');
+    setInfoMessage('');
+
+    const cleanEmail = (otpTargetEmail || email).trim().toLowerCase();
+    if (password.length < 6) {
+      setErrorMessage('New password must be at least 6 characters long.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      setErrorMessage('Passwords do not match. Please re-enter.');
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      await resetUserPasswordWithVerifiedOtp(cleanEmail, password);
+      await saveRegisteredEmailToFirestore(cleanEmail);
+      if (typeof window !== 'undefined') {
+        window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
+        try {
+          if (window.location.search.includes('resetEmail')) {
+            window.history.replaceState({}, '', window.location.pathname);
+          }
+        } catch {}
+      }
+      onSuccess?.();
+      onClose();
+    } catch (err: unknown) {
+      setErrorMessage(
+        getFriendlyAuthErrorMessage(err) || 'Could not update password. Please try again.'
       );
     } finally {
       setIsLoading(false);
@@ -1011,6 +1289,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {step === 'OTP_VERIFICATION' && 'Verify Your Email'}
             {step === 'CREATE_ACCOUNT' && 'Create Your Account'}
             {step === 'FORGOT_PASSWORD' && 'Reset Password'}
+            {step === 'RESET_OTP_VERIFICATION' && 'Verify Reset Code'}
+            {step === 'RESET_NEW_PASSWORD' && 'Set New Password'}
           </h2>
 
           <p className="text-xs sm:text-sm text-[#B8B4C2] mt-1">
@@ -1018,7 +1298,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             {step === 'PASSWORD_INPUT' && `Sign in as ${email}`}
             {step === 'OTP_VERIFICATION' && `Enter the 6-digit code sent to ${email}`}
             {step === 'CREATE_ACCOUNT' && 'Complete your profile details'}
-            {step === 'FORGOT_PASSWORD' && 'Receive a password reset link via email'}
+            {step === 'FORGOT_PASSWORD' && 'Receive a 6-digit password reset code via email'}
+            {step === 'RESET_OTP_VERIFICATION' && `Enter the 6-digit reset code sent to ${email}`}
+            {step === 'RESET_NEW_PASSWORD' && `Choose a new password for ${email}`}
           </p>
         </div>
 
@@ -1527,11 +1809,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               {isLoading ? (
                 <>
                   <Loader2 className="w-4 h-4 animate-spin" />
-                  <span>Sending Reset Link...</span>
+                  <span>Sending Reset Code...</span>
                 </>
               ) : (
                 <>
-                  <span>Send Password Reset Link</span>
+                  <span>Send Password Reset Code</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
@@ -1551,6 +1833,203 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <span>Back to password login</span>
               </button>
             </div>
+          </form>
+        )}
+
+        {/* ================= STEP 6: RESET PASSWORD OTP VERIFICATION ================= */}
+        {step === 'RESET_OTP_VERIFICATION' && (
+          <form onSubmit={handleVerifyResetOtp} className="space-y-4">
+            <div className="p-3.5 rounded-2xl bg-[#0D0B12] border border-[#231E30] text-center">
+              <span className="text-xs text-[#B8B4C2] block mb-0.5">
+                Reset code sent to
+              </span>
+              <span className="text-sm font-bold text-white font-mono break-all">
+                {email}
+              </span>
+            </div>
+
+            <div>
+              <div className="flex items-center justify-between mb-1.5">
+                <label className="text-xs font-bold text-[#B8B4C2] uppercase tracking-wider">
+                  Enter 6-Digit Reset Code
+                </label>
+                <span className="text-xs text-[#8E909D] font-mono">
+                  Expires in:{' '}
+                  <strong className="text-white">
+                    {formatCountdown(otpExpirySeconds)}
+                  </strong>
+                </span>
+              </div>
+              <div className="flex items-center justify-center gap-2 sm:gap-2.5 max-w-[340px] mx-auto py-2">
+                {[0, 1, 2, 3, 4, 5].map((idx) => {
+                  const isFilled = Boolean(otpDigits[idx]);
+                  return (
+                    <input
+                      key={idx}
+                      ref={(el) => {
+                        otpInputRefs.current[idx] = el;
+                      }}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete="one-time-code"
+                      maxLength={1}
+                      value={otpDigits[idx] || ''}
+                      onChange={(e) => handleOtpDigitChange(idx, e.target.value)}
+                      onKeyDown={(e) => handleOtpKeyDown(idx, e)}
+                      onPaste={handleOtpPaste}
+                      onFocus={(e) => e.target.select()}
+                      autoFocus={idx === 0}
+                      aria-label={`Reset code digit ${idx + 1}`}
+                      className={`w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-black font-mono bg-[#0D0B12] rounded-xl text-white transition-all outline-none border-2 ${
+                        isFilled
+                          ? 'border-[#FF5A36] bg-[#16111D] shadow-[0_0_12px_rgba(255,90,54,0.25)]'
+                          : 'border-[#231E30] focus:border-[#FFB800] focus:bg-[#16111D]'
+                      }`}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={
+                isLoading ||
+                (otp || otpDigits.join('')).trim().length !== 6 ||
+                otpExpirySeconds <= 0
+              }
+              className="w-full py-3.5 px-4 bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] text-white font-bold text-sm rounded-xl hover:brightness-110 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-[#FF5A36]/25 disabled:opacity-50"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Verifying Code...</span>
+                </>
+              ) : (
+                <>
+                  <ShieldCheck className="w-4 h-4" />
+                  <span>Verify Reset Code</span>
+                </>
+              )}
+            </button>
+
+            <div className="flex items-center justify-between text-xs pt-1 text-[#B8B4C2]">
+              <button
+                type="button"
+                disabled={resendCooldown > 0 || isLoading}
+                onClick={() => handleRequestPasswordResetOtp(email)}
+                className="text-[#FF5A36] hover:underline disabled:opacity-50 flex items-center gap-1 cursor-pointer"
+              >
+                <RotateCcw className="w-3 h-3" />
+                <span>
+                  {resendCooldown > 0
+                    ? `Resend Code in ${resendCooldown}s`
+                    : 'Resend Code'}
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  activeChallengeRef.current = null;
+                  setStep('FORGOT_PASSWORD');
+                  setOtp('');
+                  setOtpDigits(['', '', '', '', '', '']);
+                  setErrorMessage('');
+                  setInfoMessage('');
+                }}
+                className="hover:text-white flex items-center gap-1 cursor-pointer"
+              >
+                <ArrowLeft className="w-3 h-3" />
+                <span>Back</span>
+              </button>
+            </div>
+          </form>
+        )}
+
+        {/* ================= STEP 7: SET NEW PASSWORD ================= */}
+        {step === 'RESET_NEW_PASSWORD' && (
+          <form onSubmit={handleCompletePasswordReset} className="space-y-4">
+            <div>
+              <label className="block text-xs font-bold text-[#B8B4C2] uppercase tracking-wider mb-1">
+                New Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#7A7686]" />
+                <input
+                  type={showPassword ? 'text' : 'password'}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="Enter new password (min 6 characters)"
+                  required
+                  autoFocus
+                  className="w-full pl-10 pr-10 py-3 bg-[#0D0B12] border border-[#231E30] rounded-xl text-sm text-white placeholder-[#7A7686] focus:outline-none focus:border-[#FF5A36]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white cursor-pointer"
+                >
+                  {showPassword ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-xs font-bold text-[#B8B4C2] uppercase tracking-wider mb-1">
+                Confirm New Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-[#7A7686]" />
+                <input
+                  type={showConfirmPassword ? 'text' : 'password'}
+                  value={confirmPassword}
+                  onChange={(e) => setConfirmPassword(e.target.value)}
+                  placeholder="Re-enter new password"
+                  required
+                  className="w-full pl-10 pr-10 py-3 bg-[#0D0B12] border border-[#231E30] rounded-xl text-sm text-white placeholder-[#7A7686] focus:outline-none focus:border-[#FF5A36]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowConfirmPassword(!showConfirmPassword)}
+                  className="absolute right-3.5 top-1/2 -translate-y-1/2 text-[#7A7686] hover:text-white cursor-pointer"
+                >
+                  {showConfirmPassword ? (
+                    <EyeOff className="w-4 h-4" />
+                  ) : (
+                    <Eye className="w-4 h-4" />
+                  )}
+                </button>
+              </div>
+              {confirmPassword.length > 0 && confirmPassword !== password && (
+                <span className="text-[11px] text-red-400 mt-1 block">
+                  Passwords do not match.
+                </span>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoading}
+              className="w-full py-3.5 px-4 bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] text-white font-bold text-sm rounded-xl hover:brightness-110 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-[#FF5A36]/25 disabled:opacity-50"
+            >
+              {isLoading ? (
+                <>
+                  <Loader2 className="w-4 h-4 animate-spin" />
+                  <span>Updating Password...</span>
+                </>
+              ) : (
+                <>
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Save New Password & Sign In</span>
+                </>
+              )}
+            </button>
           </form>
         )}
       </div>

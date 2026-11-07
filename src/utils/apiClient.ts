@@ -55,22 +55,35 @@ export async function safeApiFetchJson<T = any>(
       }
     }
 
-    // If on Netlify and calling /api/auth/send-otp returned HTML, retry against /.netlify/functions/send-otp
-    if (path.startsWith('/api/auth/send-otp')) {
-      try {
-        const netlifyFnRes = await fetch('/.netlify/functions/send-otp', init);
-        const netlifyText = await netlifyFnRes.text();
-        if (isJsonResponse(netlifyFnRes, netlifyText)) {
-          const parsed = JSON.parse(netlifyText) as T;
-          return {
-            ok: netlifyFnRes.ok,
-            status: netlifyFnRes.status,
-            data: parsed,
-            isStaticFallback: false,
-          };
+    // If on Netlify and calling /api/auth/* returned HTML, retry against /.netlify/functions/*
+    if (path.startsWith('/api/auth/')) {
+      const fnMap: Record<string, string> = {
+        '/api/auth/send-otp': '/.netlify/functions/send-otp',
+        '/api/auth/verify-otp': '/.netlify/functions/verify-otp',
+        '/api/auth/check-email': '/.netlify/functions/check-email',
+        '/api/auth/record-user': '/.netlify/functions/check-email',
+        '/api/auth/validate-registration-token':
+          '/.netlify/functions/validate-registration-token',
+        '/api/auth/consume-registration-token':
+          '/.netlify/functions/validate-registration-token',
+      };
+      const fnTarget = fnMap[path.split('?')[0]];
+      if (fnTarget) {
+        try {
+          const netlifyFnRes = await fetch(fnTarget, init);
+          const netlifyText = await netlifyFnRes.text();
+          if (isJsonResponse(netlifyFnRes, netlifyText)) {
+            const parsed = JSON.parse(netlifyText) as T;
+            return {
+              ok: netlifyFnRes.ok,
+              status: netlifyFnRes.status,
+              data: parsed,
+              isStaticFallback: false,
+            };
+          }
+        } catch {
+          // Ignore
         }
-      } catch {
-        // Ignore
       }
     }
 

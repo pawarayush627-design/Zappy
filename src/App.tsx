@@ -73,6 +73,7 @@ import {
   getFriendlyAuthErrorMessage,
   getCachedUserProfile,
   fetchUserProfileFromFirestore,
+  getEffectiveUserEmail,
   UserProfileData,
 } from './firebase';
 import {
@@ -949,7 +950,14 @@ export default function App() {
     }
   }, [watchProgressMap]);
 
-  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(false);
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => {
+    try {
+      const params = new URLSearchParams(window.location.search);
+      return Boolean(params.get('resetEmail'));
+    } catch {
+      return false;
+    }
+  });
   const [authModalMode, setAuthModalMode] = useState<'signin' | 'register'>('signin');
   const [deleteAccountPassword, setDeleteAccountPassword] = useState<string>('');
 
@@ -1866,12 +1874,13 @@ export default function App() {
     }
   }, [catalog, completedIds, selectedMedia?.id, showToast]);
 
+  const effectiveUserEmail = getEffectiveUserEmail(currentUser?.email);
   const userAvatarUrl =
     userProfile?.photoURL || currentUser?.photoURL || '';
   const userDisplayName =
     userProfile?.displayName ||
     currentUser?.displayName ||
-    currentUser?.email?.split('@')[0] ||
+    effectiveUserEmail?.split('@')[0] ||
     'Guest Viewer';
 
   const relatedForSelected = useMemo(() => {
@@ -3360,9 +3369,9 @@ export default function App() {
                         </span>
                       )}
                     </div>
-                    {currentUser?.email && (
+                    {effectiveUserEmail && (
                       <p className="text-xs text-[#A7A9B4] truncate">
-                        {currentUser.email}
+                        {effectiveUserEmail}
                       </p>
                     )}
                     {userProfile?.favoriteGenres &&
@@ -3666,7 +3675,7 @@ export default function App() {
                       <AlertTriangle className="w-5 h-5 text-red-400 shrink-0 mt-0.5" />
                       <div className="space-y-1">
                         <h4 className="text-sm font-bold text-white">
-                          Delete account ({currentUser.email})?
+                          Delete account ({effectiveUserEmail || currentUser.email})?
                         </h4>
                         <p className="text-xs text-[#A7A9B4]">
                           This permanently deletes your account, saved watchlist, and watch history.

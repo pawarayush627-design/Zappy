@@ -57,6 +57,8 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
       : undefined;
 
     const otp = explicitOtp || crypto.randomInt(100000, 1000000).toString();
+    const isReset = payload.purpose === 'reset';
+    const resetUrl = typeof payload.resetUrl === 'string' ? payload.resetUrl.trim() : '';
 
     const transporter = nodemailer.createTransport({
       host: 'smtp.gmail.com',
@@ -68,7 +70,20 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
       },
     });
 
-    const textTemplate = `Your ZappyFun verification code is: ${otp}
+    const resetLinkLine =
+      isReset && resetUrl
+        ? `\nYou can also reset your password directly using this link:\n${resetUrl}\n`
+        : '';
+
+    const textTemplate = isReset
+      ? `Your ZappyFun password reset code is: ${otp}
+${resetLinkLine}
+This code will expire in 10 minutes.
+
+If you did not request a password reset, you can safely ignore this email.
+
+— The ZappyFun Team`
+      : `Your ZappyFun verification code is: ${otp}
 
 This code will expire in 10 minutes.
 
@@ -76,10 +91,14 @@ If you did not request this verification code, you can safely ignore this email.
 
 — The ZappyFun Team`;
 
+    const subject = isReset
+      ? `Your ZappyFun password reset code: ${otp}`
+      : `Your ZappyFun verification code: ${otp}`;
+
     await transporter.sendMail({
       from: `ZappyFun <${SMTP_USER}>`,
       to: email,
-      subject: `Your ZappyFun verification code: ${otp}`,
+      subject,
       text: textTemplate,
     });
 
@@ -88,7 +107,7 @@ If you did not request this verification code, you can safely ignore this email.
       headers: CORS_HEADERS,
       body: JSON.stringify({
         ok: true,
-        message: `6-digit verification code sent to ${email}.`,
+        message: `6-digit ${isReset ? 'password reset' : 'verification'} code sent to ${email}.`,
       }),
     };
   } catch (err) {

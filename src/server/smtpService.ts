@@ -316,14 +316,16 @@ export function validateRegistrationToken(
 }
 
 /**
- * Sends the 6-digit OTP email using the exact template requested.
+ * Sends the 6-digit OTP or Password Reset email using clean, minimal, professional plain text.
  */
 export async function sendOtpEmail(
   email: string,
-  otp: string
+  otp: string,
+  options?: { purpose?: 'signup' | 'reset'; resetUrl?: string }
 ): Promise<{ success: boolean; simulated: boolean; devCode?: string; error?: string }> {
   const config = loadSmtpConfig();
   const cleanEmail = email.trim().toLowerCase();
+  const isReset = options?.purpose === 'reset';
 
   if (!config.pass || config.pass.trim().length === 0) {
     console.error(`[SMTP ERROR] Missing SMTP Password for ${cleanEmail}`);
@@ -345,7 +347,20 @@ export async function sendOtpEmail(
       },
     });
 
-    const textTemplate = `Your ZappyFun verification code is: ${otp}
+    const resetLinkLine =
+      isReset && options?.resetUrl
+        ? `\nYou can also reset your password directly using this link:\n${options.resetUrl}\n`
+        : '';
+
+    const textTemplate = isReset
+      ? `Your ZappyFun password reset code is: ${otp}
+${resetLinkLine}
+This code will expire in 10 minutes.
+
+If you did not request a password reset, you can safely ignore this email.
+
+— The ZappyFun Team`
+      : `Your ZappyFun verification code is: ${otp}
 
 This code will expire in 10 minutes.
 
@@ -353,33 +368,20 @@ If you did not request this verification code, you can safely ignore this email.
 
 — The ZappyFun Team`;
 
-    const htmlContent = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Your ZappyFun verification code</title>
-</head>
-<body style="margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.6; color: #1f2937; background-color: #ffffff;">
-  <p style="margin: 0 0 16px 0;">Your ZappyFun verification code is:</p>
-  <p style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #111827; margin: 20px 0; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;">
-    ${otp}
-  </p>
-  <p style="color: #6b7280; font-size: 14px; margin: 0 0 16px 0;">This code will expire in 10 minutes.</p>
-  <p style="color: #6b7280; font-size: 14px; margin: 0 0 24px 0;">If you did not request this verification code, you can safely ignore this email.</p>
-  <p style="color: #9ca3af; font-size: 13px; margin: 24px 0 0 0;">— The ZappyFun Team</p>
-</body>
-</html>`;
+    const subject = isReset
+      ? `Your ZappyFun password reset code: ${otp}`
+      : `Your ZappyFun verification code: ${otp}`;
 
     await transporter.sendMail({
       from: `ZappyFun <${config.user}>`,
       to: cleanEmail,
-      subject: `Your ZappyFun verification code: ${otp}`,
+      subject,
       text: textTemplate,
-      html: htmlContent,
     });
 
-    console.log(`[SMTP SUCCESS] Sent 6-digit OTP to ${cleanEmail} via Gmail (${config.user})`);
+    console.log(
+      `[SMTP SUCCESS] Sent 6-digit ${isReset ? 'password reset' : 'verification'} code to ${cleanEmail} via Gmail (${config.user})`
+    );
     return { success: true, simulated: false };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);

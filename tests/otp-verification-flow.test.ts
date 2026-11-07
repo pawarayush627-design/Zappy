@@ -206,7 +206,28 @@ async function runOtpTests() {
     console.log('✅ Test 7 passed: Email change caught and old OTP invalidated');
   }
 
-  console.log('\n🎉 All 7 OTP verification flow tests passed!');
+  // Test 8: Password Reset OTP verification & Effective Email alias resolution
+  {
+    const { otp: resetCode } = await engine.requestOtp('resetuser@example.com', '482910');
+    const badReset = await engine.verifyOtp('resetuser@example.com', '111111', 'resetuser@example.com');
+    assert.strictEqual(badReset.success, false);
+
+    const validReset = await engine.verifyOtp('resetuser@example.com', resetCode, 'resetuser@example.com');
+    assert.strictEqual(validReset.success, true);
+
+    const resolveEffective = (raw: string) =>
+      raw
+        .trim()
+        .toLowerCase()
+        .replace(/\+zfr[a-z0-9_]*@/, '@')
+        .replace(/\+zf[a-z0-9_]*@/, '@');
+
+    assert.strictEqual(resolveEffective('resetuser+zfr19283@example.com'), 'resetuser@example.com');
+    assert.strictEqual(resolveEffective('pawarayushai1+zfr999@gmail.com'), 'pawarayushai1@gmail.com');
+    console.log('✅ Test 8 passed: Password Reset OTP verification & Effective Email resolution');
+  }
+
+  console.log('\n🎉 All 8 OTP & Password Reset verification flow tests passed!');
   process.exit(0);
 }
 

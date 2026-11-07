@@ -35,6 +35,18 @@ function normalizeArtworkUrl(rawUrl: string | undefined | null, aspectRatio: 'po
   return cleaned;
 }
 
+function toFastWebpArtworkUrl(url: string, aspectRatio: 'poster' | 'backdrop'): string {
+  if (!url || !url.includes('images.justwatch.com')) return '';
+  let fast = url;
+  if (aspectRatio === 'backdrop') {
+    fast = fast.replace('/s1920/', '/s1440/');
+  } else {
+    fast = fast.replace('/s718/', '/s592/');
+  }
+  fast = fast.replace(/\.(jpg|jpeg|png)$/i, '.webp');
+  return fast !== url ? fast : '';
+}
+
 export const MediaArtwork: React.FC<MediaArtworkProps> = ({
   src,
   alt,
@@ -46,10 +58,11 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
   const isBackdropOrPriority = aspectRatio === 'backdrop' || priority;
   const imgRef = useRef<HTMLImageElement | null>(null);
 
-  // Build ordered candidate URLs so if a backdrop URL fails or times out,
-  // it seamlessly falls back to the alternate URL (e.g. posterUrl or backdropUrl) before showing the stylized card.
+  // Build ordered candidate URLs: try compressed WebP first (60-70% smaller for instant load),
+  // then original URL, then alternate artwork URL before showing the stylized fallback card.
   const candidateUrls = useMemo(() => {
     const primary = normalizeArtworkUrl(src, aspectRatio);
+    const primaryFastWebp = toFastWebpArtworkUrl(primary, aspectRatio);
     const secondary = normalizeArtworkUrl(
       aspectRatio === 'backdrop' ? item.posterUrl : item.backdropUrl,
       aspectRatio
@@ -58,8 +71,9 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
       aspectRatio === 'backdrop' ? item.backdropUrl : item.posterUrl,
       aspectRatio
     );
+    const tertiaryFastWebp = toFastWebpArtworkUrl(tertiary, aspectRatio);
     const unique: string[] = [];
-    for (const url of [primary, tertiary, secondary]) {
+    for (const url of [primaryFastWebp, primary, tertiaryFastWebp, tertiary, secondary]) {
       if (url && !unique.includes(url)) {
         unique.push(url);
       }
@@ -78,8 +92,7 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
     setAllFailed(candidateUrls.length === 0);
   }, [candidateUrls]);
 
-  // Immediately mark loaded if the browser already has the image in memory cache,
-  // and guard against stalled/hanging network requests with a fallback timer.
+  // Immediately mark loaded if the browser already has the image in memory cache
   useEffect(() => {
     if (!activeUrl) {
       setAllFailed(true);
@@ -94,21 +107,7 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
 
     // Backdrops and priority images stay visible immediately while decoding so they never flash blank
     setIsLoaded(isBackdropOrPriority);
-
-    const timeoutMs = aspectRatio === 'backdrop' ? 4500 : 6500;
-    const stallTimer = window.setTimeout(() => {
-      const currentImg = imgRef.current;
-      if (currentImg && (!currentImg.complete || currentImg.naturalWidth === 0)) {
-        if (candidateIndex + 1 < candidateUrls.length) {
-          setCandidateIndex((prev) => prev + 1);
-        } else {
-          setIsLoaded(true);
-        }
-      }
-    }, timeoutMs);
-
-    return () => window.clearTimeout(stallTimer);
-  }, [activeUrl, candidateIndex, candidateUrls.length, isBackdropOrPriority, aspectRatio]);
+  }, [activeUrl, isBackdropOrPriority]);
 
   const handleImageError = () => {
     if (candidateIndex + 1 < candidateUrls.length) {

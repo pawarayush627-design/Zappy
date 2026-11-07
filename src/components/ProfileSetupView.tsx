@@ -299,7 +299,7 @@ export const ProfileSetupView: React.FC<ProfileSetupViewProps> = ({
                       onClick={() => setPhotoURL(currentUser.photoURL || '')}
                       className="px-3 py-2 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-[#A7A9B4] hover:text-white cursor-pointer transition-colors"
                     >
-                      Use GitHub Photo
+                      Use Account Photo
                     </button>
                   )}
                 </div>
@@ -345,7 +345,7 @@ export const ProfileSetupView: React.FC<ProfileSetupViewProps> = ({
                   type="text"
                   value={displayName}
                   onChange={(e) => setDisplayName(e.target.value)}
-                  placeholder="Your Name"
+                  placeholder="e.g. XYZ ABC"
                   required
                   className="w-full pl-10 pr-4 py-3 rounded-xl bg-[#08090D] border border-[#292C35] text-white placeholder-[#5A5E70] text-sm focus:outline-none focus:border-[#FFB800] transition-colors"
                 />
