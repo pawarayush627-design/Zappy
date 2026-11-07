@@ -68,6 +68,8 @@ import {
   handleFirestoreError,
   OperationType,
   handleGithubRedirectResult,
+  handleSocialRedirectResult,
+  signInWithGoogle,
   getFriendlyAuthErrorMessage,
   getCachedUserProfile,
   fetchUserProfileFromFirestore,
@@ -584,25 +586,30 @@ export default function App() {
     []
   );
 
-  // 1. Listen to Firebase Authentication State & Process GitHub Redirect Results
+  // 1. Listen to Firebase Authentication State & Process Social (Google & GitHub) Redirect Results
   useEffect(() => {
-    // Process redirect result if arriving back from GitHub OAuth (mobile / Netlify)
-    handleGithubRedirectResult()
+    // Process redirect result if arriving back from Google or GitHub OAuth (mobile / Netlify)
+    handleSocialRedirectResult()
       .then(async (result) => {
         if (result && result.user) {
           const email = result.user.email || '';
+          const isGoogle = result.user.providerData?.some(
+            (p) => p.providerId === 'google.com'
+          );
           if (isUserAdmin(email, result.user.emailVerified)) {
             showToast(`Welcome Admin (${email})! Zappy Admin Studio unlocked.`);
           } else {
             showToast(
-              `Signed in with GitHub as ${result.user.displayName || email || 'User'}`
+              `Signed in with ${isGoogle ? 'Google' : 'GitHub'} as ${
+                result.user.displayName || email || 'User'
+              }`
             );
           }
           await handleGithubUserOnboarding(result.user);
         }
       })
       .catch((err) => {
-        console.warn('GitHub redirect result notice:', err);
+        console.warn('Social redirect result notice:', err);
         const friendly = getFriendlyAuthErrorMessage(err);
         showToast(friendly);
       });
@@ -4423,13 +4430,19 @@ export default function App() {
         onClose={() => setActiveModal(null)}
       />
 
-      {/* EMAIL / OTP / GITHUB AUTHENTICATION MODAL */}
+      {/* EMAIL / OTP / GOOGLE / GITHUB AUTHENTICATION MODAL */}
       <AuthModal
         isOpen={isAuthModalOpen}
         onClose={() => setIsAuthModalOpen(false)}
         initialMode={authModalMode}
         onSuccess={() => {
           showToast('Signed in successfully!');
+        }}
+        onGoogleLoginSuccess={(user) => {
+          showToast(
+            `Signed in with Google as ${user.displayName || user.email || 'User'}`
+          );
+          handleGithubUserOnboarding(user);
         }}
         onGithubLoginSuccess={(user) => {
           showToast(

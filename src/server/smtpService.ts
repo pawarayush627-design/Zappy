@@ -33,12 +33,33 @@ function resolveSmtpCredentials(): SmtpConfig {
     user = process.env.SMTP_USER.trim();
   }
 
-  const passRaw = (
+  let passRaw = (
     process.env.SMPT_PASS ||
     process.env.SMTP_PASS ||
     process.env.SMTP_KEY ||
     ''
   ).trim();
+
+  // If environment variables are empty, check smtp-config.json on disk
+  if (!passRaw && fs.existsSync(CONFIG_FILE_PATH)) {
+    try {
+      const fileData = JSON.parse(fs.readFileSync(CONFIG_FILE_PATH, 'utf-8'));
+      if (fileData && typeof fileData === 'object') {
+        if (fileData.user && String(fileData.user).includes('@')) {
+          user = String(fileData.user).trim();
+        }
+        if (fileData.host) {
+          host = String(fileData.host).trim();
+        }
+        if (fileData.pass) {
+          passRaw = String(fileData.pass).trim();
+        }
+      }
+    } catch {
+      // Ignore
+    }
+  }
+
   const pass = passRaw.replace(/\s+/g, '');
 
   return {
@@ -312,129 +333,36 @@ export async function sendOtpEmail(
       },
     });
 
-    // Exact plain-text template requested by user with {{OTP_CODE}} substituted
-    const textTemplate = `Hey there! 👋
+    const textTemplate = `Your ZappyFun verification code is: ${otp}
 
-Welcome to ZappyFun! 🍿
+This code will expire in 10 minutes.
 
-We're excited to have you join us.
+If you did not request this verification code, you can safely ignore this email.
 
-To finish creating your account, enter the verification code below.
+— The ZappyFun Team`;
 
-YOUR EMAIL VERIFICATION CODE
-
-${otp}
-
-Enter this 6-digit code on the ZappyFun verification page to continue your registration.
-
-Security Notice:
-
-- This code expires in 10 minutes.
-- Never share this code with anyone.
-- If you didn't request a ZappyFun account, you can safely ignore this email.
-
-Get ready to explore your favorite movies and shows!
-
-Cheers,
-The ZappyFun Team 🎬`;
-
-    // Professional HTML template matching the exact text with ZappyFun OTT branding
-    const htmlContent = `
-    <!DOCTYPE html>
-    <html lang="en">
-    <head>
-      <meta charset="utf-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
-      <title>Verify Your Email to Join ZappyFun</title>
-    </head>
-    <body style="margin: 0; padding: 0; background-color: #0A080F; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #FFFFFF;">
-      <table width="100%" cellpadding="0" cellspacing="0" style="background-color: #0A080F; padding: 40px 16px;">
-        <tr>
-          <td align="center">
-            <table width="100%" style="max-width: 520px; background-color: #15121D; border-radius: 24px; border: 1px solid #231E30; overflow: hidden; box-shadow: 0 20px 60px rgba(0,0,0,0.85);">
-              <!-- Top Gradient Bar -->
-              <tr>
-                <td style="height: 6px; background: linear-gradient(90deg, #FFB800 0%, #FF5A36 35%, #FF168B 70%, #8B35FF 100%);"></td>
-              </tr>
-              <!-- Header -->
-              <tr>
-                <td style="padding: 32px 32px 20px 32px; text-align: center; border-bottom: 1px solid #231E30;">
-                  <span style="font-size: 28px; font-weight: 900; letter-spacing: 1px; color: #FF5A36; text-transform: uppercase;">
-                    <span style="background: linear-gradient(135deg, #FFB800, #FF5A36, #FF168B, #8B35FF); -webkit-background-clip: text; -webkit-text-fill-color: transparent;">ZAPPY</span><span style="color: #FFFFFF;">FUN</span>
-                  </span>
-                  <div style="font-size: 13px; color: #B8B4C2; margin-top: 6px; font-weight: 500;">Email Verification</div>
-                </td>
-              </tr>
-              <!-- Body -->
-              <tr>
-                <td style="padding: 32px;">
-                  <p style="font-size: 16px; line-height: 1.6; color: #FFFFFF; margin: 0 0 16px 0; font-weight: 600;">
-                    Hey there! 👋
-                  </p>
-                  <p style="font-size: 15px; line-height: 1.6; color: #FFFFFF; margin: 0 0 12px 0;">
-                    Welcome to ZappyFun! 🍿
-                  </p>
-                  <p style="font-size: 14px; line-height: 1.6; color: #B8B4C2; margin: 0 0 20px 0;">
-                    We're excited to have you join us.
-                  </p>
-                  <p style="font-size: 14px; line-height: 1.6; color: #B8B4C2; margin: 0 0 24px 0;">
-                    To finish creating your account, enter the verification code below.
-                  </p>
-
-                  <!-- Verification Code Box -->
-                  <div style="background: linear-gradient(135deg, rgba(255, 90, 54, 0.12), rgba(139, 53, 255, 0.08)); border: 1.5px solid #FF5A36; border-radius: 18px; padding: 24px 16px; text-align: center; margin: 0 0 24px 0;">
-                    <div style="font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: 2px; color: #FFB800; margin-bottom: 10px;">
-                      YOUR EMAIL VERIFICATION CODE
-                    </div>
-                    <div style="font-size: 40px; font-weight: 900; letter-spacing: 12px; color: #FFFFFF; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace; text-indent: 12px;">
-                      ${otp}
-                    </div>
-                  </div>
-
-                  <p style="font-size: 14px; line-height: 1.6; color: #B8B4C2; margin: 0 0 24px 0;">
-                    Enter this 6-digit code on the ZappyFun verification page to continue your registration.
-                  </p>
-
-                  <!-- Security Notice Box -->
-                  <div style="background-color: #0D0B12; border-left: 3px solid #FF5A36; border-radius: 8px; padding: 14px 18px; margin: 0 0 24px 0;">
-                    <div style="font-size: 12px; font-weight: 700; color: #FFFFFF; margin-bottom: 6px;">Security Notice:</div>
-                    <ul style="margin: 0; padding-left: 18px; font-size: 12px; color: #8E909D; line-height: 1.7;">
-                      <li>This code expires in 10 minutes.</li>
-                      <li>Never share this code with anyone.</li>
-                      <li>If you didn't request a ZappyFun account, you can safely ignore this email.</li>
-                    </ul>
-                  </div>
-
-                  <p style="font-size: 14px; line-height: 1.6; color: #FFFFFF; margin: 0 0 20px 0;">
-                    Get ready to explore your favorite movies and shows!
-                  </p>
-
-                  <p style="font-size: 14px; line-height: 1.6; color: #B8B4C2; margin: 0;">
-                    Cheers,<br>
-                    <strong style="color: #FFFFFF;">The ZappyFun Team 🎬</strong>
-                  </p>
-                </td>
-              </tr>
-              <!-- Footer -->
-              <tr>
-                <td style="background-color: #0A080F; padding: 20px 32px; text-align: center; border-top: 1px solid #231E30;">
-                  <p style="font-size: 11px; color: #7A7686; margin: 0;">
-                    Sent securely by ZappyFun &bull; Verified delivery from <span style="color: #B8B4C2;">${config.user}</span>
-                  </p>
-                </td>
-              </tr>
-            </table>
-          </td>
-        </tr>
-      </table>
-    </body>
-    </html>
-    `;
+    const htmlContent = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your ZappyFun verification code</title>
+</head>
+<body style="margin: 0; padding: 24px; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; font-size: 15px; line-height: 1.6; color: #1f2937; background-color: #ffffff;">
+  <p style="margin: 0 0 16px 0;">Your ZappyFun verification code is:</p>
+  <p style="font-size: 32px; font-weight: 700; letter-spacing: 6px; color: #111827; margin: 20px 0; font-family: 'SFMono-Regular', Consolas, 'Liberation Mono', Menlo, Courier, monospace;">
+    ${otp}
+  </p>
+  <p style="color: #6b7280; font-size: 14px; margin: 0 0 16px 0;">This code will expire in 10 minutes.</p>
+  <p style="color: #6b7280; font-size: 14px; margin: 0 0 24px 0;">If you did not request this verification code, you can safely ignore this email.</p>
+  <p style="color: #9ca3af; font-size: 13px; margin: 24px 0 0 0;">— The ZappyFun Team</p>
+</body>
+</html>`;
 
     await transporter.sendMail({
       from: `ZappyFun <${config.user}>`,
       to: cleanEmail,
-      subject: 'Verify Your Email to Join ZappyFun',
+      subject: `Your ZappyFun verification code: ${otp}`,
       text: textTemplate,
       html: htmlContent,
     });

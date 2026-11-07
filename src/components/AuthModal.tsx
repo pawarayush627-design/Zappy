@@ -22,6 +22,7 @@ import {
   createUserWithEmail,
   sendPasswordReset,
   signInWithGithub,
+  signInWithGoogle,
   getFriendlyAuthErrorMessage,
   saveUserProfile,
   updateUserProfile,
@@ -41,6 +42,7 @@ interface AuthModalProps {
   onClose: () => void;
   onSuccess?: () => void;
   onGithubLoginSuccess?: (user: User) => void;
+  onGoogleLoginSuccess?: (user: User) => void;
   initialMode?: 'signin' | 'signup' | 'register';
   initialEmail?: string;
 }
@@ -52,6 +54,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   onClose,
   onSuccess,
   onGithubLoginSuccess,
+  onGoogleLoginSuccess,
   initialMode = 'signin',
   initialEmail = '',
 }) => {
@@ -62,6 +65,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [otp, setOtp] = useState('');
+  const [otpDigits, setOtpDigits] = useState<string[]>(['', '', '', '', '', '']);
   const [fullName, setFullName] = useState('');
   const [age, setAge] = useState('');
   const [registrationToken, setRegistrationToken] = useState('');
@@ -71,12 +75,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isGithubLoading, setIsGithubLoading] = useState(false);
+  const [isGoogleLoading, setIsGoogleLoading] = useState(false);
   const [errorMessage, setErrorMessage] = useState('');
   const [infoMessage, setInfoMessage] = useState('');
   const [resendCooldown, setResendCooldown] = useState(0);
   const [otpExpirySeconds, setOtpExpirySeconds] = useState(600);
 
-  const otpInputRef = useRef<HTMLInputElement>(null);
+  const otpInputRefs = useRef<(HTMLInputElement | null)[]>([]);
   const nameInputRef = useRef<HTMLInputElement>(null);
   const passwordInputRef = useRef<HTMLInputElement>(null);
 
@@ -88,6 +93,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setPassword('');
       setConfirmPassword('');
       setOtp('');
+      setOtpDigits(['', '', '', '', '', '']);
       setFullName('');
       setAge('');
       setRegistrationToken('');
@@ -96,6 +102,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setResendCooldown(0);
       setOtpExpirySeconds(600);
       setIsGithubLoading(false);
+      setIsGoogleLoading(false);
     }
   }, [isOpen, initialEmail, initialMode]);
 
@@ -186,8 +193,9 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setResendCooldown(60);
       setOtpExpirySeconds(600);
       setOtp('');
+      setOtpDigits(['', '', '', '', '', '']);
       setTimeout(() => {
-        otpInputRef.current?.focus();
+        otpInputRefs.current[0]?.focus();
       }, 100);
     } catch (err: unknown) {
       setErrorMessage(
@@ -317,11 +325,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         errObj.code === 'auth/wrong-password'
       ) {
         setErrorMessage(
-          'Incorrect password. Try again, click "Forgot Password?", or click "New User? Create Account" below.'
+          'Incorrect password. Try again or click "Forgot Password?" below.'
         );
       } else if (errObj.code === 'auth/user-not-found') {
         setErrorMessage(
-          'No account found with this email. Click "New User? Create Account" below to sign up.'
+          'No account found with this email. Click Back to check your email.'
         );
       } else if (errObj.code === 'auth/too-many-requests') {
         setErrorMessage(
@@ -338,14 +346,14 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   };
 
   // 4. Handle 6-Digit OTP Verification for New Users
-  const handleVerifyOtp = async (e: React.FormEvent) => {
-    e.preventDefault();
+  const handleVerifyOtp = async (e?: React.FormEvent, directCode?: string) => {
+    if (e) e.preventDefault();
     setErrorMessage('');
     setInfoMessage('');
 
-    const cleanOtp = otp.trim();
+    const cleanOtp = (directCode || otp || otpDigits.join('')).trim();
     if (cleanOtp.length !== 6 || !/^\d{6}$/.test(cleanOtp)) {
-      setErrorMessage('Please enter a valid 6-digit verification code.');
+      setErrorMessage('Please enter all 6 digits of the verification code.');
       return;
     }
 
@@ -399,11 +407,86 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
+  const handleOtpDigitChange = (index: number, val: string) => {
+    const digitsOnly = val.replace(/\D/g, '');
+    if (!digitsOnly) {
+      const next = [...otpDigits];
+      next[index] = '';
+      setOtpDigits(next);
+      setOtp(next.join(''));
+      return;
+    }
+
+    if (digitsOnly.length > 1) {
+      const chars = digitsOnly.slice(0, 6).split('');
+      const next = [...otpDigits];
+      for (let i = 0; i < chars.length && index + i < 6; i++) {
+        next[index + i] = chars[i];
+      }
+      setOtpDigits(next);
+      const combined = next.join('');
+      setOtp(combined);
+      const nextFocus = Math.min(index + chars.length, 5);
+      otpInputRefs.current[nextFocus]?.focus();
+      if (combined.length === 6) {
+        void handleVerifyOtp(undefined, combined);
+      }
+      return;
+    }
+
+    const digit = digitsOnly.slice(-1);
+    const next = [...otpDigits];
+    next[index] = digit;
+    setOtpDigits(next);
+    const combined = next.join('');
+    setOtp(combined);
+
+    if (digit && index < 5) {
+      otpInputRefs.current[index + 1]?.focus();
+    }
+  };
+
+  const handleOtpKeyDown = (index: number, e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (e.key === 'Backspace') {
+      if (!otpDigits[index] && index > 0) {
+        e.preventDefault();
+        const next = [...otpDigits];
+        next[index - 1] = '';
+        setOtpDigits(next);
+        setOtp(next.join(''));
+        otpInputRefs.current[index - 1]?.focus();
+      } else {
+        const next = [...otpDigits];
+        next[index] = '';
+        setOtpDigits(next);
+        setOtp(next.join(''));
+      }
+    } else if (e.key === 'ArrowLeft' && index > 0) {
+      e.preventDefault();
+      otpInputRefs.current[index - 1]?.focus();
+    } else if (e.key === 'ArrowRight' && index < 5) {
+      e.preventDefault();
+      otpInputRefs.current[index + 1]?.focus();
+    }
+  };
+
   const handleOtpPaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     e.preventDefault();
     const pasted = e.clipboardData.getData('text').replace(/\D/g, '').slice(0, 6);
-    if (pasted) {
-      setOtp(pasted);
+    if (!pasted) return;
+
+    const next = ['', '', '', '', '', ''];
+    for (let i = 0; i < pasted.length; i++) {
+      next[i] = pasted[i];
+    }
+    setOtpDigits(next);
+    const combined = next.join('');
+    setOtp(combined);
+
+    const focusIndex = Math.min(pasted.length, 5);
+    otpInputRefs.current[focusIndex]?.focus();
+    if (combined.length === 6) {
+      void handleVerifyOtp(undefined, combined);
     }
   };
 
@@ -558,7 +641,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  // 7. Handle GitHub Sign In
+  // 7. Handle Google Sign In
+  const handleGoogleSignIn = async () => {
+    setIsGoogleLoading(true);
+    setErrorMessage('');
+    setInfoMessage('');
+
+    try {
+      const result = await signInWithGoogle();
+      if (result && result.user) {
+        if (result.user.email && typeof window !== 'undefined') {
+          window.localStorage.setItem(
+            `zappy_known_email_${result.user.email.trim().toLowerCase()}`,
+            '1'
+          );
+        }
+        onGoogleLoginSuccess?.(result.user);
+        onSuccess?.();
+        onClose();
+      }
+    } catch (err: unknown) {
+      console.warn('Google Sign-In notice:', err);
+      const friendlyMsg = getFriendlyAuthErrorMessage(err);
+      setErrorMessage(friendlyMsg);
+    } finally {
+      setIsGoogleLoading(false);
+    }
+  };
+
+  // 8. Handle GitHub Sign In
   const handleGithubSignIn = async () => {
     setIsGithubLoading(true);
     setErrorMessage('');
@@ -586,8 +697,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  const renderGithubButton = () => (
-    <div className="space-y-3 pt-1">
+  const renderSocialButtons = () => (
+    <div className="space-y-2.5 pt-1">
       <div className="relative my-2.5">
         <div className="absolute inset-0 flex items-center">
           <div className="w-full border-t border-[#231E30]" />
@@ -599,10 +710,48 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         </div>
       </div>
 
+      {/* Google Sign In */}
+      <button
+        type="button"
+        onClick={handleGoogleSignIn}
+        disabled={isLoading || isGoogleLoading || isGithubLoading}
+        className="w-full py-3 px-4 rounded-xl bg-[#0D0B12] hover:bg-[#1F1B2B] border border-[#231E30] text-white font-semibold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all shadow-md cursor-pointer disabled:opacity-50 active:scale-[0.99]"
+      >
+        {isGoogleLoading ? (
+          <>
+            <Loader2 className="w-4 h-4 animate-spin text-white" />
+            <span>Connecting to Google...</span>
+          </>
+        ) : (
+          <>
+            <svg className="w-4 h-4 shrink-0" viewBox="0 0 24 24">
+              <path
+                fill="#4285F4"
+                d="M23.745 12.27c0-.7-.06-1.4-.19-2.07H12v4.51h6.6c-.29 1.52-1.14 2.82-2.4 3.68v3.05h3.88c2.27-2.09 3.665-5.17 3.665-9.17z"
+              />
+              <path
+                fill="#34A853"
+                d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.88-3.05c-1.08.72-2.45 1.16-4.05 1.16-3.12 0-5.77-2.1-6.72-4.93H1.25v3.15C3.26 21.36 7.33 24 12 24z"
+              />
+              <path
+                fill="#FBBC05"
+                d="M5.28 14.27c-.25-.72-.38-1.49-.38-2.27s.13-1.55.38-2.27V6.58H1.25C.45 8.18 0 9.99 0 12s.45 3.82 1.25 5.42l4.03-3.15z"
+              />
+              <path
+                fill="#EA4335"
+                d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.33 0 3.26 2.64 1.25 6.58l4.03 3.15c.95-2.83 3.6-4.98 6.72-4.98z"
+              />
+            </svg>
+            <span>Continue with Google</span>
+          </>
+        )}
+      </button>
+
+      {/* GitHub Sign In */}
       <button
         type="button"
         onClick={handleGithubSignIn}
-        disabled={isLoading || isGithubLoading}
+        disabled={isLoading || isGoogleLoading || isGithubLoading}
         className="w-full py-3 px-4 rounded-xl bg-[#0D0B12] hover:bg-[#1F1B2B] border border-[#231E30] text-white font-semibold text-xs sm:text-sm flex items-center justify-center gap-2.5 transition-all shadow-md cursor-pointer disabled:opacity-50 active:scale-[0.99]"
       >
         {isGithubLoading ? (
@@ -726,37 +875,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               )}
             </button>
 
-            <div className="flex items-center justify-between text-xs text-[#B8B4C2] px-1">
-              <button
-                type="button"
-                onClick={() => {
-                  if (!validateEmail(email)) {
-                    setErrorMessage('Enter your email address first.');
-                    return;
-                  }
-                  setErrorMessage('');
-                  setStep('PASSWORD_INPUT');
-                }}
-                className="hover:text-[#FFB800] transition-colors cursor-pointer"
-              >
-                Sign in with password
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  if (!validateEmail(email)) {
-                    setErrorMessage('Enter your email address first.');
-                    return;
-                  }
-                  void handleRequestOtp(email.trim().toLowerCase());
-                }}
-                className="hover:text-[#FFB800] transition-colors cursor-pointer"
-              >
-                Create new account
-              </button>
-            </div>
-
-            {renderGithubButton()}
+            {renderSocialButtons()}
           </form>
         )}
 
@@ -852,7 +971,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               )}
             </button>
 
-            <div className="flex items-center justify-between pt-1 text-xs text-[#B8B4C2]">
+            <div className="text-center pt-1 text-xs text-[#B8B4C2]">
               <button
                 type="button"
                 onClick={() => {
@@ -860,21 +979,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   setErrorMessage('');
                   setInfoMessage('');
                 }}
-                className="hover:text-white flex items-center gap-1 cursor-pointer"
+                className="hover:text-white flex items-center justify-center gap-1 mx-auto cursor-pointer"
               >
                 <ArrowLeft className="w-3.5 h-3.5" />
                 <span>Back</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setErrorMessage('');
-                  void handleRequestOtp(email.trim().toLowerCase());
-                }}
-                className="text-[#FFB800] hover:underline font-semibold cursor-pointer"
-              >
-                New User? Create Account
               </button>
             </div>
           </form>
@@ -901,31 +1009,45 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   Expires in: <strong className="text-white">{formatCountdown(otpExpirySeconds)}</strong>
                 </span>
               </div>
-              <div className="relative max-w-[240px] mx-auto">
-                <input
-                  ref={otpInputRef}
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  autoComplete="one-time-code"
-                  maxLength={6}
-                  value={otp}
-                  onChange={(e) => {
-                    const clean = e.target.value.replace(/\D/g, '').slice(0, 6);
-                    setOtp(clean);
-                  }}
-                  onPaste={handleOtpPaste}
-                  placeholder="••••••"
-                  required
-                  autoFocus
-                  className="w-full py-3.5 text-center tracking-[12px] text-2xl font-black bg-[#0D0B12] border-2 border-[#FF5A36] rounded-2xl text-white placeholder-[#7A7686] focus:outline-none focus:border-[#FFB800] transition-colors font-mono"
-                />
+              <div className="flex items-center justify-center gap-2 sm:gap-2.5 max-w-[340px] mx-auto py-2">
+                {[0, 1, 2, 3, 4, 5].map((idx) => {
+                  const isFilled = Boolean(otpDigits[idx]);
+                  return (
+                    <input
+                      key={idx}
+                      ref={(el) => {
+                        otpInputRefs.current[idx] = el;
+                      }}
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      autoComplete="one-time-code"
+                      maxLength={1}
+                      value={otpDigits[idx] || ''}
+                      onChange={(e) => handleOtpDigitChange(idx, e.target.value)}
+                      onKeyDown={(e) => handleOtpKeyDown(idx, e)}
+                      onPaste={handleOtpPaste}
+                      onFocus={(e) => e.target.select()}
+                      autoFocus={idx === 0}
+                      aria-label={`Verification code digit ${idx + 1}`}
+                      className={`w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-black font-mono bg-[#0D0B12] rounded-xl text-white transition-all outline-none border-2 ${
+                        isFilled
+                          ? 'border-[#FF5A36] bg-[#16111D] shadow-[0_0_12px_rgba(255,90,54,0.25)]'
+                          : 'border-[#231E30] focus:border-[#FFB800] focus:bg-[#16111D]'
+                      }`}
+                    />
+                  );
+                })}
               </div>
             </div>
 
             <button
               type="submit"
-              disabled={isLoading || otp.trim().length !== 6 || otpExpirySeconds <= 0}
+              disabled={
+                isLoading ||
+                (otp || otpDigits.join('')).trim().length !== 6 ||
+                otpExpirySeconds <= 0
+              }
               className="w-full py-3.5 px-4 bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] text-white font-bold text-sm rounded-xl hover:brightness-110 transition-all flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-[#FF5A36]/25 disabled:opacity-50"
             >
               {isLoading ? (

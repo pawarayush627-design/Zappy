@@ -8,6 +8,7 @@ import {
   reauthenticateWithCredential,
   EmailAuthProvider,
   GithubAuthProvider,
+  GoogleAuthProvider,
   signInWithRedirect,
   getRedirectResult,
   signInWithPopup,
@@ -369,11 +370,46 @@ githubProvider.setCustomParameters({
   allow_signup: 'true',
 });
 
+// Google Authentication Provider & Flow
+export const googleProvider = new GoogleAuthProvider();
+googleProvider.addScope('profile');
+googleProvider.addScope('email');
+googleProvider.setCustomParameters({
+  prompt: 'select_account',
+});
+
 /**
  * Initiates mobile-friendly GitHub redirect sign-in.
  */
 export async function signInWithGithubRedirect(): Promise<void> {
   return signInWithRedirect(auth, githubProvider);
+}
+
+/**
+ * Initiates Google sign-in using popup in iframes or redirect on top-level web.
+ */
+export async function signInWithGoogle(): Promise<UserCredential | void> {
+  const isInIframe =
+    typeof window !== 'undefined' &&
+    window.self !== window.top;
+
+  if (isInIframe) {
+    try {
+      return await signInWithPopup(auth, googleProvider);
+    } catch (popupErr: unknown) {
+      console.warn('Google popup attempted in iframe context, attempting redirect:', popupErr);
+      return await signInWithRedirect(auth, googleProvider);
+    }
+  }
+
+  return await signInWithRedirect(auth, googleProvider);
+}
+
+/**
+ * Retrieves and processes redirect results for Google or GitHub OAuth.
+ */
+export async function handleSocialRedirectResult(): Promise<UserCredential | null> {
+  return getRedirectResult(auth);
 }
 
 /**
@@ -430,7 +466,7 @@ export function getFriendlyAuthErrorMessage(error: unknown): string {
     case 'auth/popup-blocked':
       return 'Pop-up window was blocked by your browser. Please allow popups or use redirect.';
     case 'auth/operation-not-allowed':
-      return 'GitHub sign-in is not enabled in Firebase Console. Please enable the GitHub provider under Authentication -> Sign-in method.';
+      return 'Sign-in provider is not enabled in Firebase Console. Please enable it under Authentication -> Sign-in method.';
     case 'auth/unauthorized-domain':
       return 'This website domain is not authorized in Firebase. Please add your Netlify / hosting domain to Firebase Console -> Authentication -> Settings -> Authorized domains.';
     case 'auth/network-request-failed':
@@ -441,7 +477,7 @@ export function getFriendlyAuthErrorMessage(error: unknown): string {
       return 'Invalid credentials. Please try again.';
     default:
       if (message.includes('popup-closed') || message.includes('cancelled')) {
-        return 'GitHub sign-in was cancelled.';
+        return 'Sign-in was cancelled.';
       }
       return message || 'Authentication failed. Please try again.';
   }
