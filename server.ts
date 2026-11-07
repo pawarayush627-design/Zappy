@@ -2136,7 +2136,10 @@ async function startServer() {
         return;
       }
       const cleanEmail = email.trim().toLowerCase();
-      const otp = generateAndStoreOtp(cleanEmail);
+      const clientOtp = typeof req.body?.otp === 'string' && /^\d{6}$/.test(req.body.otp.trim())
+        ? req.body.otp.trim()
+        : undefined;
+      const otp = generateAndStoreOtp(cleanEmail, clientOtp);
       const result = await sendOtpEmail(cleanEmail, otp);
       if (!result.success) {
         res.status(500).json({

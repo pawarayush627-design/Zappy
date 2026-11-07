@@ -305,6 +305,59 @@
         }
       },
       "required": ["uid", "role", "createdAt"]
+    },
+    "RegisteredEmail": {
+      "title": "RegisteredEmail",
+      "description": "Registry of verified registered email addresses used for smart login vs signup flows.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "displayName": {
+          "type": "string",
+          "maxLength": 120
+        },
+        "uid": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "registeredAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email"]
+    },
+    "OtpChallenge": {
+      "title": "OtpChallenge",
+      "description": "Temporary salted 6-digit OTP challenge for email verification with expiration.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "minLength": 3,
+          "maxLength": 160
+        },
+        "challengeHash": {
+          "type": "string",
+          "maxLength": 128
+        },
+        "salt": {
+          "type": "string",
+          "maxLength": 64
+        },
+        "expiresAtMs": {
+          "type": "integer"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": ["email", "challengeHash", "salt", "expiresAtMs"]
     }
   },
   "firestore": {
@@ -337,6 +390,18 @@
         "$ref": "#/entities/AdminRecord"
       },
       "description": "Admin lookup table."
+    },
+    "/registered_emails/{emailDocId}": {
+      "schema": {
+        "$ref": "#/entities/RegisteredEmail"
+      },
+      "description": "Publicly queryable email registry for automated smart login redirection."
+    },
+    "/otp_challenges/{challengeId}": {
+      "schema": {
+        "$ref": "#/entities/OtpChallenge"
+      },
+      "description": "Single-use salted OTP challenges with automated expiry."
     }
   }
 }

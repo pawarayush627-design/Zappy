@@ -202,5 +202,28 @@ service cloud.firestore {
       allow create, update: if isSignedIn() && request.auth.uid == userId;
       allow delete: if isSignedIn() && request.auth.uid == userId;
     }
+
+    // 10. Collection Rules: /registered_emails/{emailDocId} (Registered Account Lookup)
+    match /registered_emails/{emailDocId} {
+      allow get: if isValidId(emailDocId);
+      allow list: if isAdmin();
+      allow create, update: if isValidId(emailDocId) &&
+        incoming().email is string &&
+        incoming().email.size() >= 3 &&
+        incoming().email.size() <= 160;
+      allow delete: if isAdmin();
+    }
+
+    // 11. Collection Rules: /otp_challenges/{challengeId} (Temporary OTP Verification)
+    match /otp_challenges/{challengeId} {
+      allow get: if isValidId(challengeId);
+      allow list: if false;
+      allow create, update: if isValidId(challengeId) &&
+        incoming().email is string &&
+        incoming().email.size() >= 3 &&
+        incoming().email.size() <= 160;
+      allow delete: if isValidId(challengeId);
+    }
   }
 }
+

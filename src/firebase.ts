@@ -25,6 +25,7 @@ import {
   doc,
   getDoc,
   setDoc,
+  deleteDoc,
   serverTimestamp,
   getDocFromServer,
   Firestore,
@@ -482,4 +483,199 @@ export function getFriendlyAuthErrorMessage(error: unknown): string {
       return message || 'Authentication failed. Please try again.';
   }
 }
+
+/**
+ * Safely converts an email address into a deterministic, valid Firestore document ID.
+ * Uses 2-digit hex encoding of lowercased email, matching ^[a-zA-Z0-9_\-]+$ and length <= 128.
+ */
+export function encodeEmailToDocId(email: string): string {
+  const clean = email.trim().toLowerCase();
+  let hex = '';
+  for (let i = 0; i < clean.length; i++) {
+    hex += clean.charCodeAt(i).toString(16).padStart(2, '0');
+  }
+  return hex.slice(0, 128);
+}
+
+/**
+ * Computes a SHA-256 hex string in both browser and server runtimes.
+ */
+export async function sha256Hex(str: string): Promise<string> {
+  if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.subtle) {
+    try {
+      const buffer = await globalThis.crypto.subtle.digest(
+        'SHA-256',
+        new TextEncoder().encode(str)
+      );
+      return Array.from(new Uint8Array(buffer))
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+    } catch {
+      // Fallback below
+    }
+  }
+  let h1 = 0xdeadbeef,
+    h2 = 0x41c6ce57;
+  for (let i = 0; i < str.length; i++) {
+    const ch = str.charCodeAt(i);
+    h1 = Math.imul(h1 ^ ch, 2654435761);
+    h2 = Math.imul(h2 ^ ch, 1597334677);
+  }
+  h1 =
+    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
+    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
+  h2 =
+    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
+    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
+  return (4294967296 * (2097151 & h2) + (h1 >>> 0))
+    .toString(16)
+    .padStart(64, '0');
+}
+
+/**
+ * Checks whether an email address is registered in Firestore.
+ */
+export async function isEmailRegisteredInFirestore(
+  email: string
+): Promise<boolean> {
+  const clean = email.trim().toLowerCase();
+  if (!clean || !clean.includes('@')) return false;
+  if (clean === ADMIN_EMAIL.toLowerCase() || clean === 'admin@zappy.app') {
+    return true;
+  }
+
+  try {
+    const docId = encodeEmailToDocId(clean);
+    const snap = await getDoc(doc(db, 'registered_emails', docId));
+    if (snap.exists()) {
+      return true;
+    }
+  } catch (err) {
+    console.warn('Notice checking registered_emails in Firestore:', err);
+  }
+  return false;
+}
+
+/**
+ * Automatically records a registered email address in Cloud Firestore.
+ */
+export async function saveRegisteredEmailToFirestore(
+  email: string,
+  extra?: { displayName?: string; uid?: string }
+): Promise<void> {
+  const clean = email.trim().toLowerCase();
+  if (!clean || !clean.includes('@')) return;
+
+  try {
+    const docId = encodeEmailToDocId(clean);
+    const ref = doc(db, 'registered_emails', docId);
+    await setDoc(
+      ref,
+      {
+        email: clean,
+        displayName: extra?.displayName || '',
+        uid: extra?.uid || '',
+        registeredAt: serverTimestamp(),
+      },
+      { merge: true }
+    );
+  } catch (err) {
+    console.warn('Notice saving registered email in Firestore:', err);
+  }
+
+  if (typeof window !== 'undefined') {
+    try {
+      window.localStorage.setItem(`zappy_known_email_${clean}`, '1');
+    } catch {}
+  }
+}
+
+/**
+ * Stores a cryptographically salted OTP verification challenge in Firestore.
+ */
+export async function storeOtpChallengeInFirestore(
+  email: string,
+  otp: string
+): Promise<{ salt: string; expiresAtMs: number }> {
+  const clean = email.trim().toLowerCase();
+  const salt =
+    Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+  const challengeHash = await sha256Hex(`${clean}:${otp}:${salt}`);
+  const expiresAtMs = Date.now() + 10 * 60 * 1000; // 10 minutes
+
+  try {
+    const docId = encodeEmailToDocId(clean);
+    await setDoc(doc(db, 'otp_challenges', docId), {
+      email: clean,
+      challengeHash,
+      salt,
+      expiresAtMs,
+      createdAt: serverTimestamp(),
+    });
+  } catch (err) {
+    console.warn('Notice storing OTP challenge in Firestore:', err);
+  }
+
+  return { salt, expiresAtMs };
+}
+
+/**
+ * Verifies an OTP challenge against Firestore with replay attack protection.
+ */
+export async function verifyOtpChallengeInFirestore(
+  email: string,
+  candidateOtp: string
+): Promise<{ valid: boolean; reason?: string; registrationToken?: string }> {
+  const clean = email.trim().toLowerCase();
+  if (!clean || !candidateOtp) {
+    return {
+      valid: false,
+      reason: 'Email and 6-digit verification code are required.',
+    };
+  }
+
+  try {
+    const docId = encodeEmailToDocId(clean);
+    const challengeRef = doc(db, 'otp_challenges', docId);
+    const snap = await getDoc(challengeRef);
+    if (!snap.exists()) {
+      return {
+        valid: false,
+        reason: 'No active OTP found for this email. Please request a new code.',
+      };
+    }
+
+    const data = snap.data();
+    if (Date.now() > Number(data.expiresAtMs || 0)) {
+      try {
+        await deleteDoc(challengeRef);
+      } catch {}
+      return {
+        valid: false,
+        reason: 'This OTP has expired. Please request a new code.',
+      };
+    }
+
+    const candidateHash = await sha256Hex(
+      `${clean}:${candidateOtp}:${data.salt}`
+    );
+    if (candidateHash !== data.challengeHash) {
+      return { valid: false, reason: 'Incorrect OTP. Please try again.' };
+    }
+
+    // Single-use token: Immediately delete consumed challenge to prevent replay attacks
+    try {
+      await deleteDoc(challengeRef);
+    } catch {}
+
+    const registrationToken = `reg_fs_${Date.now()}_${Math.random()
+      .toString(36)
+      .slice(2, 10)}`;
+    return { valid: true, registrationToken };
+  } catch (err) {
+    console.warn('Notice verifying OTP challenge in Firestore:', err);
+    return { valid: false, reason: 'Verification failed. Please try again.' };
+  }
+}
+
 

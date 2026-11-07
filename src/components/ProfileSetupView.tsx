@@ -11,7 +11,7 @@ import {
   ArrowLeft,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
-import { saveUserProfile, UserProfileData } from '../firebase';
+import { saveUserProfile, UserProfileData, saveRegisteredEmailToFirestore } from '../firebase';
 import { ALL_GENRES } from '../data/catalog';
 import { Genre } from '../types/media';
 
@@ -194,6 +194,12 @@ export const ProfileSetupView: React.FC<ProfileSetupViewProps> = ({
         updatedAtMs: Date.now(),
       };
       await saveUserProfile(updated);
+      if (currentUser.email) {
+        await saveRegisteredEmailToFirestore(currentUser.email, {
+          displayName: cleanName,
+          uid: currentUser.uid,
+        });
+      }
       onComplete(updated);
     } catch (err) {
       setError(

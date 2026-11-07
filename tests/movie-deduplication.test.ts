@@ -113,3 +113,4 @@ assert.strictEqual(uniqueCandidate, undefined, 'Brand new movie should not be fl
 console.log('✅ Test 5 passed: Brand new unique movie allowed for upload');
 
 console.log('🎉 All movie deduplication tests passed!');
+process.exit(0);
