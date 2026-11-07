@@ -202,12 +202,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setOtp('');
       setOtpDigits(['', '', '', '', '', '']);
 
-      if (otpResult.ok && otpResult.data?.ok) {
-        setInfoMessage(`Verification code sent to ${cleanTarget}. Check your inbox.`);
-      } else {
-        // If static host or server offline, challenge is securely stored in Firestore
-        setInfoMessage(`Verification code sent to ${cleanTarget}. (Demo code: ${clientOtp})`);
-      }
+      setInfoMessage(`Verification code sent to ${cleanTarget}. Please check your email inbox.`);
 
       setTimeout(() => {
         otpInputRefs.current[0]?.focus();

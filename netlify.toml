@@ -3,10 +3,10 @@
   publish = "dist"
 
 [[redirects]]
-  from = "/api/*"
-  to = "https://ais-pre-h3khdspljkh5i75p226uvc-268382957607.asia-east1.run.app/api/:splat"
+  from = "/api/auth/send-otp"
+  to = "/.netlify/functions/send-otp"
   status = 200
-  force = true
+
 
 [[redirects]]
   from = "/*"

@@ -55,6 +55,25 @@ export async function safeApiFetchJson<T = any>(
       }
     }
 
+    // If on Netlify and calling /api/auth/send-otp returned HTML, retry against /.netlify/functions/send-otp
+    if (path.startsWith('/api/auth/send-otp')) {
+      try {
+        const netlifyFnRes = await fetch('/.netlify/functions/send-otp', init);
+        const netlifyText = await netlifyFnRes.text();
+        if (isJsonResponse(netlifyFnRes, netlifyText)) {
+          const parsed = JSON.parse(netlifyText) as T;
+          return {
+            ok: netlifyFnRes.ok,
+            status: netlifyFnRes.status,
+            data: parsed,
+            isStaticFallback: false,
+          };
+        }
+      } catch {
+        // Ignore
+      }
+    }
+
     // If relative /api/... returned HTML (e.g., on Netlify static hosting without proxy),
     // retry against the remote Cloud Run backend origin if we are not already on that origin.
     if (
