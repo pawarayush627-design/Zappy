@@ -108,6 +108,7 @@ import { VisualUiEditor } from './components/VisualUiEditor';
 import { MediaArtwork } from './components/MediaArtwork';
 import { AuthModal } from './components/AuthModal';
 import { ProfileSetupView } from './components/ProfileSetupView';
+import { PWAInstallButton } from './components/PWAInstallButton';
 import { safeApiFetchJson } from './utils/apiClient';
 
 type NavView =
@@ -2492,6 +2493,10 @@ export default function App() {
               </span>
             </button>
           )}
+
+          <div className="pt-2">
+            <PWAInstallButton variant="header" className="w-full justify-center py-2" />
+          </div>
         </div>
       </aside>
 
@@ -2518,6 +2523,8 @@ export default function App() {
         </button>
 
         <div className="flex items-center gap-2">
+          <PWAInstallButton variant="header" />
+
           <button
             type="button"
             onClick={() => handleNavigate('search')}
@@ -4073,6 +4080,10 @@ export default function App() {
                       onToggleWatchlist={handleToggleWatchlist}
                     />
                   )}
+                  {/* PWA Android App Installation Card */}
+                  <div className="py-2">
+                    <PWAInstallButton variant="card" />
+                  </div>
                 </>
               ) : (
                 <section className="relative min-h-[340px] rounded-2xl overflow-hidden border border-[#292C35] bg-gradient-to-b from-[#14161D] to-[#08090D] p-8 sm:p-12 flex flex-col justify-center items-center text-center shadow-2xl">
