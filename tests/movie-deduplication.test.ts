@@ -1,8 +1,14 @@
 import assert from 'node:assert';
 import { findDuplicateMovie } from '../src/components/AdminStudioModal';
 import { MediaItem } from '../src/types/media';
+import {
+  toMovieSlug,
+  getMoviePath,
+  getMovieShareUrl,
+  findMovieByUrlLocation,
+} from '../src/utils/movieUrl';
 
-console.log('Running ZappyFun Movie Deduplication & Duplicate Prevention Tests...');
+console.log('Running ZappyFun Movie Deduplication & URL Routing Tests...');
 
 const mockCatalog: MediaItem[] = [
   {
@@ -112,5 +118,31 @@ const uniqueCandidate = findDuplicateMovie(
 assert.strictEqual(uniqueCandidate, undefined, 'Brand new movie should not be flagged as duplicate');
 console.log('✅ Test 5 passed: Brand new unique movie allowed for upload');
 
-console.log('🎉 All movie deduplication tests passed!');
+// Test 6: Movie-specific clean URLs (www.zappyfun.netlify.app/(movie name))
+assert.strictEqual(toMovieSlug('Interstellar'), 'Interstellar');
+assert.strictEqual(toMovieSlug('Dune: Part Two'), 'Dune-Part-Two');
+assert.strictEqual(getMoviePath(mockCatalog[0]), '/Interstellar');
+assert.strictEqual(
+  getMovieShareUrl(mockCatalog[1]),
+  'https://www.zappyfun.netlify.app/Dune-Part-Two'
+);
+assert.strictEqual(
+  findMovieByUrlLocation('/Interstellar', '', mockCatalog)?.id,
+  'movie-157336'
+);
+assert.strictEqual(
+  findMovieByUrlLocation('/dune-part-two', '', mockCatalog)?.id,
+  'movie-693134'
+);
+assert.strictEqual(
+  findMovieByUrlLocation('/Dune%20Part%20Two', '', mockCatalog)?.id,
+  'movie-693134'
+);
+assert.strictEqual(
+  findMovieByUrlLocation('/Terms-of-use', '', mockCatalog),
+  undefined
+);
+console.log('✅ Test 6 passed: Movie-specific clean URLs (/Interstellar, /Dune-Part-Two) resolve accurately');
+
+console.log('🎉 All movie deduplication & URL routing tests passed!');
 process.exit(0);

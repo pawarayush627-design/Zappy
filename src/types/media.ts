@@ -88,6 +88,7 @@ export interface MediaItem {
   trendingRank?: number;
   popularScore?: number;
   recentlyAdded?: boolean;
+  createdAtMs?: number;
   seasonsCount?: number;
   episodesCount?: number;
   seasons?: SeasonSummary[];

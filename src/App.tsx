@@ -28,7 +28,6 @@ import {
   Layers,
   User as UserIcon,
   SlidersHorizontal,
-  Palette,
   Trash2,
   Mail,
   FileText,
@@ -104,12 +103,16 @@ import {
   WatchProgressEntry,
 } from './components/ContinueWatchingRow';
 import { AdminStudioModal } from './components/AdminStudioModal';
-import { VisualUiEditor } from './components/VisualUiEditor';
 import { MediaArtwork } from './components/MediaArtwork';
 import { AuthModal } from './components/AuthModal';
 import { ProfileSetupView } from './components/ProfileSetupView';
 import { PWAInstallButton } from './components/PWAInstallButton';
 import { safeApiFetchJson } from './utils/apiClient';
+import {
+  DEFAULT_APP_TITLE,
+  findMovieByUrlLocation,
+  getMoviePath,
+} from './utils/movieUrl';
 
 type NavView =
   | 'home'
@@ -163,7 +166,7 @@ const ZAPPY_DEVICES = [
     title: 'Gaming Consoles',
     icon: Gamepad2,
     description:
-      'Experience high-frame-rate cinema and series playback on PlayStation and Xbox gaming consoles.',
+      'Experience high-frame-rate cinema playback on PlayStation and Xbox gaming consoles.',
   },
   {
     title: 'VR Headsets',
@@ -178,13 +181,13 @@ const ZAPPY_FAQS = [
     num: '01',
     question: 'What is ZappyFun?',
     answer:
-      'ZappyFun is an on-demand streaming platform that allows you to watch movies and TV shows in 4K UHD.',
+      'ZappyFun is an on-demand movie streaming platform that allows you to watch full-length movies online in 4K UHD.',
   },
   {
     num: '02',
     question: 'What content is available on ZappyFun?',
     answer:
-      'Enjoy blockbuster movies, original series, trending TV shows, documentaries, and curated titles across every genre.',
+      'Enjoy blockbuster movies, action thrillers, sci-fi epics, dramas, comedies, documentaries, and curated films across every genre.',
   },
   {
     num: '03',
@@ -196,13 +199,13 @@ const ZAPPY_FAQS = [
     num: '04',
     question: 'How do I sign in to ZappyFun?',
     answer:
-      'Click Sign In to authenticate using your email and password. New users can register instantly with a secure 4-digit verification code sent to their email.',
+      'Click Sign In to authenticate using your email and password. New users can register instantly with a secure verification code sent to their email.',
   },
   {
     num: '05',
-    question: 'What happens when I finish watching a title in my Watchlist?',
+    question: 'What happens when I finish watching a movie in my Watchlist?',
     answer:
-      'Once you watch a movie or show fully on ZappyFun, it is automatically removed from your Watchlist so your list stays fresh.',
+      'Once you watch a movie fully on ZappyFun, it is automatically removed from your Watchlist so your list stays fresh.',
   },
   {
     num: '06',
@@ -262,7 +265,7 @@ export default function App() {
   const [resumeSavedOnOpen, setResumeSavedOnOpen] = useState<boolean>(false);
   const [activeHeroIndex, setActiveHeroIndex] = useState<number>(0);
 
-  // Admin Studio Modal & Live Visual UI Editor State
+  // Admin Studio Modal State
   const [adminStudioOpen, setAdminStudioOpen] = useState<boolean>(false);
   const [adminInitialTab, setAdminInitialTab] = useState<
     'catalog' | 'support' | 'legal'
@@ -272,7 +275,7 @@ export default function App() {
   const [previewDraftItem, setPreviewDraftItem] =
     useState<MediaItem | null>(null);
   const [isPublishingDraft, setIsPublishingDraft] = useState<boolean>(false);
-  const [visualEditorActive, setVisualEditorActive] = useState<boolean>(false);
+  const initialUrlResolvedRef = useRef<boolean>(false);
 
   // Mobile Menu & Header Popovers
   const [mobileMenuOpen, setMobileMenuOpen] = useState<boolean>(false);
@@ -422,7 +425,7 @@ export default function App() {
   const [activeModal, setActiveModal] = useState<InfoModalType>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
 
-  // Sync browser URL Back/Forward buttons for Legal routes (/Terms-of-use, /Privacy-policy, /About, /Disclaimer-and-copyright-policy)
+  // Sync browser URL Back/Forward buttons for Movie routes (/(movie name)) and Legal routes (/Terms-of-use, /Privacy-policy, /About, /Disclaimer-and-copyright-policy)
   useEffect(() => {
     const handlePopState = () => {
       const matchedLegal = resolveLegalSectionFromLocation(
@@ -432,13 +435,29 @@ export default function App() {
       if (matchedLegal) {
         setActiveLegalSection(matchedLegal);
         setActiveView('legal');
-      } else {
-        setActiveView((prev) => (prev === 'legal' ? 'home' : prev));
+        document.title = DEFAULT_APP_TITLE;
+        return;
       }
+
+      const matchedMovie = findMovieByUrlLocation(
+        window.location.pathname,
+        window.location.search,
+        catalog
+      );
+      if (matchedMovie) {
+        setSelectedMedia(matchedMovie);
+        setActiveView('details');
+        document.title = `${matchedMovie.title} (${matchedMovie.releaseYear}) — ZappyFun`;
+        return;
+      }
+
+      setSelectedMedia(null);
+      setActiveView('home');
+      document.title = DEFAULT_APP_TITLE;
     };
     window.addEventListener('popstate', handlePopState);
     return () => window.removeEventListener('popstate', handlePopState);
-  }, []);
+  }, [catalog]);
 
   useEffect(() => {
     try {
@@ -714,45 +733,61 @@ export default function App() {
             }).catch(() => {});
           }
 
-          return {
-            id: data.id || docSnap.id,
-            tmdbId: resolvedNumericId,
-            mediaType: 'movie' as const,
-            title: data.title || 'Untitled',
-            tagline: cleanTagline,
-            synopsis: data.synopsis || '',
-            contentType: 'movie' as const,
-            genres:
-              Array.isArray(data.genres) && data.genres.length > 0
-                ? data.genres
-                : ['Action'],
-            releaseYear: Number(data.releaseYear) || 2024,
-            durationMinutes: Number(data.durationMinutes) || 120,
-            maturityRating: data.maturityRating || 'PG-13',
-            directorOrCreator: data.directorOrCreator || 'Featured Creator',
-            cast: Array.isArray(data.cast) ? data.cast : ['Featured Cast'],
-            credits: parsedCredits,
-            creditsJson:
-              typeof data.creditsJson === 'string' ? data.creditsJson : '[]',
-            posterUrl: data.posterUrl || '',
-            backdropUrl: data.backdropUrl || data.posterUrl || '',
-            cinesrcEmbedUrl: normalizedVidlyUrl,
-            justWatchUrl: data.justWatchUrl || '',
-            visibility: data.visibility || 'public',
-            authorUid: data.authorUid || '',
-            availabilityStatus: 'playable_demo',
-            availabilityNote: '4K UHD · Instant Stream',
-            featured: Boolean(data.featured ?? true),
-            heroAddedAtMs: Number(data.heroAddedAtMs) || undefined,
-            popularScore: Number(data.popularScore) || 92,
-            recentlyAdded: true,
-            seasonsCount: undefined,
-            episodesCount: undefined,
-            visualTheme: {
-              primaryHex: '#141414',
-              secondaryHex: '#1A1A1A',
-              accentHex: '#E50000',
-              motif: 'horizon',
+            // Resolve created timestamp: Firestore Timestamp object (.toMillis()), number, or string
+            let resolvedCreatedAtMs: number | undefined = undefined;
+            if (data.createdAt && typeof data.createdAt === 'object' && typeof (data.createdAt as { toMillis?: () => number }).toMillis === 'function') {
+              resolvedCreatedAtMs = (data.createdAt as { toMillis: () => number }).toMillis();
+            } else if (typeof data.createdAtMs === 'number' && data.createdAtMs > 0) {
+              resolvedCreatedAtMs = data.createdAtMs;
+            } else if (typeof data.createdAt === 'number' && data.createdAt > 0) {
+              resolvedCreatedAtMs = data.createdAt;
+            } else if (typeof data.heroAddedAtMs === 'number' && data.heroAddedAtMs > 0) {
+              resolvedCreatedAtMs = data.heroAddedAtMs;
+            }
+
+            const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+            const isWithin7Days = typeof resolvedCreatedAtMs === 'number' && (Date.now() - resolvedCreatedAtMs) <= SEVEN_DAYS_MS && (Date.now() - resolvedCreatedAtMs) >= 0;
+
+            return {
+              id: data.id || docSnap.id,
+              tmdbId: resolvedNumericId,
+              mediaType: 'movie' as const,
+              title: data.title || 'Untitled',
+              tagline: cleanTagline,
+              synopsis: data.synopsis || '',
+              contentType: 'movie' as const,
+              genres:
+                Array.isArray(data.genres) && data.genres.length > 0
+                  ? data.genres
+                  : ['Action'],
+              releaseYear: Number(data.releaseYear) || 2024,
+              durationMinutes: Number(data.durationMinutes) || 120,
+              maturityRating: data.maturityRating || 'PG-13',
+              directorOrCreator: data.directorOrCreator || 'Featured Creator',
+              cast: Array.isArray(data.cast) ? data.cast : ['Featured Cast'],
+              credits: parsedCredits,
+              creditsJson:
+                typeof data.creditsJson === 'string' ? data.creditsJson : '[]',
+              posterUrl: data.posterUrl || '',
+              backdropUrl: data.backdropUrl || data.posterUrl || '',
+              cinesrcEmbedUrl: normalizedVidlyUrl,
+              justWatchUrl: data.justWatchUrl || '',
+              visibility: data.visibility || 'public',
+              authorUid: data.authorUid || '',
+              availabilityStatus: 'playable_demo',
+              availabilityNote: '4K UHD · Instant Stream',
+              featured: Boolean(data.featured ?? true),
+              heroAddedAtMs: Number(data.heroAddedAtMs) || undefined,
+              popularScore: Number(data.popularScore) || 92,
+              createdAtMs: resolvedCreatedAtMs,
+              recentlyAdded: Boolean(data.recentlyAdded === true || isWithin7Days),
+              seasonsCount: undefined,
+              episodesCount: undefined,
+              visualTheme: {
+                primaryHex: '#141414',
+                secondaryHex: '#1A1A1A',
+                accentHex: '#E50000',
+                motif: 'horizon',
             },
           };
         });
@@ -801,13 +836,31 @@ export default function App() {
           return updated;
         });
 
-        const params = new URLSearchParams(window.location.search);
-        const requestedTitleId = params.get('title');
-        if (requestedTitleId && items.length > 0) {
-          const match = items.find((item) => item.id === requestedTitleId);
-          if (match) {
-            setSelectedMedia(match);
+        if (!initialUrlResolvedRef.current && uniqueMovies.length > 0) {
+          const matchedMovie = findMovieByUrlLocation(
+            window.location.pathname,
+            window.location.search,
+            uniqueMovies
+          );
+          if (matchedMovie) {
+            initialUrlResolvedRef.current = true;
+            setSelectedMedia(matchedMovie);
             setActiveView('details');
+            document.title = `${matchedMovie.title} (${matchedMovie.releaseYear}) — ZappyFun`;
+            try {
+              const targetMoviePath = getMoviePath(matchedMovie);
+              if (window.location.pathname !== targetMoviePath) {
+                window.history.replaceState(
+                  { movieId: matchedMovie.id },
+                  '',
+                  targetMoviePath
+                );
+              }
+            } catch {
+              // Ignore history replace error
+            }
+          } else {
+            initialUrlResolvedRef.current = true;
           }
         }
       },
@@ -1112,7 +1165,7 @@ export default function App() {
       setCatalog([]);
       setSelectedMedia(null);
       showToast(
-        `Successfully removed all ${snap.size} movies and TV shows from the catalog.`
+        `Successfully removed all ${snap.size} movies from the catalog.`
       );
     } catch (error) {
       console.error('Failed to clear catalog:', error);
@@ -1274,14 +1327,11 @@ export default function App() {
     setProfileMenuOpen(false);
     setMobileMenuOpen(false);
     try {
-      if (
-        resolveLegalSectionFromLocation(
-          window.location.pathname,
-          window.location.search
-        )
-      ) {
-        window.history.pushState({}, '', '/');
+      const targetMoviePath = getMoviePath(item);
+      if (window.location.pathname !== targetMoviePath) {
+        window.history.pushState({ movieId: item.id }, '', targetMoviePath);
       }
+      document.title = `${item.title} (${item.releaseYear}) — ZappyFun`;
     } catch {
       // Ignore
     }
@@ -1341,16 +1391,12 @@ export default function App() {
     setMobileMenuOpen(false);
     setNotificationsOpen(false);
     setProfileMenuOpen(false);
-    if (view !== 'legal') {
+    if (view !== 'legal' && view !== 'details') {
       try {
-        if (
-          resolveLegalSectionFromLocation(
-            window.location.pathname,
-            window.location.search
-          )
-        ) {
+        if (window.location.pathname !== '/' || window.location.search) {
           window.history.pushState({}, '', '/');
         }
+        document.title = DEFAULT_APP_TITLE;
       } catch {
         // Ignore
       }
@@ -2414,42 +2460,20 @@ export default function App() {
           </nav>
         </div>
 
-        {/* Bottom: Admin Studio, Visual UI Editor, and Profile */}
+        {/* Bottom: Admin Studio and Profile */}
         <div className="w-full flex flex-col gap-1.5 pt-3 border-t border-[#292C35]">
           {isAdmin && (
-            <>
-              <button
-                type="button"
-                onClick={() => openAdminStudio(null, 'catalog')}
-                className="flex items-center gap-2.5 w-full px-3 py-2 rounded-xl bg-[#FFC400]/15 hover:bg-[#FFC400]/25 border border-[#FFC400]/30 text-[#FFC400] transition-colors cursor-pointer"
-                title="Admin Studio (Catalog & Content Manager)"
-              >
-                <SlidersHorizontal className="w-4 h-4 shrink-0" />
-                <span className="truncate text-xs font-bold">
-                  Admin Studio
-                </span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setVisualEditorActive((prev) => !prev)}
-                className={`flex items-center gap-2.5 w-full px-3 py-2 rounded-xl transition-colors cursor-pointer ${
-                  visualEditorActive
-                    ? 'bg-[#FFC400] text-[#08090D] font-bold'
-                    : 'hover:bg-[#252832] text-[#A7A9B4] hover:text-white'
-                }`}
-                title="Visual UI Component Editor"
-              >
-                <Palette
-                  className={`w-4 h-4 shrink-0 ${
-                    visualEditorActive ? 'text-[#08090D]' : 'text-[#FFC400]'
-                  }`}
-                />
-                <span className="truncate text-xs font-semibold">
-                  {visualEditorActive ? 'Exit Editor' : 'Edit UI'}
-                </span>
-              </button>
-            </>
+            <button
+              type="button"
+              onClick={() => openAdminStudio(null, 'catalog')}
+              className="flex items-center gap-2.5 w-full px-3 py-2 rounded-xl bg-[#FFC400]/15 hover:bg-[#FFC400]/25 border border-[#FFC400]/30 text-[#FFC400] transition-colors cursor-pointer"
+              title="Admin Studio (Catalog & Content Manager)"
+            >
+              <SlidersHorizontal className="w-4 h-4 shrink-0" />
+              <span className="truncate text-xs font-bold">
+                Admin Studio
+              </span>
+            </button>
           )}
 
           {currentUser ? (
@@ -2732,11 +2756,19 @@ export default function App() {
                 hasProgress={Boolean(watchProgressMap[selectedMedia.id])}
                 onBack={() => {
                   setPreviewDraftItem(null);
-                  setActiveView(
+                  const nextView =
                     previousView && previousView !== 'details'
                       ? previousView
-                      : 'home'
-                  );
+                      : 'home';
+                  setActiveView(nextView);
+                  try {
+                    if (window.location.pathname !== '/' || window.location.search) {
+                      window.history.pushState({}, '', '/');
+                    }
+                    document.title = DEFAULT_APP_TITLE;
+                  } catch {
+                    // Ignore
+                  }
                 }}
                 onSelectMedia={(item, auto, resumeSaved) => {
                   setPreviewDraftItem(null);
@@ -3488,15 +3520,6 @@ export default function App() {
                       >
                         <FileText className="w-4 h-4" />
                         <span>Legal Pages</span>
-                      </button>
-
-                      <button
-                        type="button"
-                        onClick={() => setVisualEditorActive(true)}
-                        className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-2 cursor-pointer"
-                      >
-                        <Palette className="w-4 h-4 text-[#FFC400]" />
-                        <span>UI Editor</span>
                       </button>
 
                       {confirmingPurgeCatalog ? (
@@ -4431,14 +4454,6 @@ export default function App() {
           handleSelectMedia(item, true, false);
         }}
         onPreviewDraftInApp={handlePreviewDraftInApp}
-        onLaunchVisualEditor={() => setVisualEditorActive(true)}
-      />
-
-      {/* LIVE VISUAL UI COMPONENT EDITOR */}
-      <VisualUiEditor
-        isActive={visualEditorActive}
-        currentUser={currentUser}
-        onCloseEditor={() => setVisualEditorActive(false)}
       />
 
       {/* INFO, LEGAL & PREFERENCES MODAL */}

@@ -271,35 +271,39 @@ async function resolvePersonPhotos(
     }
   }
 
-  // Step 1: Batch query Wikipedia pageimages API for uncached names
+  // Step 1: Fast batched Wikipedia pageimages API query (single HTTP request with 1.8s timeout)
   if (uncachedNames.length > 0) {
     try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 1800);
       const titlesParam = uncachedNames.slice(0, 15).join('|');
-    const wikiBatchUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(
-      titlesParam
-    )}&prop=pageimages&format=json&pithumbsize=400&redirects=1`;
+      const wikiBatchUrl = `https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(
+        titlesParam
+      )}&prop=pageimages&format=json&pithumbsize=400&redirects=1`;
 
-    const res = await fetch(wikiBatchUrl, {
-      headers: {
-        'User-Agent': 'ZappyStreamingPlatform/1.0 (contact@zappy.app)',
-      },
-    });
+      const res = await fetch(wikiBatchUrl, {
+        signal: controller.signal,
+        headers: {
+          'User-Agent': 'ZappyStreamingPlatform/1.0 (contact@zappy.app)',
+        },
+      });
+      clearTimeout(timeoutId);
 
-    if (res.ok) {
-      const data = await res.json();
-      const queryObj = data?.query;
-      const redirects = new Map<string, string>();
-      if (Array.isArray(queryObj?.redirects)) {
-        for (const r of queryObj.redirects) {
-          if (r.from && r.to) {
-            redirects.set(r.to.toLowerCase(), r.from.toLowerCase());
+      if (res.ok) {
+        const data = await res.json();
+        const queryObj = data?.query;
+        const redirects = new Map<string, string>();
+        if (Array.isArray(queryObj?.redirects)) {
+          for (const r of queryObj.redirects) {
+            if (r.from && r.to) {
+              redirects.set(r.to.toLowerCase(), r.from.toLowerCase());
+            }
           }
         }
-      }
-      const pages = queryObj?.pages || {};
-      for (const page of Object.values(pages) as any[]) {
-        const thumbUrl = page?.thumbnail?.source;
-        const pageTitle = (page?.title || '').toLowerCase();
+        const pages = queryObj?.pages || {};
+        for (const page of Object.values(pages) as any[]) {
+          const thumbUrl = page?.thumbnail?.source;
+          const pageTitle = (page?.title || '').toLowerCase();
           if (thumbUrl && pageTitle) {
             photoMap.set(pageTitle, thumbUrl);
             personPhotoCache.set(pageTitle, thumbUrl);
@@ -312,60 +316,9 @@ async function resolvePersonPhotos(
         }
       }
     } catch {
-      // Ignore Wikipedia batch error
+      // Ignore Wikipedia batch timeout/error and use fast SVG avatar fallback
     }
   }
-
-  // Step 2: Fallback for missing credits
-  const missingCredits = rawCredits.filter(
-    (c) => !photoMap.has(c.name.trim().toLowerCase())
-  );
-
-  await Promise.all(
-    missingCredits.slice(0, 8).map(async (credit) => {
-      const cleanName = credit.name.trim();
-      const key = cleanName.toLowerCase();
-      const suffix = credit.role === 'DIRECTOR' ? '(director)' : '(actor)';
-
-      try {
-        const wikiSuffixUrl = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(
-          `${cleanName} ${suffix}`
-        )}`;
-        const wRes = await fetch(wikiSuffixUrl, {
-          headers: { 'User-Agent': 'ZappyStreamingPlatform/1.0' },
-        });
-        if (wRes.ok) {
-          const wJson = await wRes.json();
-          if (wJson?.thumbnail?.source) {
-            photoMap.set(key, wJson.thumbnail.source);
-            personPhotoCache.set(key, wJson.thumbnail.source);
-            return;
-          }
-        }
-      } catch {
-        // Ignore
-      }
-
-      try {
-        const tvMazeRes = await fetch(
-          `https://api.tvmaze.com/search/people?q=${encodeURIComponent(cleanName)}`
-        );
-        if (tvMazeRes.ok) {
-          const tvMazeData = await tvMazeRes.json();
-          const img =
-            tvMazeData?.[0]?.person?.image?.medium ||
-            tvMazeData?.[0]?.person?.image?.original;
-          if (img) {
-            photoMap.set(key, img);
-            personPhotoCache.set(key, img);
-            return;
-          }
-        }
-      } catch {
-        // Ignore
-      }
-    })
-  );
 
   return rawCredits.map((c) => {
     const key = c.name.trim().toLowerCase();

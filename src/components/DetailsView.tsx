@@ -21,6 +21,7 @@ import { MediaItem } from '../types/media';
 import { VideoPlayer, STREAM_TRACKS } from './VideoPlayer';
 import { MovieCard } from './MovieCard';
 import { MediaArtwork } from './MediaArtwork';
+import { getMovieShareUrl } from '../utils/movieUrl';
 
 interface DetailsViewProps {
   item: MediaItem;
@@ -161,9 +162,7 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
   };
 
   const handleShare = () => {
-    const params = new URLSearchParams();
-    params.set('title', item.id);
-    const shareUrl = `${window.location.origin}/?${params.toString()}`;
+    const shareUrl = getMovieShareUrl(item);
     if (navigator.clipboard?.writeText) {
       navigator.clipboard.writeText(shareUrl).then(() => {
         setCopiedNotice(true);

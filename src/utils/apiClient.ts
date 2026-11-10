@@ -55,8 +55,8 @@ export async function safeApiFetchJson<T = any>(
       }
     }
 
-    // If on Netlify and calling /api/auth/* returned HTML, retry against /.netlify/functions/*
-    if (path.startsWith('/api/auth/')) {
+    // If on Netlify and calling /api/* returned HTML, retry against /.netlify/functions/*
+    if (path.startsWith('/api/auth/') || path.startsWith('/api/justwatch/')) {
       const fnMap: Record<string, string> = {
         '/api/auth/send-otp': '/.netlify/functions/send-otp',
         '/api/auth/verify-otp': '/.netlify/functions/verify-otp',
@@ -66,6 +66,7 @@ export async function safeApiFetchJson<T = any>(
           '/.netlify/functions/validate-registration-token',
         '/api/auth/consume-registration-token':
           '/.netlify/functions/validate-registration-token',
+        '/api/justwatch/extract': '/.netlify/functions/justwatch-extract',
       };
       const fnTarget = fnMap[path.split('?')[0]];
       if (fnTarget) {

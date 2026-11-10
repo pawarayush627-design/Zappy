@@ -45,6 +45,7 @@ import {
   getDoc,
   getDocs,
   collection,
+  writeBatch,
 } from 'firebase/firestore';
 import {
   db,
@@ -137,31 +138,6 @@ service cloud.firestore {
   }
 }`;
 
-interface JustWatchBrowseCard {
-  title: string;
-  releaseYear: number;
-  synopsis: string;
-  tagline: string;
-  durationMinutes: number;
-  maturityRating: 'G' | 'PG' | 'PG-13' | 'TV-PG' | 'TV-14';
-  genres: Genre[];
-  tmdbId: number | null;
-  imdbId: string | null;
-  imdbScore: number | null;
-  popularScore: number;
-  mediaType: TMDBMediaType;
-  contentType: 'movie' | 'series';
-  seasonsCount: number;
-  episodesCount: number;
-  posterUrl: string;
-  backdropUrl: string;
-  extraBackdrops: string[];
-  directorOrCreator: string;
-  cast: string[];
-  justWatchUrl: string;
-  cinesrcEmbedUrl: string;
-}
-
 interface BatchLinkResultItem {
   index: number;
   rawInput: string;
@@ -197,7 +173,6 @@ interface AdminStudioModalProps {
   onClose: () => void;
   onSelectMediaToWatch?: (item: MediaItem) => void;
   onPreviewDraftInApp?: (draftItem: MediaItem) => void;
-  onLaunchVisualEditor?: () => void;
 }
 
 /**
@@ -587,7 +562,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   onClose,
   onSelectMediaToWatch,
   onPreviewDraftInApp,
-  onLaunchVisualEditor,
 }) => {
   const isAdmin = isUserAdmin(currentUser?.email, currentUser?.emailVerified);
 
@@ -714,18 +688,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   // Firebase Project Switcher & Security Rules Drawer State
   const [rulesCopied, setRulesCopied] = useState<boolean>(false);
   const [showRulesDrawer, setShowRulesDrawer] = useState<boolean>(false);
-
-  // Direct JustWatch Search & Browse State
-  const [jwSearchQuery, setJwSearchQuery] = useState<string>('');
-  const [jwTypeFilter, setJwTypeFilter] = useState<'ALL' | 'MOVIE' | 'SHOW'>(
-    'ALL'
-  );
-  const [jwCountry, setJwCountry] = useState<'IN' | 'US' | 'GB'>('IN');
-  const [jwResults, setJwResults] = useState<JustWatchBrowseCard[]>([]);
-  const [isLoadingJwBrowse, setIsLoadingJwBrowse] = useState<boolean>(false);
-  const [publishingCardKey, setPublishingCardKey] = useState<string | null>(
-    null
-  );
 
   // Movie / Show Form State
   const [mediaType, setMediaType] = useState<TMDBMediaType>('movie');
@@ -897,50 +859,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       setIsAdminGithubLoading(false);
     }
   };
-
-  const fetchJustWatchCatalog = useCallback(
-    async (
-      queryStr: string,
-      typeFilter: 'ALL' | 'MOVIE' | 'SHOW',
-      countryCode: string
-    ) => {
-      setIsLoadingJwBrowse(true);
-      try {
-        const params = new URLSearchParams({
-          q: queryStr.trim(),
-          type: typeFilter,
-          country: countryCode,
-        });
-        const { ok, data } = await safeApiFetchJson<{ items?: JustWatchBrowseCard[] }>(
-          `/api/justwatch/search?${params.toString()}`
-        );
-        if (ok && Array.isArray(data?.items)) {
-          setJwResults(data.items);
-        }
-      } catch {
-        // Ignore
-      } finally {
-        setIsLoadingJwBrowse(false);
-      }
-    },
-    []
-  );
-
-  useEffect(() => {
-    if (!isOpen || !isAdmin || activeAdminTab !== 'catalog') return;
-    const timer = window.setTimeout(() => {
-      fetchJustWatchCatalog(jwSearchQuery, jwTypeFilter, jwCountry);
-    }, 260);
-    return () => window.clearTimeout(timer);
-  }, [
-    isOpen,
-    isAdmin,
-    activeAdminTab,
-    jwSearchQuery,
-    jwTypeFilter,
-    jwCountry,
-    fetchJustWatchCatalog,
-  ]);
 
   useEffect(() => {
     const numId = Number(tmdbIdInput);
@@ -1151,7 +1069,51 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   };
 
   /**
-   * Multi-Link JustWatch Batch Processor (Up to 100 Comma-Separated Links at One Time)
+   * Builds the Firestore document payload for a movie item
+   */
+  const buildFirestoreMoviePayload = (
+    item: MediaItem,
+    serializedCredits: string
+  ): Record<string, any> => {
+    const existingItem = catalog.find((c) => c.id === item.id);
+    const payload: Record<string, any> = {
+      id: item.id,
+      tmdbId: item.tmdbId,
+      mediaType: 'movie',
+      contentType: 'movie',
+      title: item.title,
+      tagline: item.tagline,
+      synopsis: item.synopsis,
+      genres: item.genres,
+      releaseYear: item.releaseYear,
+      durationMinutes: item.durationMinutes,
+      maturityRating: item.maturityRating,
+      directorOrCreator: item.directorOrCreator,
+      cast: item.cast,
+      creditsJson: serializedCredits,
+      posterUrl: item.posterUrl,
+      backdropUrl: item.backdropUrl,
+      cinesrcEmbedUrl: (item.cinesrcEmbedUrl || '').slice(0, 1024),
+      justWatchUrl: (item.justWatchUrl || '').slice(0, 1024),
+      featured: Boolean(item.featured ?? true),
+      heroAddedAtMs: existingItem?.heroAddedAtMs || Date.now(),
+      popularScore: item.popularScore || 92,
+      seasonsCount: 0,
+      episodesCount: 0,
+      visibility: 'public',
+      authorUid: existingItem?.authorUid || currentUser?.uid || '',
+      updatedAt: serverTimestamp(),
+    };
+    if (!existingItem) {
+      payload.createdAt = serverTimestamp();
+    }
+    return payload;
+  };
+
+  /**
+   * Multi-Link JustWatch Batch Processor (Up to 100+ Links at One Time without UI freezing)
+   * Uses throttled UI state flushes, event-loop yielding, and batched Firestore commits
+   * so uploading 100 movies at once never blocks the browser thread or triggers 100 snapshot re-renders.
    */
   const handleRunMultiLinkBatch = async (
     autoPublishToFirestore: boolean,
@@ -1160,7 +1122,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     const linksToProcess = (explicitLinks || parsedMultiLinks).slice(0, 150);
     if (linksToProcess.length === 0) {
       setErrorMessage(
-        'Please paste valid JustWatch movie or TV show links (e.g. https://www.justwatch.com/in/movie/...).'
+        'Please paste valid JustWatch movie links (e.g. https://www.justwatch.com/in/movie/...).'
       );
       return;
     }
@@ -1177,18 +1139,53 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setBatchTotalCount(linksToProcess.length);
     setBatchCompletedCount(0);
 
-    const initialItems: BatchLinkResultItem[] = linksToProcess.map(
+    const workingResults: BatchLinkResultItem[] = linksToProcess.map(
       (raw, idx) => ({
         index: idx,
         rawInput: raw,
         status: 'pending',
       })
     );
-    setBatchResults(initialItems);
+    setBatchResults([...workingResults]);
 
+    // Track both existing catalog movies and newly extracted movies in this batch to prevent duplicates
+    const localKnownMovies: MediaItem[] = [...catalog];
+    const pendingFirestoreWrites: Array<{
+      item: MediaItem;
+      serializedCredits: string;
+    }> = [];
+
+    let completedCount = 0;
     let successCount = 0;
     let failCount = 0;
     let nextCursor = 0;
+    let lastUiFlushMs = 0;
+
+    const flushUiState = (force = false) => {
+      const now = Date.now();
+      if (force || now - lastUiFlushMs >= 180) {
+        lastUiFlushMs = now;
+        setBatchCompletedCount(completedCount);
+        setBatchResults([...workingResults]);
+      }
+    };
+
+    const flushFirestoreBatchChunk = async (
+      chunk: Array<{ item: MediaItem; serializedCredits: string }>
+    ) => {
+      if (chunk.length === 0 || !currentUser || !isAdmin) return;
+      const batch = writeBatch(db);
+      for (const entry of chunk) {
+        const docRef = doc(db, 'catalog', entry.item.id);
+        batch.set(
+          docRef,
+          buildFirestoreMoviePayload(entry.item, entry.serializedCredits),
+          { merge: true }
+        );
+      }
+      await batch.commit();
+    };
+
     const concurrency = Math.min(6, linksToProcess.length);
 
     const worker = async () => {
@@ -1198,14 +1195,14 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         if (currentIndex >= linksToProcess.length) break;
 
         const targetLink = linksToProcess[currentIndex];
+        workingResults[currentIndex] = {
+          ...workingResults[currentIndex],
+          status: 'extracting',
+        };
+        flushUiState(false);
 
-        setBatchResults((prev) =>
-          prev.map((entry) =>
-            entry.index === currentIndex
-              ? { ...entry, status: 'extracting' }
-              : entry
-          )
-        );
+        // Yield to browser main thread so scrolling and typing never freeze
+        await new Promise((resolve) => setTimeout(resolve, 0));
 
         try {
           const isUrl =
@@ -1232,80 +1229,82 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           const { item, serializedCredits } =
             buildMediaItemFromExtractedData(extracted);
 
-          const existingDuplicate = findDuplicateMovie(item, catalog);
+          const existingDuplicate = findDuplicateMovie(item, localKnownMovies);
           if (existingDuplicate) {
             failCount += 1;
-            setBatchResults((prev) =>
-              prev.map((entry) =>
-                entry.index === currentIndex
-                  ? {
-                      ...entry,
-                      status: 'error',
-                      errorText: `Duplicate movie skipped: "${existingDuplicate.title}" is already in catalog`,
-                      extractedData: extracted,
-                      draftItem: item,
-                    }
-                  : entry
-              )
-            );
+            workingResults[currentIndex] = {
+              ...workingResults[currentIndex],
+              status: 'error',
+              errorText: `Duplicate movie skipped: "${existingDuplicate.title}" is already in catalog`,
+              extractedData: extracted,
+              draftItem: item,
+            };
             continue;
           }
 
+          localKnownMovies.push(item);
+
           if (autoPublishToFirestore) {
-            await persistMediaItemToFirestore(item, serializedCredits);
+            pendingFirestoreWrites.push({ item, serializedCredits });
+            // Commit in atomic chunks of 25 movies so Firestore onSnapshot doesn't fire 100 times
+            if (pendingFirestoreWrites.length >= 25) {
+              const chunkToCommit = pendingFirestoreWrites.splice(0, 25);
+              await flushFirestoreBatchChunk(chunkToCommit);
+            }
           }
 
           successCount += 1;
-          setBatchResults((prev) =>
-            prev.map((entry) =>
-              entry.index === currentIndex
-                ? {
-                    ...entry,
-                    status: autoPublishToFirestore ? 'published' : 'extracted',
-                    extractedData: extracted,
-                    draftItem: item,
-                  }
-                : entry
-            )
-          );
+          workingResults[currentIndex] = {
+            ...workingResults[currentIndex],
+            status: autoPublishToFirestore ? 'published' : 'extracted',
+            extractedData: extracted,
+            draftItem: item,
+          };
         } catch (err: any) {
           failCount += 1;
-          setBatchResults((prev) =>
-            prev.map((entry) =>
-              entry.index === currentIndex
-                ? {
-                    ...entry,
-                    status: 'error',
-                    errorText:
-                      err instanceof Error ? err.message : 'Extraction failed',
-                  }
-                : entry
-            )
-          );
+          workingResults[currentIndex] = {
+            ...workingResults[currentIndex],
+            status: 'error',
+            errorText:
+              err instanceof Error ? err.message : 'Extraction failed',
+          };
         } finally {
-          setBatchCompletedCount((c) => c + 1);
+          completedCount += 1;
+          flushUiState(false);
         }
       }
     };
 
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
+    if (autoPublishToFirestore && pendingFirestoreWrites.length > 0) {
+      try {
+        while (pendingFirestoreWrites.length > 0) {
+          const remainingChunk = pendingFirestoreWrites.splice(0, 50);
+          await flushFirestoreBatchChunk(remainingChunk);
+        }
+      } catch (err) {
+        console.error('Batch Firestore commit error:', err);
+      }
+    }
+
+    flushUiState(true);
     setIsBatchRunning(false);
     if (autoPublishToFirestore) {
       setStatusMessage(
-        `Multi-Link Batch Complete: ${successCount} of ${linksToProcess.length} movie(s)/show(s) extracted & published to the app!${
-          failCount > 0 ? ` (${failCount} failed)` : ''
+        `Multi-Link Batch Complete: ${successCount} of ${linksToProcess.length} movie(s) extracted & published to the app!${
+          failCount > 0 ? ` (${failCount} skipped/failed)` : ''
         }`
       );
     } else {
       setStatusMessage(
-        `Multi-Link Extraction Complete: ${successCount} of ${linksToProcess.length} movie(s)/show(s) ready for preview or 1-click publish!`
+        `Multi-Link Extraction Complete: ${successCount} of ${linksToProcess.length} movie(s) ready for preview or 1-click publish!`
       );
     }
   };
 
   /**
-   * Publishes all already-extracted items in the batch queue in one click
+   * Publishes all already-extracted items in the batch queue in one atomic Firestore batch
    */
   const handlePublishAllExtractedBatch = async () => {
     if (!currentUser || !isAdmin) return;
@@ -1316,42 +1315,72 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
     setIsBatchRunning(true);
     let publishedNow = 0;
+    const nextResults = [...batchResults];
+    const localKnownMovies: MediaItem[] = [...catalog];
+    const writesToCommit: Array<{
+      item: MediaItem;
+      serializedCredits: string;
+      batchIndex: number;
+    }> = [];
 
     for (const entry of readyItems) {
       try {
         const { item, serializedCredits } = buildMediaItemFromExtractedData(
           entry.extractedData
         );
-        const existingDuplicate = findDuplicateMovie(item, catalog);
+        const existingDuplicate = findDuplicateMovie(item, localKnownMovies);
         if (existingDuplicate) {
-          setBatchResults((prev) =>
-            prev.map((b) =>
-              b.index === entry.index
-                ? {
-                    ...b,
-                    status: 'error',
-                    errorText: `Duplicate skipped: "${existingDuplicate.title}" is already in catalog`,
-                  }
-                : b
-            )
-          );
+          const targetIdx = nextResults.findIndex((b) => b.index === entry.index);
+          if (targetIdx !== -1) {
+            nextResults[targetIdx] = {
+              ...nextResults[targetIdx],
+              status: 'error',
+              errorText: `Duplicate skipped: "${existingDuplicate.title}" is already in catalog`,
+            };
+          }
           continue;
         }
-        await persistMediaItemToFirestore(item, serializedCredits);
-        publishedNow += 1;
-        setBatchResults((prev) =>
-          prev.map((b) =>
-            b.index === entry.index ? { ...b, status: 'published' } : b
-          )
-        );
+        localKnownMovies.push(item);
+        writesToCommit.push({
+          item,
+          serializedCredits,
+          batchIndex: entry.index,
+        });
       } catch {
-        // Continue publishing remaining items
+        // Continue
       }
     }
 
+    try {
+      for (let i = 0; i < writesToCommit.length; i += 50) {
+        const slice = writesToCommit.slice(i, i + 50);
+        const batch = writeBatch(db);
+        for (const w of slice) {
+          const docRef = doc(db, 'catalog', w.item.id);
+          batch.set(
+            docRef,
+            buildFirestoreMoviePayload(w.item, w.serializedCredits),
+            { merge: true }
+          );
+          const targetIdx = nextResults.findIndex((b) => b.index === w.batchIndex);
+          if (targetIdx !== -1) {
+            nextResults[targetIdx] = {
+              ...nextResults[targetIdx],
+              status: 'published',
+            };
+          }
+          publishedNow += 1;
+        }
+        await batch.commit();
+      }
+    } catch (err) {
+      console.error('Failed to commit extracted batch:', err);
+    }
+
+    setBatchResults(nextResults);
     setIsBatchRunning(false);
     setStatusMessage(
-      `Published ${publishedNow} extracted movie(s)/show(s) to the live catalog!`
+      `Published ${publishedNow} extracted movie(s) to the live catalog!`
     );
   };
 
@@ -1521,63 +1550,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     };
   };
 
-  /**
-   * 1-Click Direct Publish from a JustWatch Browse/Search Card
-   */
-  const handleDirectPublishFromJustWatchCard = async (
-    card: JustWatchBrowseCard
-  ) => {
-    if (!currentUser || !isAdmin) return;
-    setErrorMessage(null);
-    setStatusMessage(null);
-
-    const duplicate = findDuplicateMovie(
-      {
-        title: card.title,
-        tmdbId: card.tmdbId,
-        justWatchUrl: card.justWatchUrl,
-      },
-      catalog
-    );
-    if (duplicate) {
-      setErrorMessage(
-        `Duplicate Movie Detected: "${duplicate.title}" (${duplicate.releaseYear}) is already in your catalog! You cannot upload the same movie twice.`
-      );
-      return;
-    }
-
-    const cardKey = `${card.mediaType}-${card.title}-${card.releaseYear}`;
-    setPublishingCardKey(cardKey);
-
-    try {
-      const { ok, data } = await safeApiFetchJson<any>(
-        '/api/justwatch/extract',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            justWatchUrl: card.justWatchUrl,
-            title: card.title,
-            mediaType: 'movie',
-          }),
-        }
-      );
-      const extracted = ok && data ? data : card;
-      const { item, serializedCredits } =
-        buildMediaItemFromExtractedData(extracted);
-
-      await persistMediaItemToFirestore(item, serializedCredits);
-
-      setStatusMessage(
-        `Published "${item.title}" (${item.releaseYear}) directly from JustWatch to the app!`
-      );
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, 'catalog');
-    } finally {
-      setPublishingCardKey(null);
-    }
-  };
-
   const toggleGenre = (genre: Genre) => {
     setSelectedGenres((prev) => {
       if (prev.includes(genre)) {
@@ -1665,7 +1637,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       );
       await Promise.all(batchPromises);
       setStatusMessage(
-        `Successfully removed all ${snap.size} movies and TV shows from the catalog.`
+        `Successfully removed all ${snap.size} movies from the catalog.`
       );
       resetForm();
     } catch (error) {
@@ -1759,19 +1731,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                 {/* Global Utility Toolbar + Close Button */}
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {isAdmin && onLaunchVisualEditor && (
-                    <button
-                      type="button"
-                      onClick={() => {
-                        onClose();
-                        onLaunchVisualEditor();
-                      }}
-                      className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
-                    >
-                      <Sparkles className="w-3.5 h-3.5 text-[#FFC400] shrink-0" />
-                      <span>Live UI Editor</span>
-                    </button>
-                  )}
 
                   <button
                     type="button"
@@ -2553,6 +2512,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                     <img
                                       src={draft.posterUrl}
                                       alt={draft.title}
+                                      loading="lazy"
+                                      decoding="async"
                                       referrerPolicy="no-referrer"
                                       className="w-10 h-14 rounded-lg object-cover border border-[#292C35] shrink-0 bg-black"
                                     />
@@ -2621,220 +2582,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             );
                           })}
                         </div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* =========================================================
-                      DIRECT JUSTWATCH CATALOG SEARCH, SELECT, PREVIEW & 1-CLICK PUBLISH
-                  ========================================================= */}
-                  <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-6 space-y-4 shadow-xl">
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="space-y-0.5">
-                        <div className="flex items-center gap-2">
-                          <Globe className="w-4 h-4 text-[#FFC400]" />
-                          <h3 className="text-sm sm:text-base font-bold text-white font-display">
-                            Direct JustWatch Catalog — Search, Preview &amp; Publish in 1 Click
-                          </h3>
-                        </div>
-                        <p className="text-xs text-[#A7A9B4]">
-                          Browse trending Movies &amp; TV Shows on JustWatch or search any title directly below to preview or publish immediately.
-                        </p>
-                      </div>
-
-                      {/* Country Filter & Movies Badge */}
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-bold text-[#FFC400]">
-                          <Film className="w-3.5 h-3.5" />
-                          <span>Movies Only (4K UHD)</span>
-                        </div>
-
-                        <select
-                          value={jwCountry}
-                          onChange={(e) =>
-                            setJwCountry(e.target.value as 'IN' | 'US' | 'GB')
-                          }
-                          aria-label="JustWatch Region"
-                          className="h-8 px-2.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-semibold text-white cursor-pointer"
-                        >
-                          <option value="IN">India (IN)</option>
-                          <option value="US">Global (US)</option>
-                          <option value="GB">UK (GB)</option>
-                        </select>
-                      </div>
-                    </div>
-
-                    {/* Live JustWatch Search Bar */}
-                    <div className="relative">
-                      <Search className="w-4 h-4 text-[#747784] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" />
-                      <input
-                        type="text"
-                        value={jwSearchQuery}
-                        onChange={(e) => setJwSearchQuery(e.target.value)}
-                        placeholder="Search any Movie directly on JustWatch (e.g. Interstellar, Dune, Inception, Avengers, Oppenheimer)..."
-                        className="w-full min-h-[44px] pl-10 pr-24 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
-                      />
-                      {jwSearchQuery && (
-                        <button
-                          type="button"
-                          onClick={() => setJwSearchQuery('')}
-                          className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-[#A7A9B4] hover:text-white cursor-pointer"
-                        >
-                          Clear
-                        </button>
-                      )}
-                    </div>
-
-                    {/* JustWatch Results Grid */}
-                    {isLoadingJwBrowse ? (
-                      <div className="py-10 flex flex-col items-center justify-center gap-2 text-[#A7A9B4]">
-                        <Loader2 className="w-6 h-6 animate-spin text-[#FFC400]" />
-                        <span className="text-xs font-medium">
-                          Fetching live movies from JustWatch...
-                        </span>
-                      </div>
-                    ) : jwResults.length === 0 ? (
-                      <div className="py-8 text-center text-xs text-[#747784]">
-                        No JustWatch movies matched &ldquo;{jwSearchQuery}&rdquo;. Try another search term.
-                      </div>
-                    ) : (
-                      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 max-h-[380px] overflow-y-auto pr-1">
-                        {jwResults.map((card) => {
-                          const cardKey = `movie-${card.title}-${card.releaseYear}`;
-                          const isPublishingThis =
-                            publishingCardKey === cardKey;
-                          const duplicateMovie = findDuplicateMovie(
-                            {
-                              title: card.title,
-                              tmdbId: card.tmdbId,
-                              justWatchUrl: card.justWatchUrl,
-                            },
-                            catalog
-                          );
-                          const isDuplicate = Boolean(duplicateMovie);
-
-                          return (
-                            <div
-                              key={cardKey}
-                              className="rounded-xl bg-[#08090D] border border-[#292C35] hover:border-[#FFC400]/60 p-2.5 flex flex-col justify-between gap-2.5 transition-colors"
-                            >
-                              <div className="flex gap-2.5 min-w-0">
-                                <img
-                                  src={card.posterUrl || card.backdropUrl}
-                                  alt={card.title}
-                                  referrerPolicy="no-referrer"
-                                  className="w-14 h-20 rounded-lg object-cover border border-[#292C35] shrink-0 bg-black"
-                                />
-                                <div className="min-w-0 flex-1 space-y-1">
-                                  <div className="flex items-center gap-1.5 flex-wrap text-[10px] font-mono-tabular">
-                                    <span className="font-extrabold uppercase text-[#FFC400]">
-                                      MOVIE
-                                    </span>
-                                    <span className="text-[#747784]">·</span>
-                                    <span className="text-[#A7A9B4]">
-                                      {card.releaseYear}
-                                    </span>
-                                    {card.imdbScore && (
-                                      <>
-                                        <span className="text-[#747784]">·</span>
-                                        <span className="text-[#FFC400] font-bold">
-                                          ★ {card.imdbScore.toFixed(1)}
-                                        </span>
-                                      </>
-                                    )}
-                                  </div>
-
-                                  <p
-                                    className="text-xs font-bold text-white line-clamp-2 leading-snug"
-                                    title={card.title}
-                                  >
-                                    {card.title}
-                                  </p>
-
-                                  <p className="text-[10px] text-[#747784] truncate">
-                                    {card.genres.slice(0, 3).join(' · ')}
-                                  </p>
-                                </div>
-                              </div>
-
-                              <div className="space-y-1.5 pt-2 border-t border-[#292C35]">
-                                <div className="grid grid-cols-2 gap-1.5">
-                                  <button
-                                    type="button"
-                                    disabled={isExtractingJw}
-                                    onClick={() =>
-                                      handleExtractFromJustWatch(
-                                        card.justWatchUrl,
-                                        card.title,
-                                        'movie',
-                                        false
-                                      )
-                                    }
-                                    className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-[11px] font-bold text-white flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
-                                    title="Load full details & cast photos into editor"
-                                  >
-                                    <Edit3 className="w-3 h-3 shrink-0" />
-                                    <span>Select</span>
-                                  </button>
-
-                                  <button
-                                    type="button"
-                                    disabled={isExtractingJw}
-                                    onClick={() =>
-                                      handleExtractFromJustWatch(
-                                        card.justWatchUrl,
-                                        card.title,
-                                        'movie',
-                                        true
-                                      )
-                                    }
-                                    className="min-h-[32px] px-2.5 py-1 rounded-lg bg-[#14161D] hover:bg-[#252832] border border-[#292C35] text-[11px] font-bold text-[#FFC400] flex items-center justify-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
-                                    title="Preview movie player before publishing"
-                                  >
-                                    <Eye className="w-3 h-3 shrink-0" />
-                                    <span>Preview</span>
-                                  </button>
-                                </div>
-
-                                <button
-                                  type="button"
-                                  disabled={isPublishingThis || isDuplicate}
-                                  onClick={() => {
-                                    if (isDuplicate) return;
-                                    handleDirectPublishFromJustWatchCard(card);
-                                  }}
-                                  className={`w-full min-h-[34px] px-3 py-1.5 rounded-lg text-[11px] font-bold flex items-center justify-center gap-1.5 transition-colors whitespace-nowrap ${
-                                    isDuplicate
-                                      ? 'bg-[#14161D] border border-emerald-500/40 text-emerald-400 cursor-not-allowed opacity-90'
-                                      : 'bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] cursor-pointer'
-                                  }`}
-                                  title={
-                                    isDuplicate
-                                      ? `Already in your catalog ("${duplicateMovie?.title}") — duplicate uploads are blocked`
-                                      : 'Directly extract and publish movie to app'
-                                  }
-                                >
-                                  {isPublishingThis ? (
-                                    <>
-                                      <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0" />
-                                      <span>Publishing...</span>
-                                    </>
-                                  ) : isDuplicate ? (
-                                    <>
-                                      <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
-                                      <span>Already in Catalog</span>
-                                    </>
-                                  ) : (
-                                    <>
-                                      <Plus className="w-3.5 h-3.5 shrink-0" />
-                                      <span>1-Click Publish Movie</span>
-                                    </>
-                                  )}
-                                </button>
-                              </div>
-                            </div>
-                          );
-                        })}
                       </div>
                     )}
                   </div>
@@ -3419,7 +3166,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                   <div className="space-y-3">
                     <div className="flex flex-wrap items-center justify-between gap-2">
                       <h3 className="text-sm font-bold text-white font-display">
-                        Published Movies &amp; TV Shows in Cloud Firestore ({catalog.length})
+                        Published Movies in Cloud Firestore ({catalog.length})
                       </h3>
                       {catalog.length > 0 && (
                         confirmingClearAll ? (

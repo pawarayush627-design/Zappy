@@ -1,6 +1,6 @@
 {
   "name": "CineWave",
-  "description": "Free, ad-supported movie and TV streaming web application featuring authorized demo playback, curated genre rows, instant search, and persistent watchlist.",
+  "description": "Stream full-length movies online in 4K UHD on ZappyFun. Discover blockbuster action, sci-fi, thriller, drama, and comedy films with instant playback and personal watchlists.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

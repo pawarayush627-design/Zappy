@@ -1,6 +1,6 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { Play, Plus, Check } from 'lucide-react';
+import { Play, Plus, Check, Sparkles } from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
 
@@ -14,6 +14,18 @@ interface MovieCardProps {
   variant?: 'default' | 'release' | 'must_watch';
   onSelect: (item: MediaItem, autoPlay?: boolean) => void;
   onToggleWatchlist: (item: MediaItem, e: React.MouseEvent) => void;
+}
+
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+
+function isItemRecentlyAdded(item: MediaItem): boolean {
+  if (item.recentlyAdded === true) return true;
+  const ts = item.createdAtMs || item.heroAddedAtMs;
+  if (typeof ts === 'number' && ts > 0) {
+    const age = Date.now() - ts;
+    return age <= SEVEN_DAYS_MS && age >= 0;
+  }
+  return false;
 }
 
 function formatDurationFigma(minutes: number): string {
@@ -112,6 +124,19 @@ export const MovieCard: React.FC<MovieCardProps> = ({
           <div className="absolute bottom-1 left-2 z-10 pointer-events-none drop-shadow-[0_4px_12px_rgba(0,0,0,0.95)] select-none">
             <span className="text-3xl sm:text-5xl font-black text-[#FFB800] tracking-tighter font-display italic tabular-nums">
               #{rankNumber}
+            </span>
+          </div>
+        )}
+
+        {/* Recently Added Visual Badge (items added in the last 7 days) */}
+        {isItemRecentlyAdded(item) && (
+          <div className="absolute top-2 left-2 z-20 pointer-events-none select-none">
+            <span
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wider text-white shadow-md backdrop-blur-md border border-white/20 bg-gradient-to-r from-[#FF5A36] via-[#FF168B] to-[#8B35FF]"
+              aria-label="Recently Added"
+            >
+              <Sparkles className="w-2.5 h-2.5 shrink-0 text-amber-200 fill-amber-200 animate-pulse" />
+              <span>Recently Added</span>
             </span>
           </div>
         )}

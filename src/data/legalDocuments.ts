@@ -45,15 +45,15 @@ export const CODE_LEGAL_PAGES: LegalPagesConfig = {
   updatedAtMs: 1761148800000,
   about: {
     title: 'About ZappyFun',
-    subtitle: 'On-Demand Movie & TV Series Discovery and Streaming Platform',
+    subtitle: 'On-Demand Movie Discovery and Streaming Platform',
     slug: '/About',
     body: `1. Platform Overview
-ZappyFun is a modern web-based movie and television series catalog discovery and streaming interface built with React, TypeScript, Express, Firebase Authentication, and Cloud Firestore. Our goal is to provide a clean, fast, and responsive viewing experience across desktops, laptops, tablets, smartphones, and smart TV browsers.
-Official Website: https://zappyfun.netlify.app/
+ZappyFun is a modern web-based movie catalog discovery and 4K UHD streaming interface built with React, TypeScript, Express, Firebase Authentication, and Cloud Firestore. Our goal is to provide a clean, fast, and responsive viewing experience across desktops, laptops, tablets, smartphones, and smart TV browsers.
+Official Website: https://www.zappyfun.netlify.app/
 
 2. Core Capabilities & Features
-• Curated Movie & TV Series Discovery: Browse trending releases, top-rated classics, and genre-specific collections with detailed cast, director, release year, maturity rating, and runtime metadata.
-• Multi-Server Third-Party Embed Playback: Watch movies and series episodes through integrated third-party embedded video players with instant server switching and theater mode controls.
+• Curated Movie Discovery: Browse trending releases, top-rated classics, and genre-specific collections with detailed cast, director, release year, maturity rating, and runtime metadata.
+• Multi-Server Third-Party Embed Playback: Watch movies through integrated third-party embedded video players with instant server switching and theater mode controls.
 • Personal Cloud Watchlist: Sign in with your registered email and password (with 6-digit email OTP verification) or via Google and GitHub OAuth using Firebase Authentication to save and synchronize your personal Watchlist across devices.
 • Device-Local Continue Watching: Automatically resume where you left off using privacy-conscious local browser storage on your active device.
 • Direct Customer Support & Transparency: Reach the ZappyFun administration team directly through our Support center or via our official contact email.
