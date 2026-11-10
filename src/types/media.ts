@@ -1,4 +1,4 @@
-export type ContentType = 'movie' | 'series';
+export type ContentType = 'movie';
 export type TMDBMediaType = 'movie' | 'tv';
 
 export type Genre =
@@ -18,8 +18,6 @@ export type Genre =
   | 'Documentary';
 
 export type AvailabilityStatus = 'playable_demo' | 'catalog_preview';
-export type RightsStatus = 'verified' | 'pending' | 'expired' | 'revoked';
-export type StreamFormat = 'mp4' | 'hls' | 'dash' | 'cinesrc';
 
 export interface SupportMessageItem {
   id: string;
@@ -39,23 +37,6 @@ export interface PersonCredit {
   characterName?: string;
   imageUrl: string;
   personId?: number;
-}
-
-export interface EpisodeInfo {
-  seasonNumber: number;
-  episodeNumber: number;
-  title: string;
-  durationMinutes: number;
-  synopsis: string;
-  stillUrl?: string;
-  playableSourceId?: string;
-}
-
-export interface SeasonSummary {
-  seasonNumber: number;
-  name: string;
-  episodeCount: number;
-  airDate?: string;
 }
 
 export interface MediaItem {
@@ -89,10 +70,6 @@ export interface MediaItem {
   popularScore?: number;
   recentlyAdded?: boolean;
   createdAtMs?: number;
-  seasonsCount?: number;
-  episodesCount?: number;
-  seasons?: SeasonSummary[];
-  episodes?: EpisodeInfo[];
   visualTheme: {
     primaryHex: string;
     secondaryHex: string;
@@ -109,70 +86,4 @@ export interface MediaItem {
       | 'canyon'
       | 'symphony';
   };
-}
-
-export interface AuthorizedVideoAsset {
-  assetId: string;
-  tmdbId: number;
-  mediaType: TMDBMediaType;
-  seasonNumber?: number;
-  episodeNumber?: number;
-  title: string;
-  streamFormat: StreamFormat;
-  manifestOrFileUrl: string;
-  backupStreamUrl?: string;
-  rightsStatus: RightsStatus;
-  allowedTerritories: string[];
-  validFrom: string;
-  validUntil: string;
-  durationSeconds: number;
-  resolutionLabel: string;
-  licenseNotice: string;
-  attribution: string;
-  midRollCueSeconds?: number[];
-}
-
-export interface VideoAdConfig {
-  imaEnabled: boolean;
-  testMode: boolean;
-  vastTagUrl: string;
-  enablePreRoll: boolean;
-  enableMidRoll: boolean;
-}
-
-export interface PlaybackResolutionResponse {
-  authorized: boolean;
-  tmdbId: number;
-  mediaType: TMDBMediaType;
-  seasonNumber?: number;
-  episodeNumber?: number;
-  territory: string;
-  reasonCode:
-    | 'authorized'
-    | 'no_asset_registered'
-    | 'rights_unverified'
-    | 'territory_restricted'
-    | 'date_window_expired';
-  message: string;
-  asset: AuthorizedVideoAsset | null;
-  videoAdConfig: VideoAdConfig;
-}
-
-export interface VideoSourceRecord {
-  id: string;
-  title: string;
-  licenseNotice: string;
-  attribution: string;
-  primaryMp4Url: string;
-  fallbackMp4Url?: string;
-  durationSeconds: number;
-  resolutionLabel: string;
-}
-
-export interface AdConfiguration {
-  enabled: boolean;
-  providerStatus: 'unconfigured_demo' | 'configured';
-  providerName: string;
-  showHomepageBanners: boolean;
-  showDetailsBanner: boolean;
 }

@@ -79,7 +79,6 @@ import {
   MediaItem,
   Genre,
   SupportMessageItem,
-  VideoAdConfig,
 } from './types/media';
 import { ALL_GENRES } from './data/catalog';
 import { HeroBanner } from './components/HeroBanner';
@@ -116,7 +115,6 @@ import {
 
 type NavView =
   | 'home'
-  | 'movies_shows'
   | 'movies'
   | 'categories'
   | 'myspace'
@@ -225,14 +223,6 @@ export default function App() {
   const [catalog, setCatalog] = useState<MediaItem[]>([]);
   const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(true);
 
-  const [videoAdConfig] = useState<VideoAdConfig>({
-    imaEnabled: true,
-    testMode: true,
-    vastTagUrl: '',
-    enablePreRoll: true,
-    enableMidRoll: true,
-  });
-
   const [activeLegalSection, setActiveLegalSection] =
     useState<LegalSectionKey>(() => {
       try {
@@ -288,9 +278,6 @@ export default function App() {
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState<string>('');
   const [selectedGenre, setSelectedGenre] = useState<string>('All');
-  const [searchTypeFilter, setSearchTypeFilter] = useState<
-    'all' | 'movie' | 'series'
-  >('all');
   const [searchSortBy, setSearchSortBy] = useState<
     'relevance' | 'newest' | 'popular' | 'title'
   >('relevance');
@@ -307,40 +294,6 @@ export default function App() {
 
   // Home / FAQ Interactive State
   const [openFaqId, setOpenFaqId] = useState<string>('01');
-
-  // Auto-Add newly aired episodes to ZappyFun catalog & Cloud Firestore (Admin only for Firestore writes)
-  const handleAutoSyncEpisodes = useCallback(
-    async (targetItem: MediaItem, newSeasons: number, newEpisodes: number) => {
-      setCatalog((prev) =>
-        prev.map((c) =>
-          c.id === targetItem.id
-            ? { ...c, seasonsCount: newSeasons, episodesCount: newEpisodes }
-            : c
-        )
-      );
-      if (
-        !auth.currentUser ||
-        !isUserAdmin(auth.currentUser.email, auth.currentUser.emailVerified)
-      ) {
-        return;
-      }
-      try {
-        const docRef = doc(db, 'catalog', targetItem.id);
-        await updateDoc(docRef, {
-          seasonsCount: newSeasons,
-          episodesCount: newEpisodes,
-          updatedAt: serverTimestamp(),
-        });
-        setSessionToast(
-          `✨ Automatically added ${newEpisodes} episodes for "${targetItem.title}" to ZappyFun!`
-        );
-        setTimeout(() => setSessionToast(null), 5000);
-      } catch {
-        // Guest or offline fallback is preserved in local state
-      }
-    },
-    []
-  );
 
   // Support Form & Admin Support Messages State
   const [supportFirstName, setSupportFirstName] = useState<string>('');
@@ -781,8 +734,6 @@ export default function App() {
               popularScore: Number(data.popularScore) || 92,
               createdAtMs: resolvedCreatedAtMs,
               recentlyAdded: Boolean(data.recentlyAdded === true || isWithin7Days),
-              seasonsCount: undefined,
-              episodesCount: undefined,
               visualTheme: {
                 primaryHex: '#141414',
                 secondaryHex: '#1A1A1A',
@@ -1263,10 +1214,7 @@ export default function App() {
       if (completedIds.includes(item.id)) return;
       setWatchProgressMap((prev) => {
         const existing = prev[item.id];
-        const totalMins = Math.max(
-          15,
-          item.durationMinutes || (item.contentType === 'series' ? 45 : 110)
-        );
+        const totalMins = Math.max(15, item.durationMinutes || 110);
         const sameEpisode =
           existing &&
           existing.seasonNumber === seasonNumber &&
@@ -1296,10 +1244,7 @@ export default function App() {
             mediaId: item.id,
             seasonNumber,
             episodeNumber,
-            seasonEpisodeLabel:
-              item.contentType === 'series'
-                ? `S${seasonNumber} · E${episodeNumber}`
-                : 'Movie',
+            seasonEpisodeLabel: 'Movie',
             remainingLabel: resolvedRemaining,
             progressPercent: resolvedPercent,
             updatedAtMs: Date.now(),
@@ -1533,10 +1478,8 @@ export default function App() {
         justWatchUrl: (draftItem.justWatchUrl || '').slice(0, 1024),
         featured: Boolean(draftItem.featured ?? true),
         popularScore: draftItem.popularScore || 92,
-        seasonsCount:
-          draftItem.mediaType === 'tv' ? draftItem.seasonsCount || 1 : 0,
-        episodesCount:
-          draftItem.mediaType === 'tv' ? draftItem.episodesCount || 8 : 0,
+        seasonsCount: 0,
+        episodesCount: 0,
         visibility: 'public',
         authorUid: isExisting
           ? existingData?.authorUid || currentUser.uid
@@ -1857,7 +1800,6 @@ export default function App() {
 
   // Since ZappyFun is strictly movies only, moviesList represents the full movie catalog
   const moviesList = useMemo(() => catalog, [catalog]);
-  const showsList = useMemo<MediaItem[]>(() => [], []);
 
   // Filter out any completed items so watched titles never remain in Watchlist
   const activeWatchlistIds = useMemo(
@@ -2005,10 +1947,6 @@ export default function App() {
 
       let result = [...catalog];
 
-      if (searchTypeFilter !== 'all') {
-        result = result.filter((item) => item.contentType === searchTypeFilter);
-      }
-
       if (selectedGenre !== 'All') {
         result = result.filter((item) =>
           item.genres.some(
@@ -2096,9 +2034,7 @@ export default function App() {
                 score += 35;
                 tokenMatched = true;
                 if (!bestReason)
-                  bestReason = `${
-                    item.contentType === 'series' ? 'Creator' : 'Director'
-                  } · ${item.directorOrCreator}`;
+                  bestReason = `Director · ${item.directorOrCreator}`;
               }
 
               if (yearStr.includes(token)) {
@@ -2167,7 +2103,6 @@ export default function App() {
       };
     }, [
       catalog,
-      searchTypeFilter,
       selectedGenre,
       debouncedSearchQuery,
       searchSortBy,
@@ -2176,9 +2111,8 @@ export default function App() {
   // Build 2x2 Poster Grid Category Cards with Interactive Pagination & Accurate Genre Distribution
   const renderGenre2x2GridSection = (
     sectionTitle: string,
-    sectionSubtitle?: string,
-    showTop10Badge = false,
-    filterContentType?: 'movie' | 'series'
+    _sectionSubtitle?: string,
+    showTop10Badge = false
   ) => {
     const pageSize = 5;
     const totalPages = Math.max(1, Math.ceil(orderedGenres.length / pageSize));
@@ -2188,9 +2122,7 @@ export default function App() {
       safePage * pageSize + pageSize
     );
 
-    const sourceList = filterContentType
-      ? catalog.filter((i) => i.contentType === filterContentType)
-      : catalog;
+    const sourceList = catalog;
 
     return (
       <section className="space-y-3.5">
@@ -2255,11 +2187,6 @@ export default function App() {
                 transition={{ type: 'spring', stiffness: 320, damping: 24 }}
                 onClick={() => {
                   setSelectedGenre(genre);
-                  if (filterContentType) {
-                    setSearchTypeFilter(filterContentType);
-                  } else {
-                    setSearchTypeFilter('all');
-                  }
                   handleNavigate('search');
                 }}
                 className="group rounded-xl bg-[#14161D] border border-[#292C35] hover:border-[#FFC400]/70 p-3 sm:p-3.5 flex flex-col justify-between gap-2.5 transition-all cursor-pointer cinema-card-shadow cinema-glow-hover zf-sheen will-change-transform"
@@ -2425,7 +2352,6 @@ export default function App() {
               const Icon = tab.icon;
               const isActive =
                 activeView === tab.id ||
-                (tab.id === 'movies' && activeView === 'movies_shows') ||
                 (tab.id === 'home' && activeView === 'details');
               return (
                 <button
@@ -2609,7 +2535,6 @@ export default function App() {
           const Icon = tab.icon;
           const isActive =
             activeView === tab.id ||
-            (tab.id === 'movies' && activeView === 'movies_shows') ||
             (tab.id === 'home' && activeView === 'details');
           return (
             <button
@@ -2735,24 +2660,11 @@ export default function App() {
                 inWatchlist={activeWatchlistIds.includes(selectedMedia.id)}
                 isCompleted={completedIds.includes(selectedMedia.id)}
                 autoPlayInitial={autoPlayOnOpen}
-                adsEnabled={adsEnabled}
                 isAdmin={isAdmin}
                 isPreviewDraft={Boolean(
                   previewDraftItem && selectedMedia.id === previewDraftItem.id
                 )}
                 isPublishingDraft={isPublishingDraft}
-                initialSeason={
-                  resumeSavedOnOpen
-                    ? watchProgressMap[selectedMedia.id]?.seasonNumber || 1
-                    : 1
-                }
-                initialEpisode={
-                  resumeSavedOnOpen
-                    ? watchProgressMap[selectedMedia.id]?.episodeNumber || 1
-                    : 1
-                }
-                savedSeason={watchProgressMap[selectedMedia.id]?.seasonNumber}
-                savedEpisode={watchProgressMap[selectedMedia.id]?.episodeNumber}
                 hasProgress={Boolean(watchProgressMap[selectedMedia.id])}
                 onBack={() => {
                   setPreviewDraftItem(null);
@@ -2799,11 +2711,8 @@ export default function App() {
                   setSearchQuery(q);
                   setDebouncedSearchQuery(q);
                   setSelectedGenre('All');
-                  setSearchTypeFilter('all');
                   setActiveView('search');
                 }}
-                onToggleAds={() => setAdsEnabled((prev) => !prev)}
-                onOpenAdPolicy={() => openLegalPage('advertising')}
                 onOpenAdminStudio={(mediaItem) =>
                   openAdminStudio(mediaItem, 'catalog')
                 }
@@ -2816,7 +2725,6 @@ export default function App() {
                     ? () => handlePublishDraftFromPreview(previewDraftItem)
                     : undefined
                 }
-                onAutoSyncEpisodes={handleAutoSyncEpisodes}
               />
             </div>
           ) : /* =========================================================
@@ -2871,7 +2779,6 @@ export default function App() {
                           setSearchQuery('');
                           setDebouncedSearchQuery('');
                           setSelectedGenre('All');
-                          setSearchTypeFilter('all');
                           setSearchSortBy('relevance');
                         }}
                         className="h-9 px-3 rounded-xl bg-[#252832] hover:bg-[#FFB800] text-[#FFB800] hover:text-[#08090D] border border-[#FFB800]/40 text-xs font-bold cursor-pointer transition-colors"
@@ -3008,7 +2915,6 @@ export default function App() {
                           type="button"
                           onClick={() => {
                             setSelectedGenre('All');
-                            setSearchTypeFilter('all');
                             setSearchQuery(suggestion);
                             setDebouncedSearchQuery(suggestion);
                           }}
@@ -3025,7 +2931,6 @@ export default function App() {
                       setSearchQuery('');
                       setDebouncedSearchQuery('');
                       setSelectedGenre('All');
-                      setSearchTypeFilter('all');
                       setSearchSortBy('relevance');
                     }}
                     className="px-5 py-2.5 rounded-xl bg-[#FFB800] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer transition-colors"
@@ -3090,9 +2995,7 @@ export default function App() {
                                   ·
                                 </span>
                                 <span className="text-[#D4D6DF]">
-                                  {filteredSearchCatalog[0].contentType === 'series'
-                                    ? 'TV Series'
-                                    : 'Movie'}
+                                  Movie
                                 </span>
                                 <span aria-hidden="true" className="text-[#747784]">
                                   ·
@@ -3202,7 +3105,7 @@ export default function App() {
                   </h2>
                   <button
                     type="button"
-                    onClick={() => handleNavigate('movies_shows')}
+                    onClick={() => handleNavigate('movies')}
                     className="px-5 py-2.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
                   >
                     Browse Catalog
@@ -3780,73 +3683,7 @@ export default function App() {
               </div>
             </motion.section>
           ) : /* =========================================================
-              VIEW: MOVIES & SHOWS (Combined)
-          ========================================================= */
-          activeView === 'movies_shows' ? (
-            <motion.div
-              key="movies-shows-page"
-              initial={{ opacity: 0, y: 12 }}
-              animate={{ opacity: 1, y: 0 }}
-              exit={{ opacity: 0, y: -8 }}
-              className="space-y-6"
-            >
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight">
-                  Movies &amp; Shows
-                </h1>
-                {isAdmin && (
-                  <button
-                    type="button"
-                    onClick={() => openAdminStudio(null, 'catalog')}
-                    className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20"
-                  >
-                    <Plus className="w-4 h-4" />
-                    <span>Admin Studio</span>
-                  </button>
-                )}
-              </div>
-
-              {catalog.length === 0 ? (
-                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-xl mx-auto space-y-3">
-                  <Film className="w-10 h-10 text-[#FFC400] mx-auto opacity-80" />
-                  <h2 className="text-lg font-bold text-white">
-                    Catalog Empty
-                  </h2>
-                  {isAdmin && (
-                    <button
-                      type="button"
-                      onClick={() => openAdminStudio(null, 'catalog')}
-                      className="px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
-                    >
-                      Open Admin Studio
-                    </button>
-                  )}
-                </div>
-              ) : (
-                <div className="space-y-6">
-                  {moviesList.length > 0 && (
-                    <CarouselRow
-                      title="Popular Movies"
-                      items={moviesList}
-                      watchlistIds={activeWatchlistIds}
-                      onSelectMedia={handleSelectMedia}
-                      onToggleWatchlist={handleToggleWatchlist}
-                    />
-                  )}
-                  {showsList.length > 0 && (
-                    <CarouselRow
-                      title="TV Series"
-                      items={showsList}
-                      watchlistIds={activeWatchlistIds}
-                      onSelectMedia={handleSelectMedia}
-                      onToggleWatchlist={handleToggleWatchlist}
-                    />
-                  )}
-                </div>
-              )}
-            </motion.div>
-          ) : /* =========================================================
-              SUPPORT PAGE (Sends messages directly to Admin Panel + ContactZappyFun@gamil.com)
+              SUPPORT PAGE (Sends messages directly to Admin Panel + ContactZappyFun@gmail.com)
           ========================================================= */
           activeView === 'support' ? (
             <motion.div
@@ -4207,7 +4044,6 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      setSearchTypeFilter('movie');
                       setSearchSortBy('popular');
                       handleNavigate('search');
                     }}
@@ -4220,7 +4056,6 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      setSearchTypeFilter('movie');
                       setSearchSortBy('newest');
                       handleNavigate('search');
                     }}
@@ -4433,7 +4268,6 @@ export default function App() {
         currentUser={currentUser}
         prefillMedia={adminPrefillMedia}
         catalog={catalog}
-        videoAdConfig={videoAdConfig}
         supportMessages={mergedSupportMessages}
         initialTab={adminInitialTab}
         legalPages={legalPages}

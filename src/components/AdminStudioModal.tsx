@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   X,
@@ -6,7 +6,6 @@ import {
   Plus,
   Trash2,
   Film,
-  Tv,
   Sparkles,
   CheckCircle2,
   AlertTriangle,
@@ -22,19 +21,12 @@ import {
   Phone,
   Clock,
   Eye,
-  Search,
-  Globe,
   ExternalLink,
   Layers,
   Database,
   Copy,
   FileText,
   Save,
-  RotateCcw,
-  KeyRound,
-  Send,
-  Server,
-  RefreshCw,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -65,7 +57,6 @@ import {
   PersonCredit,
   SupportMessageItem,
   TMDBMediaType,
-  VideoAdConfig,
 } from '../types/media';
 import { ALL_GENRES } from '../data/catalog';
 import {
@@ -152,7 +143,6 @@ interface AdminStudioModalProps {
   currentUser: User | null;
   prefillMedia?: MediaItem | null;
   catalog: MediaItem[];
-  videoAdConfig: VideoAdConfig;
   supportMessages?: SupportMessageItem[];
   initialTab?: 'catalog' | 'support' | 'legal';
   legalPages?: LegalPagesConfig;
@@ -516,8 +506,6 @@ function buildMediaItemFromExtractedData(extracted: any): {
       100,
       Math.max(1, Math.round(Number(extracted.popularScore) || 92))
     ),
-    seasonsCount: 0,
-    episodesCount: 0,
     availabilityStatus: 'playable_demo',
     availabilityNote: '4K UHD · Instant Stream',
     visualTheme: {
@@ -566,7 +554,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const isAdmin = isUserAdmin(currentUser?.email, currentUser?.emailVerified);
 
   const [activeAdminTab, setActiveAdminTab] = useState<
-    'catalog' | 'support' | 'legal' | 'smtp'
+    'catalog' | 'support' | 'legal'
   >(initialTab);
 
   // Admin Email Sign In State
@@ -575,27 +563,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const [isAdminLoggingIn, setIsAdminLoggingIn] = useState<boolean>(false);
   const [isAdminGithubLoading, setIsAdminGithubLoading] = useState<boolean>(false);
 
-  // SMTP Settings State
-  const [smtpForm, setSmtpForm] = useState({
-    host: 'smtp.gmail.com',
-    port: 465,
-    secure: true,
-    user: 'pawarayushai1@gmail.com',
-    pass: '',
-    from: 'ZappyFun Verification <pawarayushai1@gmail.com>',
-  });
-  const [smtpStatus, setSmtpStatus] = useState<{
-    configured: boolean;
-    host: string;
-    port: number;
-    user: string;
-    from: string;
-    hasPassword: boolean;
-  } | null>(null);
-  const [isSavingSmtp, setIsSavingSmtp] = useState<boolean>(false);
-  const [isTestingSmtp, setIsTestingSmtp] = useState<boolean>(false);
-  const [smtpTestResult, setSmtpTestResult] = useState<string | null>(null);
-  const [showSmtpPassword, setShowSmtpPassword] = useState<boolean>(false);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [justWatchUrl, setJustWatchUrl] = useState<string>('');
   const [isExtractingJw, setIsExtractingJw] = useState<boolean>(false);
@@ -689,10 +656,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const [rulesCopied, setRulesCopied] = useState<boolean>(false);
   const [showRulesDrawer, setShowRulesDrawer] = useState<boolean>(false);
 
-  // Movie / Show Form State
+  // Movie Form State
   const [mediaType, setMediaType] = useState<TMDBMediaType>('movie');
   const [tmdbIdInput, setTmdbIdInput] = useState<string>('');
-  const [imdbIdState, setImdbIdState] = useState<string>('');
   const [cinesrcInput, setCinesrcInput] = useState<string>('');
   const [title, setTitle] = useState<string>('');
   const [tagline, setTagline] = useState<string>('');
@@ -714,14 +680,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const [posterUrl, setPosterUrl] = useState<string>('');
   const [backdropUrl, setBackdropUrl] = useState<string>('');
   const [extraBackdrops, setExtraBackdrops] = useState<string[]>([]);
-  const [seasonsCount, setSeasonsCount] = useState<string>('1');
-  const [episodesCount, setEpisodesCount] = useState<string>('8');
   const [featured, setFeatured] = useState<boolean>(true);
 
   // Live Preview Modal State inside Admin Studio
   const [showLivePreview, setShowLivePreview] = useState<boolean>(false);
-  const [previewSeason, setPreviewSeason] = useState<number>(1);
-  const [previewEpisode, setPreviewEpisode] = useState<number>(1);
 
   const formRef = useRef<HTMLFormElement>(null);
 
@@ -743,79 +705,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       setActiveAdminTab('catalog');
     }
   }, [prefillMedia]);
-
-  const loadSmtpStatus = useCallback(async () => {
-    try {
-      const { ok, data } = await safeApiFetchJson<any>('/api/auth/smtp-status');
-      if (ok && data) {
-        setSmtpStatus(data);
-        setSmtpForm((prev) => ({
-          ...prev,
-          host: data.host || prev.host,
-          port: data.port || prev.port,
-          secure: data.secure ?? prev.secure,
-          user: data.user || prev.user,
-          from: data.from || prev.from,
-        }));
-      }
-    } catch {
-      // Ignore
-    }
-  }, []);
-
-  useEffect(() => {
-    if (isOpen) {
-      loadSmtpStatus();
-    }
-  }, [isOpen, loadSmtpStatus]);
-
-  const handleSaveSmtp = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!currentUser) return;
-    setIsSavingSmtp(true);
-    setStatusMessage(null);
-    setErrorMessage(null);
-    try {
-      const token = await currentUser.getIdToken();
-      const { ok, data } = await safeApiFetchJson<any>('/api/admin/smtp', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify(smtpForm),
-      });
-      if (!ok) throw new Error(data?.error || 'Failed to save SMTP settings.');
-      setSmtpStatus(data.status);
-      setStatusMessage('SMTP configuration saved successfully! Gmail verification is active.');
-    } catch (err: unknown) {
-      setErrorMessage(err instanceof Error ? err.message : 'Error saving SMTP settings.');
-    } finally {
-      setIsSavingSmtp(false);
-    }
-  };
-
-  const handleTestSmtp = async () => {
-    if (!currentUser) return;
-    setIsTestingSmtp(true);
-    setSmtpTestResult(null);
-    try {
-      const token = await currentUser.getIdToken();
-      const { data } = await safeApiFetchJson<any>('/api/admin/test-smtp', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({ email: smtpForm.user || ADMIN_EMAIL }),
-      });
-      setSmtpTestResult(data?.message || (data?.success ? 'Test email sent successfully!' : 'Test email failed.'));
-    } catch (err: unknown) {
-      setSmtpTestResult(err instanceof Error ? err.message : 'Failed to send test email.');
-    } finally {
-      setIsTestingSmtp(false);
-    }
-  };
 
   const handleAdminEmailSignIn = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -863,25 +752,17 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   useEffect(() => {
     const numId = Number(tmdbIdInput);
     const tmdb = numId > 0 ? numId : 157336;
-    setCinesrcInput(
-      mediaType === 'tv'
-        ? `https://vidly.pro/tv/${tmdb}/1/1`
-        : `https://vidly.pro/movie/${tmdb}`
-    );
-  }, [mediaType, tmdbIdInput]);
+    setCinesrcInput(`https://vidly.pro/movie/${tmdb}`);
+  }, [tmdbIdInput]);
 
   const populateFormFromItem = (item: MediaItem) => {
     setEditingId(item.id);
-    setMediaType(item.mediaType);
+    setMediaType('movie');
     setTmdbIdInput(String(item.tmdbId));
-    const imdbMatch = (item.cinesrcEmbedUrl || '').match(/(tt\d{5,12})/i);
-    setImdbIdState(imdbMatch?.[1] ? imdbMatch[1].toLowerCase() : '');
     const numId = Number(item.tmdbId) || 157336;
     setCinesrcInput(
       item.cinesrcEmbedUrl && item.cinesrcEmbedUrl.includes('vidly.pro')
         ? item.cinesrcEmbedUrl
-        : item.mediaType === 'tv'
-        ? `https://vidly.pro/tv/${numId}/1/1`
         : `https://vidly.pro/movie/${numId}`
     );
     setJustWatchUrl(item.justWatchUrl || '');
@@ -899,8 +780,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setPosterUrl(item.posterUrl);
     setBackdropUrl(item.backdropUrl);
     setExtraBackdrops([]);
-    setSeasonsCount(String(item.seasonsCount || 1));
-    setEpisodesCount(String(item.episodesCount || 8));
     setFeatured(Boolean(item.featured));
   };
 
@@ -909,7 +788,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setJustWatchUrl('');
     setMediaType('movie');
     setTmdbIdInput('');
-    setImdbIdState('');
     setCinesrcInput('');
     setTitle('');
     setTagline('');
@@ -925,8 +803,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setPosterUrl('');
     setBackdropUrl('');
     setExtraBackdrops([]);
-    setSeasonsCount('1');
-    setEpisodesCount('8');
     setFeatured(true);
     setShowLivePreview(false);
   };
@@ -937,16 +813,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       /(?:https?:\/\/)?(?:www\.)?(?:vidly\.pro|embedmaster\.link|embedmaster\.com|vidlink\.pro|cinesrc\.st)(?:\/embed)?\/(movie|tv|series|show)\/(tt\d+|\d+)/i;
     const match = val.trim().match(streamRegex);
     if (match) {
-      const rawType = match[1].toLowerCase();
-      const nextType: TMDBMediaType =
-        rawType === 'tv' || rawType === 'series' || rawType === 'show'
-          ? 'tv'
-          : 'movie';
-      setMediaType(nextType);
+      setMediaType('movie');
       const idToken = match[2];
-      if (/^tt\d+$/i.test(idToken)) {
-        setImdbIdState(idToken.toLowerCase());
-      } else if (/^\d+$/.test(idToken)) {
+      if (/^\d+$/.test(idToken)) {
         setTmdbIdInput(idToken);
       }
     }
@@ -957,9 +826,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     if (data.releaseYear) setReleaseYear(String(data.releaseYear));
     if (data.synopsis) setSynopsis(data.synopsis);
     if (data.tagline) setTagline(data.tagline);
-    if (data.mediaType === 'tv' || data.mediaType === 'movie') {
-      setMediaType(data.mediaType);
-    }
+    setMediaType('movie');
     if (data.maturityRating) {
       setMaturityRating(data.maturityRating);
     }
@@ -971,12 +838,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     }
     if (typeof data.popularScore === 'number') {
       setPopularScore(data.popularScore);
-    }
-    if (data.seasonsCount) {
-      setSeasonsCount(String(data.seasonsCount));
-    }
-    if (data.episodesCount) {
-      setEpisodesCount(String(data.episodesCount));
     }
     if (data.directorOrCreator) {
       setDirectorOrCreator(data.directorOrCreator);
@@ -995,20 +856,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     if (data.justWatchUrl) {
       setJustWatchUrl(data.justWatchUrl);
     }
-    if (data.imdbId) {
-      setImdbIdState(String(data.imdbId).toLowerCase());
-    }
     if (data.tmdbId) {
       setTmdbIdInput(String(data.tmdbId));
     }
     if (data.tmdbId || data.imdbId) {
-      const detected = data.mediaType || mediaType;
       const tmdb = Number(data.tmdbId) || 157336;
-      setCinesrcInput(
-        detected === 'tv'
-          ? `https://vidly.pro/tv/${tmdb}/1/1`
-          : `https://vidly.pro/movie/${tmdb}`
-      );
+      setCinesrcInput(`https://vidly.pro/movie/${tmdb}`);
     }
   };
 
@@ -1441,8 +1294,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       applyExtractedDataToForm(data);
 
       if (openPreviewAfter) {
-        setPreviewSeason(1);
-        setPreviewEpisode(1);
         setShowLivePreview(true);
       } else {
         formRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
@@ -1456,7 +1307,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         : 0;
 
       setStatusMessage(
-        `Loaded "${data.title}" (${data.releaseYear}) — ${dirCount} Director(s), ${castCount} Cast Members with Photos, Embed Stream & Episodes!`
+        `Loaded "${data.title}" (${data.releaseYear}) — ${dirCount} Director(s), ${castCount} Cast Members with Photos & Embed Stream!`
       );
     } catch {
       setErrorMessage('Network error while extracting from JustWatch.');
@@ -1471,7 +1322,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       mediaType,
       Number(tmdbIdInput)
     );
-    const finalMediaType: TMDBMediaType = 'movie';
     const finalTmdbId = parsedCine.detectedTmdbId;
     const finalEmbedUrl = `https://vidly.pro/movie/${finalTmdbId}`;
 
@@ -1523,8 +1373,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       justWatchUrl: justWatchUrl.trim(),
       featured: Boolean(featured),
       popularScore: Math.min(100, Math.max(1, Math.round(popularScore || 92))),
-      seasonsCount: undefined,
-      episodesCount: undefined,
       availabilityStatus: 'playable_demo',
       availabilityNote: '4K UHD · Instant Stream',
       visualTheme: {
@@ -2566,8 +2414,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                                           applyExtractedDataToForm(
                                             entry.extractedData
                                           );
-                                          setPreviewSeason(1);
-                                          setPreviewEpisode(1);
                                           setShowLivePreview(true);
                                         }
                                       }}
@@ -2775,8 +2621,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           <button
                             type="button"
                             onClick={() => {
-                              setPreviewSeason(1);
-                              setPreviewEpisode(1);
                               setShowLivePreview((prev) => !prev);
                             }}
                             className="px-3 py-1.5 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#FFC400]/50 text-xs font-bold text-[#FFC400] flex items-center gap-1.5 cursor-pointer"
@@ -2785,7 +2629,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             <span>
                               {showLivePreview
                                 ? 'Hide Live Preview'
-                                : 'Preview Movie / Series'}
+                                : 'Preview Movie'}
                             </span>
                           </button>
                         )}
@@ -3101,12 +2945,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         onClick={() => {
                           if (!title.trim()) {
                             setErrorMessage(
-                              'Select or extract a movie/show first to preview it.'
+                              'Select or extract a movie first to preview it.'
                             );
                             return;
                           }
-                          setPreviewSeason(1);
-                          setPreviewEpisode(1);
                           setShowLivePreview(true);
                         }}
                         className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-[#FFC400] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
@@ -3121,7 +2963,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           onClick={() => {
                             if (!title.trim()) {
                               setErrorMessage(
-                                'Select or extract a movie/show first to preview it.'
+                                'Select or extract a movie first to preview it.'
                               );
                               return;
                             }
@@ -3153,8 +2995,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             <Plus className="w-4 h-4" />
                             <span>
                               {editingId
-                                ? 'Update Movie / Show in App'
-                                : 'Publish Movie / Show to App'}
+                                ? 'Update Movie in App'
+                                : 'Publish Movie to App'}
                             </span>
                           </>
                         )}
@@ -3172,7 +3014,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         confirmingClearAll ? (
                           <div className="flex items-center gap-2">
                             <span className="text-xs text-red-300 font-semibold">
-                              Confirm remove all {catalog.length} titles?
+                              Confirm remove all {catalog.length} movies?
                             </span>
                             <button
                               type="button"
@@ -3200,12 +3042,12 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             {isClearingAll ? (
                               <>
                                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                <span>Removing All Titles...</span>
+                                <span>Removing All Movies...</span>
                               </>
                             ) : (
                               <>
                                 <Trash2 className="w-3.5 h-3.5" />
-                                <span>Remove Every Movie &amp; TV Show</span>
+                                <span>Remove Every Movie</span>
                               </>
                             )}
                           </button>
@@ -3215,7 +3057,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
                     {catalog.length === 0 ? (
                       <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-6 text-center text-xs text-[#747784]">
-                        Your catalog is currently empty. Select any Movie or TV Show from the JustWatch browser above or paste up to 100 links to publish!
+                        Your catalog is currently empty. Paste up to 100 JustWatch movie links above to extract and publish!
                       </div>
                     ) : (
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
@@ -3233,16 +3075,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               />
                               <div className="min-w-0 flex-1">
                                 <div className="flex items-center gap-1.5 text-[11px] font-mono-tabular text-[#FFC400]">
-                                  {item.mediaType === 'tv' ? (
-                                    <Tv className="w-3 h-3 shrink-0" />
-                                  ) : (
-                                    <Film className="w-3 h-3 shrink-0" />
-                                  )}
-                                  <span>
-                                    {item.mediaType === 'tv'
-                                      ? 'SERIES'
-                                      : 'MOVIE'}
-                                  </span>
+                                  <Film className="w-3 h-3 shrink-0" />
+                                  <span>MOVIE</span>
                                   <span>·</span>
                                   <span>{item.releaseYear}</span>
                                 </div>

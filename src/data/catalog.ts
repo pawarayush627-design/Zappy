@@ -1,6 +1,4 @@
-import { MediaItem, Genre } from '../types/media';
-
-export const SAMPLE_CATALOG: MediaItem[] = [];
+import { Genre } from '../types/media';
 
 export const ALL_GENRES: Genre[] = [
   'Action',

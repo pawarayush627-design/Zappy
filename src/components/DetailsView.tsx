@@ -13,7 +13,6 @@ import {
   Sparkles,
   Loader2,
   RotateCcw,
-  SkipForward,
   Server,
   Star,
 } from 'lucide-react';
@@ -30,15 +29,9 @@ interface DetailsViewProps {
   inWatchlist: boolean;
   isCompleted?: boolean;
   autoPlayInitial?: boolean;
-  adsEnabled: boolean;
   isAdmin?: boolean;
   isPreviewDraft?: boolean;
   isPublishingDraft?: boolean;
-  playbackRefreshKey?: number;
-  initialSeason?: number;
-  initialEpisode?: number;
-  savedSeason?: number;
-  savedEpisode?: number;
   hasProgress?: boolean;
   onBack: () => void;
   onSelectMedia: (item: MediaItem, autoPlay?: boolean, resumeSaved?: boolean) => void;
@@ -46,12 +39,9 @@ interface DetailsViewProps {
   onMarkWatched: (item: MediaItem) => void;
   onSelectGenre: (genre: string) => void;
   onSearchQuery?: (query: string) => void;
-  onToggleAds: () => void;
-  onOpenAdPolicy: () => void;
   onOpenAdminStudio: (mediaItem: MediaItem) => void;
   onPublishPreviewDraft?: () => void;
   onReturnToAdminStudio?: () => void;
-  onAutoSyncEpisodes?: (item: MediaItem, seasonsCount: number, episodesCount: number) => void;
   onUpdateProgress?: (
     season: number,
     episode: number,
@@ -79,10 +69,6 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
   isAdmin = false,
   isPreviewDraft = false,
   isPublishingDraft = false,
-  initialSeason = 1,
-  initialEpisode = 1,
-  savedSeason,
-  savedEpisode,
   hasProgress = false,
   onBack,
   onSelectMedia,
@@ -98,17 +84,8 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
   const [isPlaying, setIsPlaying] = useState<boolean>(Boolean(autoPlayInitial));
   const [selectedTrackIndex, setSelectedTrackIndex] = useState<number>(0);
   const [reloadKey, setReloadKey] = useState<number>(0);
-  const [selectedSeason, setSelectedSeason] = useState<number>(
-    Math.max(1, initialSeason || 1)
-  );
-  const [selectedEpisodeNumber, setSelectedEpisodeNumber] = useState<number>(
-    Math.max(1, initialEpisode || 1)
-  );
   const [lightsOff, setLightsOff] = useState(false);
   const [copiedNotice, setCopiedNotice] = useState(false);
-
-  const isSeries = item.contentType === 'series' || item.mediaType === 'tv';
-  const totalSeasons = isSeries ? Math.max(1, item.seasonsCount || 1) : 1;
 
   // Authentic IMDb rating if present on item
   const realImdbRating = useMemo(() => {
@@ -120,45 +97,16 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
   }, [item]);
 
   useEffect(() => {
-    const startS = Math.max(1, initialSeason || 1);
-    const startE = Math.max(1, initialEpisode || 1);
     setIsPlaying(Boolean(autoPlayInitial));
-    setSelectedSeason(startS);
-    setSelectedEpisodeNumber(startE);
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  }, [item.id, item.title, autoPlayInitial, initialSeason, initialEpisode]);
+  }, [item.id, item.title, autoPlayInitial]);
 
-  const handleStartPlayback = (seasonNum = 1, epNum = 1) => {
-    const cleanS = Math.max(1, Number(seasonNum) || 1);
-    const cleanE = Math.max(1, Number(epNum) || 1);
-    setSelectedSeason(cleanS);
-    setSelectedEpisodeNumber(cleanE);
+  const handleStartPlayback = () => {
     setIsPlaying(true);
     if (onUpdateProgress) {
-      onUpdateProgress(cleanS, cleanE);
+      onUpdateProgress(1, 1);
     }
     window.scrollTo({ top: 0, behavior: 'smooth' });
-  };
-
-  const handleNextEpisode = () => {
-    if (!isSeries) return;
-    const maxEp = Math.max(1, item.episodesCount || 8);
-    if (selectedEpisodeNumber < maxEp) {
-      const nextEp = selectedEpisodeNumber + 1;
-      setSelectedEpisodeNumber(nextEp);
-      setIsPlaying(true);
-      if (onUpdateProgress) onUpdateProgress(selectedSeason, nextEp);
-    } else if (selectedSeason < totalSeasons) {
-      const nextSeason = selectedSeason + 1;
-      setSelectedSeason(nextSeason);
-      setSelectedEpisodeNumber(1);
-      setIsPlaying(true);
-      if (onUpdateProgress) {
-        onUpdateProgress(nextSeason, 1);
-      }
-    } else {
-      onMarkWatched(item);
-    }
   };
 
   const handleShare = () => {
@@ -173,13 +121,6 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
       setTimeout(() => setCopiedNotice(false), 2500);
     }
   };
-
-  const resumeSeasonNum = Math.max(1, savedSeason || initialSeason || 1);
-  const resumeEpisodeNum = Math.max(1, savedEpisode || initialEpisode || 1);
-  const showResumeSeparateButton =
-    hasProgress &&
-    isSeries &&
-    (resumeSeasonNum !== 1 || resumeEpisodeNum !== 1);
 
   return (
     <motion.div
@@ -358,29 +299,12 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                         whileHover={{ scale: 1.04, y: -1 }}
                         whileTap={{ scale: 0.95 }}
                         type="button"
-                        onClick={() => handleStartPlayback(1, 1)}
+                        onClick={() => handleStartPlayback()}
                         className="min-h-[44px] px-6 sm:px-7 py-2.5 rounded-xl zf-gradient-btn text-white font-bold text-xs sm:text-sm flex items-center gap-2 cursor-pointer transition-all whitespace-nowrap shrink-0"
                       >
                         <Play className="w-4 h-4 fill-current shrink-0" />
-                        <span>Play Now</span>
+                        <span>{hasProgress ? 'Resume Movie' : 'Play Now'}</span>
                       </motion.button>
-
-                      {showResumeSeparateButton && (
-                        <motion.button
-                          whileHover={{ scale: 1.03 }}
-                          whileTap={{ scale: 0.95 }}
-                          type="button"
-                          onClick={() =>
-                            handleStartPlayback(resumeSeasonNum, resumeEpisodeNum)
-                          }
-                          className="min-h-[44px] px-4 py-2.5 rounded-xl bg-[#14161D]/90 hover:bg-[#252832] backdrop-blur-md border border-[#FFB800]/50 text-[#FFB800] text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer transition-all whitespace-nowrap shrink-0"
-                        >
-                          <Play className="w-3.5 h-3.5 fill-current shrink-0" />
-                          <span>
-                            Resume S{resumeSeasonNum} · E{resumeEpisodeNum}
-                          </span>
-                        </motion.button>
-                      )}
                     </motion.div>
                   </div>
                 </div>
@@ -452,12 +376,12 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
-                  {hasProgress && !isSeries && (
+                  {hasProgress && (
                     <button
                       type="button"
                       onClick={() => {
                         if (onStartOver) onStartOver();
-                        handleStartPlayback(1, 1);
+                        handleStartPlayback();
                       }}
                       className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap shrink-0"
                     >
@@ -583,8 +507,6 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
                   <button
                     type="button"
                     onClick={() => {
-                      setSelectedSeason(1);
-                      setSelectedEpisodeNumber(1);
                       if (onStartOver) onStartOver();
                       setReloadKey((k) => k + 1);
                     }}
@@ -640,21 +562,14 @@ export const DetailsView: React.FC<DetailsViewProps> = ({
               <VideoPlayer
                 item={item}
                 autoPlay={true}
-                selectedSeason={selectedSeason}
-                selectedEpisodeNumber={selectedEpisodeNumber}
                 selectedTrackIndex={selectedTrackIndex}
                 reloadKey={reloadKey}
                 isCompleted={isCompleted}
                 hasProgress={hasProgress}
                 onMarkWatched={() => onMarkWatched(item)}
-                onPlaybackProgress={(pct, remMins, repSeason, repEp) => {
+                onPlaybackProgress={(pct, remMins) => {
                   if (onUpdateProgress) {
-                    onUpdateProgress(
-                      repSeason || selectedSeason,
-                      repEp || selectedEpisodeNumber,
-                      pct,
-                      remMins
-                    );
+                    onUpdateProgress(1, 1, pct, remMins);
                   }
                 }}
               />

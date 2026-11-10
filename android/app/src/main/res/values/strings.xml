@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">ZappyFun</string>
+    <string name="title_activity_main">ZappyFun</string>
+    <string name="package_name">com.zappyfun.app</string>
+    <string name="custom_url_scheme">com.zappyfun.app</string>
+</resources>

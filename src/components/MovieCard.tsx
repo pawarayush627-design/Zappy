@@ -65,8 +65,6 @@ export const MovieCard: React.FC<MovieCardProps> = ({
   onSelect,
   onToggleWatchlist,
 }) => {
-  const isSeries = item.contentType === 'series' || item.mediaType === 'tv';
-
   return (
     <motion.article
       initial={{ opacity: 0, y: 16, scale: 0.96 }}
@@ -201,13 +199,7 @@ export const MovieCard: React.FC<MovieCardProps> = ({
       <div className="mt-1 flex items-center gap-1.5 text-[11px] text-[#A7A9B4] min-w-0 truncate tabular-nums">
         <span>{item.releaseYear || 2024}</span>
         <span aria-hidden="true" className="text-[#747784]">·</span>
-        {isSeries ? (
-          <span className="text-[#FFB800] font-semibold shrink-0">
-            {item.seasonsCount || 1}S
-          </span>
-        ) : (
-          <span className="shrink-0">{formatDurationFigma(item.durationMinutes)}</span>
-        )}
+        <span className="shrink-0">{formatDurationFigma(item.durationMinutes)}</span>
         {item.genres.length > 0 && (
           <>
             <span aria-hidden="true" className="text-[#747784]">·</span>

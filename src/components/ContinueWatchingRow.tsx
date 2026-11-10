@@ -152,11 +152,7 @@ export const ContinueWatchingRow: React.FC<ContinueWatchingRowProps> = ({
                 </h3>
               </button>
               <div className="flex items-center gap-1.5 text-[11px] text-[#A7A9B4] tabular-nums shrink-0 font-medium">
-                <span>
-                  {item.contentType === 'series'
-                    ? progress.seasonEpisodeLabel
-                    : item.releaseYear}
-                </span>
+                <span>{item.releaseYear}</span>
                 {progress.remainingLabel && (
                   <>
                     <span aria-hidden="true" className="text-[#747784]">·</span>

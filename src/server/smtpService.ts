@@ -84,29 +84,6 @@ export function loadSmtpConfig(forceReload: boolean = false): SmtpConfig {
   return cachedConfig;
 }
 
-export function saveSmtpConfig(nextConfig: Partial<SmtpConfig>): SmtpConfig {
-  const current = loadSmtpConfig();
-  const merged: SmtpConfig = {
-    ...current,
-    ...nextConfig,
-  };
-  cachedConfig = merged;
-  return merged;
-}
-
-export function getPublicSmtpStatus() {
-  const cfg = loadSmtpConfig();
-  return {
-    configured: Boolean(cfg.pass && cfg.pass.trim().length > 0),
-    host: cfg.host,
-    port: cfg.port,
-    secure: cfg.secure,
-    user: cfg.user,
-    from: cfg.from,
-    hasPassword: Boolean(cfg.pass && cfg.pass.trim().length > 0),
-  };
-}
-
 // In-Memory Hashed OTP Store with 10-minute TTL and brute-force attempt limits
 const OTP_SALT = process.env.OTP_SALT || 'zappyfun-otp-salt-2026';
 
@@ -390,59 +367,6 @@ If you did not request this verification code, you can safely ignore this email.
       success: false,
       simulated: false,
       error: errorMsg,
-    };
-  }
-}
-
-export async function sendTestEmail(
-  targetEmail: string
-): Promise<{ success: boolean; message: string }> {
-  const config = loadSmtpConfig();
-  const cleanEmail = targetEmail.trim().toLowerCase();
-
-  if (!config.pass || config.pass.trim().length === 0) {
-    return {
-      success: false,
-      message: 'SMTP Password (App Password) is empty. Please enter your Gmail App Password first.',
-    };
-  }
-
-  try {
-    const transporter = nodemailer.createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-      auth: {
-        user: config.user,
-        pass: config.pass,
-      },
-    });
-
-    await transporter.verify();
-
-    await transporter.sendMail({
-      from: `ZappyFun <${config.user}>`,
-      to: cleanEmail,
-      subject: 'ZappyFun SMTP Test Connection Successful',
-      text: `Hello! This is a test message from your ZappyFun server. SMTP configuration is active and working properly using ${config.user}.`,
-      html: `
-        <div style="background-color: #08090D; color: #FFFFFF; padding: 30px; font-family: sans-serif; border-radius: 16px;">
-          <h2 style="color: #FFC400;">ZappyFun SMTP Connected Successfully!</h2>
-          <p>Your Gmail SMTP setup (${config.user}) is configured correctly.</p>
-          <p style="color: #A7A9B4;">New users registering on ZappyFun will receive their 6-digit verification codes directly from your email.</p>
-        </div>
-      `,
-    });
-
-    return {
-      success: true,
-      message: `Test email sent successfully to ${cleanEmail}!`,
-    };
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    return {
-      success: false,
-      message: `SMTP Connection Failed: ${errorMsg}`,
     };
   }
 }
