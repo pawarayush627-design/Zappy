@@ -27,6 +27,9 @@ import {
   Copy,
   FileText,
   Save,
+  Smartphone,
+  Upload,
+  Download,
 } from 'lucide-react';
 import { User } from 'firebase/auth';
 import {
@@ -72,6 +75,12 @@ import {
   normalizeLegalPagesConfig,
 } from './InfoModal';
 import { safeApiFetchJson } from '../utils/apiClient';
+import {
+  ApkReleaseConfig,
+  DEFAULT_APK_RELEASE,
+  normalizeApkReleaseConfig,
+  triggerDirectApkDownload,
+} from '../utils/apkReleaseManager';
 
 const LOGO_ASSET_URL =
   '/assets/aistudio/20261023_170257_6e6b6602.png';
@@ -144,9 +153,11 @@ interface AdminStudioModalProps {
   prefillMedia?: MediaItem | null;
   catalog: MediaItem[];
   supportMessages?: SupportMessageItem[];
-  initialTab?: 'catalog' | 'support' | 'legal';
+  initialTab?: 'catalog' | 'support' | 'legal' | 'apk';
   legalPages?: LegalPagesConfig;
   onSaveLegalPages?: (nextLegal: LegalPagesConfig) => Promise<void> | void;
+  apkRelease?: ApkReleaseConfig;
+  onSaveApkRelease?: (nextApk: ApkReleaseConfig) => Promise<void> | void;
   heroBatchInfo?: {
     activeBatchNumber: number;
     totalBatches: number;
@@ -542,6 +553,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   initialTab = 'catalog',
   legalPages = DEFAULT_LEGAL_PAGES,
   onSaveLegalPages,
+  apkRelease = DEFAULT_APK_RELEASE,
+  onSaveApkRelease,
   heroBatchInfo,
   onAdvanceHeroBatch,
   onResetHeroCycleNow,
@@ -554,7 +567,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const isAdmin = isUserAdmin(currentUser?.email, currentUser?.emailVerified);
 
   const [activeAdminTab, setActiveAdminTab] = useState<
-    'catalog' | 'support' | 'legal'
+    'catalog' | 'support' | 'legal' | 'apk'
   >(initialTab);
 
   // Admin Email Sign In State
@@ -569,6 +582,142 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // APK & Updates Release State
+  const [apkDraft, setApkDraft] = useState<ApkReleaseConfig>(() =>
+    normalizeApkReleaseConfig(apkRelease)
+  );
+  const [isUploadingApkFile, setIsUploadingApkFile] = useState<boolean>(false);
+  const [apkUploadProgress, setApkUploadProgress] = useState<number>(0);
+  const [isSavingApkRelease, setIsSavingApkRelease] = useState<boolean>(false);
+  const apkFileInputRef = useRef<HTMLInputElement | null>(null);
+
+  useEffect(() => {
+    if (apkRelease) {
+      setApkDraft(normalizeApkReleaseConfig(apkRelease));
+    }
+  }, [apkRelease]);
+
+  const handleUploadApkFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setIsUploadingApkFile(true);
+    setApkUploadProgress(0);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', '/api/admin/upload-apk', true);
+    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+
+    xhr.upload.onprogress = (evt) => {
+      if (evt.lengthComputable && evt.total > 0) {
+        const pct = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
+        setApkUploadProgress(pct);
+      }
+    };
+
+    xhr.onload = () => {
+      setIsUploadingApkFile(false);
+      setApkUploadProgress(100);
+      if (xhr.status >= 200 && xhr.status < 300) {
+        setApkDraft((prev) => ({
+          ...prev,
+          apkUrl: '/zappyfun.apk',
+          fileName: file.name.endsWith('.apk') ? file.name : `${file.name}.apk`,
+          fileSizeFormatted: sizeMb,
+        }));
+        setStatusMessage(
+          `Attached "${file.name}" (${sizeMb})! Now enter the Version and What's Improved and click Publish APK Update.`
+        );
+      } else {
+        setErrorMessage(
+          'Could not upload APK binary to server (or static host active). You can also paste a direct APK download link below.'
+        );
+      }
+    };
+
+    xhr.onerror = () => {
+      setIsUploadingApkFile(false);
+      setErrorMessage(
+        'Upload interrupted. If hosting on a static CDN, paste the direct APK download URL below.'
+      );
+    };
+
+    xhr.send(file);
+  };
+
+  const handlePublishApkUpdate = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    if (!currentUser || !isAdmin) {
+      setErrorMessage(`Only ${ADMIN_EMAIL} can publish APK updates.`);
+      return;
+    }
+
+    const cleanVersion = (apkDraft.version || '1.0.0').trim();
+    const cleanWhatsImproved = (apkDraft.whatsImproved || '').trim();
+    const cleanApkUrl = (apkDraft.apkUrl || '/zappyfun.apk').trim();
+
+    if (!cleanVersion) {
+      setErrorMessage('Please enter an App Version (for example: 1.2.0).');
+      return;
+    }
+
+    setIsSavingApkRelease(true);
+    setErrorMessage(null);
+    setStatusMessage(null);
+
+    try {
+      const nextRelease: ApkReleaseConfig = {
+        releaseId: `rel_${cleanVersion.replace(/[^a-zA-Z0-9._-]/g, '')}_${Date.now()}`,
+        version: cleanVersion,
+        whatsImproved: cleanWhatsImproved,
+        apkUrl: cleanApkUrl,
+        fileName:
+          (apkDraft.fileName || '').trim() ||
+          `zappyfun-v${cleanVersion.replace(/^v/i, '')}.apk`,
+        fileSizeFormatted: (apkDraft.fileSizeFormatted || '80 MB').trim(),
+        updatedAtMs: Date.now(),
+      };
+
+      if (onSaveApkRelease) {
+        await onSaveApkRelease(nextRelease);
+      } else {
+        await setDoc(
+          doc(db, 'ui_config', 'apk_release'),
+          {
+            id: 'apk_release',
+            overridesJson: JSON.stringify(nextRelease),
+            ...nextRelease,
+            authorUid: currentUser.uid,
+            updatedAt: serverTimestamp(),
+          },
+          { merge: true }
+        );
+        await safeApiFetchJson('/api/apk-release', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apkRelease: nextRelease }),
+        });
+      }
+
+      setApkDraft(nextRelease);
+      setStatusMessage(
+        `Published APK v${cleanVersion}! Clicking Install now downloads this APK, and all users will see the one-time "What's Improved" popup next time they open the app or website.`
+      );
+    } catch (err) {
+      setErrorMessage(
+        `Failed to publish APK update: ${
+          err instanceof Error ? err.message : String(err)
+        }`
+      );
+    } finally {
+      setIsSavingApkRelease(false);
+    }
+  };
 
   // Legal & Policies Editor State
   const [legalDraft, setLegalDraft] = useState<LegalPagesConfig>(() =>
@@ -1671,6 +1820,21 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       <FileText className="w-3.5 h-3.5 shrink-0" />
                       <span>Legal &amp; Policies</span>
                     </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setActiveAdminTab('apk')}
+                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                        activeAdminTab === 'apk'
+                          ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
+                          : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
+                      }`}
+                    >
+                      <Smartphone className="w-3.5 h-3.5 shrink-0" />
+                      <span>
+                        APK &amp; Updates (v{apkDraft.version || '1.0.0'})
+                      </span>
+                    </button>
                   </div>
 
                   <span className="text-[11px] text-[#747784] font-mono-tabular hidden sm:inline">
@@ -1872,6 +2036,239 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </button>
                   </form>
                 </div>
+              ) : activeAdminTab === 'apk' ? (
+                /* =========================================================
+                    APK UPLOAD & VERSION UPDATE MANAGER TAB
+                ========================================================= */
+                <form
+                  onSubmit={handlePublishApkUpdate}
+                  className="space-y-5"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#292C35] pb-4">
+                    <div>
+                      <h3 className="text-base sm:text-lg font-bold text-white font-display flex items-center gap-2">
+                        <Smartphone className="w-5 h-5 text-[#FFC400]" />
+                        <span>Official Android APK &amp; Update Notification Manager</span>
+                      </h3>
+                      <p className="text-xs text-[#A7A9B4] mt-1">
+                        Attach or update your Android APK file, set the version number, and write what&apos;s improved. Whenever you publish an update, users entering the app or website next time will get a one-time popup with your version and release notes.
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => triggerDirectApkDownload(apkDraft)}
+                        className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
+                      >
+                        <Download className="w-3.5 h-3.5 text-[#FFC400]" />
+                        <span>Test Download APK</span>
+                      </button>
+
+                      <button
+                        type="submit"
+                        disabled={isSavingApkRelease || isUploadingApkFile}
+                        className="min-h-[38px] px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-60"
+                      >
+                        {isSavingApkRelease ? (
+                          <>
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                            <span>Publishing Update...</span>
+                          </>
+                        ) : (
+                          <>
+                            <Sparkles className="w-3.5 h-3.5" />
+                            <span>Publish APK &amp; Send Update Popup</span>
+                          </>
+                        )}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+                    {/* Left Card: Attach APK File or Direct Link */}
+                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 space-y-4">
+                      <div>
+                        <h4 className="text-sm font-bold text-white font-display">
+                          1. Attach or Update APK File
+                        </h4>
+                        <p className="text-xs text-[#A7A9B4] mt-0.5">
+                          Upload your compiled <code className="text-[#FFC400]">.apk</code> file from your device or paste a direct APK download URL (such as your GitHub Release <code className="text-[#FFC400]">zappyfun.apk</code> link).
+                        </p>
+                      </div>
+
+                      <input
+                        ref={apkFileInputRef}
+                        type="file"
+                        accept=".apk,application/vnd.android.package-archive"
+                        onChange={handleUploadApkFile}
+                        className="hidden"
+                      />
+
+                      <div className="p-4 rounded-xl bg-[#08090D] border border-dashed border-[#292C35] hover:border-[#FFC400]/60 transition-colors flex flex-col items-center justify-center text-center gap-2.5">
+                        <div className="w-11 h-11 rounded-xl bg-[#FFC400]/15 border border-[#FFC400]/30 flex items-center justify-center text-[#FFC400]">
+                          <Upload className="w-5 h-5" />
+                        </div>
+                        <div className="space-y-0.5">
+                          <p className="text-xs font-bold text-white">
+                            {apkDraft.fileName || 'zappyfun.apk'}{' '}
+                            {apkDraft.fileSizeFormatted ? `(${apkDraft.fileSizeFormatted})` : ''}
+                          </p>
+                          <p className="text-[11px] text-[#747784]">
+                            Supports 75+ MB Android APK packages
+                          </p>
+                        </div>
+
+                        <button
+                          type="button"
+                          disabled={isUploadingApkFile}
+                          onClick={() => apkFileInputRef.current?.click()}
+                          className="min-h-[36px] px-4 py-1.5 rounded-xl bg-[#252832] hover:bg-[#303442] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
+                        >
+                          {isUploadingApkFile ? (
+                            <>
+                              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FFC400]" />
+                              <span>Uploading APK ({apkUploadProgress}%)...</span>
+                            </>
+                          ) : (
+                            <>
+                              <Upload className="w-3.5 h-3.5 text-[#FFC400]" />
+                              <span>Select .apk File from Device</span>
+                            </>
+                          )}
+                        </button>
+
+                        {isUploadingApkFile && (
+                          <div className="w-full h-1.5 rounded-full bg-[#14161D] overflow-hidden mt-1">
+                            <div
+                              className="h-full bg-[#FFC400] transition-all duration-200"
+                              style={{ width: `${apkUploadProgress}%` }}
+                            />
+                          </div>
+                        )}
+                      </div>
+
+                      <div className="space-y-3 pt-1">
+                        <div>
+                          <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                            APK Download Path or Direct URL
+                          </label>
+                          <input
+                            type="text"
+                            value={apkDraft.apkUrl}
+                            onChange={(e) =>
+                              setApkDraft((prev) => ({
+                                ...prev,
+                                apkUrl: e.target.value,
+                              }))
+                            }
+                            placeholder="/zappyfun.apk or https://github.com/.../releases/download/latest-apk/zappyfun.apk"
+                            className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
+                          />
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <div>
+                            <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                              Download File Name
+                            </label>
+                            <input
+                              type="text"
+                              value={apkDraft.fileName}
+                              onChange={(e) =>
+                                setApkDraft((prev) => ({
+                                  ...prev,
+                                  fileName: e.target.value,
+                                }))
+                              }
+                              placeholder="zappyfun.apk"
+                              className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
+                            />
+                          </div>
+
+                          <div>
+                            <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                              Displayed File Size
+                            </label>
+                            <input
+                              type="text"
+                              value={apkDraft.fileSizeFormatted}
+                              onChange={(e) =>
+                                setApkDraft((prev) => ({
+                                  ...prev,
+                                  fileSizeFormatted: e.target.value,
+                                }))
+                              }
+                              placeholder="80 MB"
+                              className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
+                            />
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Right Card: Version & What's Improved Release Notes */}
+                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 space-y-4">
+                      <div>
+                        <h4 className="text-sm font-bold text-white font-display">
+                          2. Version &amp; &ldquo;What&apos;s Improved&rdquo; Popup Details
+                        </h4>
+                        <p className="text-xs text-[#A7A9B4] mt-0.5">
+                          Every time you publish a new version here, users entering the app or website next time will see a one-time update popup showing this version and what you improved.
+                        </p>
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                          App Version Number
+                        </label>
+                        <input
+                          type="text"
+                          value={apkDraft.version}
+                          onChange={(e) =>
+                            setApkDraft((prev) => ({
+                              ...prev,
+                              version: e.target.value,
+                            }))
+                          }
+                          placeholder="e.g. 1.2.0 or 2.0.0"
+                          className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-[#FFC400] font-bold focus:outline-none focus:border-[#FFC400]"
+                          required
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
+                          What&apos;s Improved in This Update (One improvement per line)
+                        </label>
+                        <textarea
+                          rows={7}
+                          value={apkDraft.whatsImproved}
+                          onChange={(e) =>
+                            setApkDraft((prev) => ({
+                              ...prev,
+                              whatsImproved: e.target.value,
+                            }))
+                          }
+                          placeholder={`Faster 4K movie playback & instant loading\nFull-screen cinema player with zero button clutter\nDirect Google account selection window\nNew movies added to catalog`}
+                          className="w-full p-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white leading-relaxed focus:outline-none focus:border-[#FFC400]"
+                        />
+                      </div>
+
+                      {apkDraft.releaseId && (
+                        <div className="p-3 rounded-xl bg-[#08090D] border border-[#292C35] flex items-center justify-between text-xs text-[#A7A9B4]">
+                          <span>
+                            Active Release: <strong className="text-white">v{apkDraft.version}</strong>
+                          </span>
+                          <span className="font-mono text-[11px] text-[#747784]">
+                            {apkDraft.updatedAtMs
+                              ? new Date(apkDraft.updatedAtMs).toLocaleString()
+                              : 'Published'}
+                          </span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </form>
               ) : activeAdminTab === 'legal' ? (
                 /* =========================================================
                     LEGAL & POLICIES EDITOR TAB

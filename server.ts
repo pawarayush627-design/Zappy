@@ -867,32 +867,186 @@ async function startServer() {
     });
   });
 
+  const apkReleaseJsonPath = path.join(__dirname, 'public', 'apk-release.json');
+  let serverApkRelease = {
+    releaseId: '',
+    version: '1.0.0',
+    whatsImproved: '',
+    apkUrl: '/zappyfun.apk',
+    fileName: 'zappyfun.apk',
+    fileSizeFormatted: '80 MB',
+    updatedAtMs: 0,
+  };
+
+  try {
+    if (fs.existsSync(apkReleaseJsonPath)) {
+      const parsed = JSON.parse(fs.readFileSync(apkReleaseJsonPath, 'utf8'));
+      if (parsed && typeof parsed === 'object') {
+        serverApkRelease = { ...serverApkRelease, ...parsed };
+      }
+    }
+  } catch {
+    // Ignore read error
+  }
+
+  /**
+   * GET /api/apk-release
+   * Returns the latest APK version, release notes, and download URL.
+   */
+  app.get('/api/apk-release', (_req, res) => {
+    const apkFileCandidates = [
+      path.join(__dirname, 'public', 'zappyfun.apk'),
+      path.join(__dirname, 'zappyfun.apk'),
+      path.join(__dirname, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk'),
+    ];
+    let hasLocalBinary = false;
+    let localSizeBytes = 0;
+    for (const c of apkFileCandidates) {
+      if (fs.existsSync(c) && fs.statSync(c).size > 50_000) {
+        hasLocalBinary = true;
+        localSizeBytes = fs.statSync(c).size;
+        break;
+      }
+    }
+
+    res.json({
+      apkRelease: serverApkRelease,
+      hasLocalBinary,
+      localSizeBytes,
+    });
+  });
+
+  /**
+   * PUT /api/apk-release
+   * Saves updated APK version, release notes ("What's Improved"), and APK URL.
+   */
+  app.put('/api/apk-release', (req, res) => {
+    const incoming = req.body?.apkRelease || req.body;
+    if (!incoming || typeof incoming !== 'object') {
+      res.status(400).json({ error: 'Invalid apkRelease payload.' });
+      return;
+    }
+
+    const cleanVersion = String(incoming.version || serverApkRelease.version || '1.0.0').trim();
+    const nextReleaseId =
+      String(incoming.releaseId || '').trim() || `rel_${cleanVersion}_${Date.now()}`;
+
+    serverApkRelease = {
+      releaseId: nextReleaseId,
+      version: cleanVersion,
+      whatsImproved: String(incoming.whatsImproved ?? serverApkRelease.whatsImproved ?? '').trim(),
+      apkUrl: String(incoming.apkUrl || serverApkRelease.apkUrl || '/zappyfun.apk').trim(),
+      fileName:
+        String(incoming.fileName || '').trim() ||
+        `zappyfun-v${cleanVersion.replace(/^v/i, '')}.apk`,
+      fileSizeFormatted:
+        String(incoming.fileSizeFormatted || serverApkRelease.fileSizeFormatted || '80 MB').trim(),
+      updatedAtMs: Date.now(),
+    };
+
+    try {
+      const publicDir = path.join(__dirname, 'public');
+      if (!fs.existsSync(publicDir)) {
+        fs.mkdirSync(publicDir, { recursive: true });
+      }
+      fs.writeFileSync(apkReleaseJsonPath, JSON.stringify(serverApkRelease, null, 2), 'utf8');
+    } catch (e) {
+      console.warn('Could not persist apk-release.json:', e);
+    }
+
+    res.json({
+      status: 'updated',
+      apkRelease: serverApkRelease,
+    });
+  });
+
+  /**
+   * POST /api/admin/upload-apk
+   * Streams an uploaded .apk binary file directly to public/zappyfun.apk
+   */
+  app.post('/api/admin/upload-apk', (req, res) => {
+    try {
+      const publicDir = path.join(__dirname, 'public');
+      if (!fs.existsSync(publicDir)) {
+        fs.mkdirSync(publicDir, { recursive: true });
+      }
+      const destPath = path.join(publicDir, 'zappyfun.apk');
+      const writeStream = fs.createWriteStream(destPath);
+      let bytesWritten = 0;
+
+      req.on('data', (chunk: Buffer) => {
+        bytesWritten += chunk.length;
+      });
+
+      req.pipe(writeStream);
+
+      writeStream.on('finish', () => {
+        const sizeMb = (bytesWritten / (1024 * 1024)).toFixed(1) + ' MB';
+        serverApkRelease = {
+          ...serverApkRelease,
+          apkUrl: '/zappyfun.apk',
+          fileSizeFormatted: sizeMb,
+          updatedAtMs: Date.now(),
+        };
+        try {
+          fs.writeFileSync(apkReleaseJsonPath, JSON.stringify(serverApkRelease, null, 2), 'utf8');
+        } catch {}
+
+        res.json({
+          ok: true,
+          apkUrl: '/zappyfun.apk',
+          sizeBytes: bytesWritten,
+          fileSizeFormatted: sizeMb,
+        });
+      });
+
+      writeStream.on('error', (err) => {
+        res.status(500).json({
+          ok: false,
+          error: err.message || 'Failed to write APK file to disk.',
+        });
+      });
+    } catch (err) {
+      res.status(500).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'APK upload failed.',
+      });
+    }
+  });
+
   /**
    * GET /zappyfun.apk
-   * Serves the real compiled Android APK package binary if available.
-   * Never serves an HTML string as an APK download to prevent Android parse errors.
+   * Serves the compiled/uploaded Android APK package binary if available,
+   * or redirects to the configured external APK URL.
    */
   app.get('/zappyfun.apk', (_req, res) => {
     const candidates = [
-      path.join(__dirname, 'zappyfun.apk'),
       path.join(__dirname, 'public', 'zappyfun.apk'),
+      path.join(__dirname, 'zappyfun.apk'),
       path.join(__dirname, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk'),
       path.join(__dirname, 'android', 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk'),
     ];
 
+    const dlFileName = (serverApkRelease.fileName || 'zappyfun.apk').replace(/[^a-zA-Z0-9._-]/g, '');
+
     for (const candidate of candidates) {
-      if (fs.existsSync(candidate) && fs.statSync(candidate).size > 100_000) {
+      if (fs.existsSync(candidate) && fs.statSync(candidate).size > 50_000) {
         res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', 'attachment; filename="zappyfun.apk"');
+        res.setHeader('Content-Disposition', `attachment; filename="${dlFileName || 'zappyfun.apk'}"`);
         res.sendFile(candidate);
         return;
       }
     }
 
+    if (serverApkRelease.apkUrl && /^https?:\/\//i.test(serverApkRelease.apkUrl)) {
+      res.redirect(302, serverApkRelease.apkUrl);
+      return;
+    }
+
     res.status(404).json({
       error: 'APK_NOT_FOUND',
       message:
-        'The compiled zappyfun.apk binary has not been built yet. Please build the APK using GitHub Actions or Android Studio, or use the 1-Tap Install option on Android.',
+        'No APK binary has been uploaded yet. Upload your APK inside Admin Studio -> APK & Updates.',
     });
   });
 

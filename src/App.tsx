@@ -106,6 +106,14 @@ import { MediaArtwork } from './components/MediaArtwork';
 import { AuthModal } from './components/AuthModal';
 import { ProfileSetupView } from './components/ProfileSetupView';
 import { PWAInstallButton } from './components/PWAInstallButton';
+import { ApkUpdatePopupModal } from './components/ApkUpdatePopupModal';
+import {
+  ApkReleaseConfig,
+  DEFAULT_APK_RELEASE,
+  normalizeApkReleaseConfig,
+  hasUserSeenApkRelease,
+  markApkReleaseSeen,
+} from './utils/apkReleaseManager';
 import { safeApiFetchJson } from './utils/apiClient';
 import {
   DEFAULT_APP_TITLE,
@@ -258,7 +266,7 @@ export default function App() {
   // Admin Studio Modal State
   const [adminStudioOpen, setAdminStudioOpen] = useState<boolean>(false);
   const [adminInitialTab, setAdminInitialTab] = useState<
-    'catalog' | 'support' | 'legal'
+    'catalog' | 'support' | 'legal' | 'apk'
   >('catalog');
   const [adminPrefillMedia, setAdminPrefillMedia] =
     useState<MediaItem | null>(null);
@@ -464,6 +472,86 @@ export default function App() {
     );
     return () => unsubscribe();
   }, []);
+
+  // Admin-Managed APK Release & One-Time Update Popup State (/api/apk-release + Firestore ui_config/apk_release)
+  const [apkRelease, setApkRelease] = useState<ApkReleaseConfig>(() => {
+    try {
+      const raw = localStorage.getItem('zappy_apk_release_cache_v1');
+      if (raw) {
+        return normalizeApkReleaseConfig(JSON.parse(raw));
+      }
+    } catch {
+      // Ignore
+    }
+    return DEFAULT_APK_RELEASE;
+  });
+  const [showApkUpdatePopup, setShowApkUpdatePopup] = useState<boolean>(false);
+
+  useEffect(() => {
+    fetch('/api/apk-release')
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.apkRelease && typeof data.apkRelease === 'object') {
+          const normalized = normalizeApkReleaseConfig(data.apkRelease);
+          if (normalized.releaseId) {
+            setApkRelease(normalized);
+            try {
+              localStorage.setItem(
+                'zappy_apk_release_cache_v1',
+                JSON.stringify(normalized)
+              );
+            } catch {
+              // Ignore
+            }
+          }
+        }
+      })
+      .catch(() => {
+        // Ignore network error
+      });
+  }, []);
+
+  useEffect(() => {
+    const apkDocRef = doc(db, 'ui_config', 'apk_release');
+    const unsubscribe = onSnapshot(
+      apkDocRef,
+      (snap) => {
+        if (snap.exists()) {
+          const data = snap.data();
+          if (data && typeof data === 'object') {
+            const normalized = normalizeApkReleaseConfig(
+              data as Partial<ApkReleaseConfig>
+            );
+            setApkRelease(normalized);
+            try {
+              localStorage.setItem(
+                'zappy_apk_release_cache_v1',
+                JSON.stringify(normalized)
+              );
+            } catch {
+              // Ignore
+            }
+          }
+        }
+      },
+      () => {
+        // Ignore if not yet created
+      }
+    );
+    return () => unsubscribe();
+  }, []);
+
+  // Trigger the Update Popup strictly ONCE whenever a new APK releaseId is published by Admin
+  useEffect(() => {
+    if (
+      apkRelease.releaseId &&
+      apkRelease.releaseId.trim() !== '' &&
+      !hasUserSeenApkRelease(apkRelease.releaseId)
+    ) {
+      markApkReleaseSeen(apkRelease.releaseId);
+      setShowApkUpdatePopup(true);
+    }
+  }, [apkRelease.releaseId]);
 
   // Hero Banner 8-Movie Daily Cycle State (24h batch rotation & 28h per-movie tenure)
   const [heroCycleConfig, setHeroCycleConfig] = useState<{
@@ -1397,6 +1485,53 @@ export default function App() {
 
       showToast(
         'Legal documents saved and synced directly into /src/data/legalDocuments.ts!'
+      );
+    },
+    [currentUser, isAdmin, showToast]
+  );
+
+  const handleSaveApkRelease = useCallback(
+    async (updatedRelease: ApkReleaseConfig) => {
+      const normalized = normalizeApkReleaseConfig(updatedRelease);
+      setApkRelease(normalized);
+      try {
+        localStorage.setItem(
+          'zappy_apk_release_cache_v1',
+          JSON.stringify(normalized)
+        );
+      } catch {
+        // Ignore storage error
+      }
+
+      // 1. Persist to backend server (/api/apk-release)
+      try {
+        await fetch('/api/apk-release', {
+          method: 'PUT',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ apkRelease: normalized }),
+        });
+      } catch {
+        // Ignore network error
+      }
+
+      // 2. Sync to Cloud Firestore (/ui_config/apk_release) so all website & app users receive the update popup
+      if (currentUser && isAdmin) {
+        try {
+          await setDoc(
+            doc(db, 'ui_config', 'apk_release'),
+            {
+              ...normalized,
+              updatedAt: serverTimestamp(),
+            },
+            { merge: true }
+          );
+        } catch {
+          // Ignore Firestore error
+        }
+      }
+
+      showToast(
+        `APK v${normalized.version} published! Users will see the update popup once on their next visit.`
       );
     },
     [currentUser, isAdmin, showToast]
@@ -2445,7 +2580,11 @@ export default function App() {
           )}
 
           <div className="pt-2">
-            <PWAInstallButton variant="header" className="w-full justify-center py-2" />
+            <PWAInstallButton
+              variant="header"
+              className="w-full justify-center py-2"
+              apkRelease={apkRelease}
+            />
           </div>
         </div>
       </aside>
@@ -2473,7 +2612,7 @@ export default function App() {
         </button>
 
         <div className="flex items-center gap-2">
-          <PWAInstallButton variant="header" />
+          <PWAInstallButton variant="header" apkRelease={apkRelease} />
 
           <button
             type="button"
@@ -3942,7 +4081,7 @@ export default function App() {
                   )}
                   {/* PWA Android App Installation Card */}
                   <div className="py-2">
-                    <PWAInstallButton variant="card" />
+                    <PWAInstallButton variant="card" apkRelease={apkRelease} />
                   </div>
                 </>
               ) : (
@@ -4262,7 +4401,7 @@ export default function App() {
         </div>
       </footer>
 
-      {/* ADMIN STUDIO MODAL (Catalog + Support Inbox + Legal & Policies Editor) */}
+      {/* ADMIN STUDIO MODAL (Catalog + Support Inbox + Legal & Policies Editor + APK Manager) */}
       <AdminStudioModal
         isOpen={adminStudioOpen}
         currentUser={currentUser}
@@ -4272,6 +4411,8 @@ export default function App() {
         initialTab={adminInitialTab}
         legalPages={legalPages}
         onSaveLegalPages={handleSaveLegalPages}
+        apkRelease={apkRelease}
+        onSaveApkRelease={handleSaveApkRelease}
         heroBatchInfo={{
           activeBatchNumber: activeHeroBatchNumber,
           totalBatches: totalHeroBatches,
@@ -4288,6 +4429,13 @@ export default function App() {
           handleSelectMedia(item, true, false);
         }}
         onPreviewDraftInApp={handlePreviewDraftInApp}
+      />
+
+      {/* ONE-TIME APK UPDATE ANNOUNCEMENT POPUP MODAL */}
+      <ApkUpdatePopupModal
+        isOpen={showApkUpdatePopup}
+        apkRelease={apkRelease}
+        onClose={() => setShowApkUpdatePopup(false)}
       />
 
       {/* INFO, LEGAL & PREFERENCES MODAL */}

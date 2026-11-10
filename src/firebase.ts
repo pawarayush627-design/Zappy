@@ -13,6 +13,7 @@ import {
   signInWithRedirect,
   getRedirectResult,
   signInWithPopup,
+  signInWithCredential,
   deleteUser,
   signOut,
   updateProfile,
@@ -587,24 +588,49 @@ export async function signInWithGithubRedirect(): Promise<void> {
   return signInWithRedirect(auth, githubProvider);
 }
 
+// Google OAuth Web Client ID for Google Identity Services / One Tap
+export const GOOGLE_OAUTH_CLIENT_ID = '22593530794-9t2o25jj6q98basqumse53uus7lnpm5m.apps.googleusercontent.com';
+
 /**
- * Initiates Google sign-in using popup in iframes or redirect on top-level web.
+ * Initiates Google sign-in using an interactive account-selection popup window.
+ * This directly generates a window to select an account (matching ChatGPT and standard modern apps),
+ * displaying the Google account chooser without redirecting the main application page or URL.
  */
-export async function signInWithGoogle(): Promise<UserCredential | void> {
-  const isInIframe =
-    typeof window !== 'undefined' &&
-    window.self !== window.top;
+export async function signInWithGoogle(): Promise<UserCredential> {
+  // Always enforce prompt: 'select_account' so Google presents the account chooser dialog
+  googleProvider.setCustomParameters({
+    prompt: 'select_account',
+  });
 
-  if (isInIframe) {
-    try {
-      return await signInWithPopup(auth, googleProvider);
-    } catch (popupErr: unknown) {
-      console.warn('Google popup attempted in iframe context, attempting redirect:', popupErr);
-      return await signInWithRedirect(auth, googleProvider);
+  try {
+    return await signInWithPopup(auth, googleProvider);
+  } catch (popupErr: unknown) {
+    const errorObj = popupErr as { code?: string; message?: string };
+    // If the user cancelled or closed the account selection window, cleanly abort without redirect
+    if (
+      errorObj?.code === 'auth/popup-closed-by-user' ||
+      errorObj?.code === 'auth/cancelled-popup-request'
+    ) {
+      throw popupErr;
     }
-  }
 
-  return await signInWithRedirect(auth, googleProvider);
+    // Only if popups are explicitly blocked by browser settings does it fall back to redirect
+    if (errorObj?.code === 'auth/popup-blocked') {
+      console.warn('Google popup was blocked by browser. Attempting redirect fallback...');
+      await signInWithRedirect(auth, googleProvider);
+      return new Promise<never>(() => {});
+    }
+
+    throw popupErr;
+  }
+}
+
+/**
+ * Signs in using a Google Identity Services (One Tap) credential ID token.
+ */
+export async function signInWithGoogleCredential(idToken: string): Promise<UserCredential> {
+  const credential = GoogleAuthProvider.credential(idToken);
+  return await signInWithCredential(auth, credential);
 }
 
 /**

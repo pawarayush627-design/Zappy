@@ -7,23 +7,24 @@ interface BeforeInstallPromptEvent extends Event {
 }
 
 /**
- * Checks if the user is running inside the native Capacitor Android app,
- * an Android WebView, or an installed standalone PWA.
+ * Strictly checks if the user is running inside the native Capacitor Android/iOS APK.
+ * Returns FALSE on all websites (mobile Chrome, desktop browsers, Netlify, etc.)
+ * so the Install APK button is ALWAYS visible on the website and NEVER visible inside the native app.
  */
 export function isAppEnvironment(): boolean {
   if (typeof window === 'undefined') return false;
 
-  // 1. Capacitor Native Platform check (returns true in native Android APK)
+  // 1. Official Capacitor Native Platform check (true only inside compiled Android/iOS APK)
   try {
     if (Capacitor.isNativePlatform()) return true;
     const platform = Capacitor.getPlatform();
     if (platform === 'android' || platform === 'ios') return true;
   } catch {}
 
-  // 2. Global window Capacitor instance check
+  // 2. Global window Capacitor bridge check
   const win = window as unknown as {
     Capacitor?: { isNativePlatform?: () => boolean; getPlatform?: () => string };
-    navigator?: { standalone?: boolean };
+    androidBridge?: unknown;
   };
 
   if (win.Capacitor?.isNativePlatform && win.Capacitor.isNativePlatform()) {
@@ -35,31 +36,18 @@ export function isAppEnvironment(): boolean {
   ) {
     return true;
   }
-
-  // 3. Capacitor internal scheme or localhost origin (Capacitor Android WebViews)
-  if (
-    window.location.protocol === 'capacitor:' ||
-    window.location.hostname === 'localhost' ||
-    window.location.origin.includes('localhost')
-  ) {
+  if (typeof win.androidBridge !== 'undefined') {
     return true;
   }
 
-  // 4. Android WebView Detection via User Agent
+  // 3. Capacitor internal protocol or Android WebView internal https://localhost (with no port)
   const ua = (window.navigator?.userAgent || '').toLowerCase();
   if (
-    ua.includes('capacitor') ||
-    ua.includes('; wv') ||
-    (ua.includes('android') && ua.includes('version/4.0') && ua.includes('chrome'))
-  ) {
-    return true;
-  }
-
-  // 5. PWA Standalone display mode check
-  if (
-    window.matchMedia('(display-mode: standalone)').matches ||
-    window.matchMedia('(display-mode: fullscreen)').matches ||
-    win.navigator?.standalone === true
+    window.location.protocol === 'capacitor:' ||
+    ua.includes('zappyfunnativeapp') ||
+    (window.location.hostname === 'localhost' &&
+      window.location.port === '' &&
+      ua.includes('android'))
   ) {
     return true;
   }
@@ -69,21 +57,19 @@ export function isAppEnvironment(): boolean {
 
 export function usePWAInstall() {
   const [deferredPrompt, setDeferredPrompt] = useState<BeforeInstallPromptEvent | null>(null);
-  const [isInstalled, setIsInstalled] = useState<boolean>(() => isAppEnvironment());
+  const [isNativeApp, setIsNativeApp] = useState<boolean>(() => isAppEnvironment());
   const [isIOS, setIsIOS] = useState(false);
   const [isAndroid, setIsAndroid] = useState(false);
 
   useEffect(() => {
-    // Detect environment on mount
     const runningInApp = isAppEnvironment();
-    setIsInstalled(runningInApp);
+    setIsNativeApp(runningInApp);
 
     const userAgent = (window.navigator?.userAgent || '').toLowerCase();
     setIsIOS(/iphone|ipad|ipod/.test(userAgent));
     setIsAndroid(/android/.test(userAgent));
 
     const handleBeforeInstallPrompt = (e: Event) => {
-      // If already in the native app, suppress the prompt
       if (isAppEnvironment()) {
         e.preventDefault();
         return;
@@ -92,17 +78,10 @@ export function usePWAInstall() {
       setDeferredPrompt(e as BeforeInstallPromptEvent);
     };
 
-    const handleAppInstalled = () => {
-      setIsInstalled(true);
-      setDeferredPrompt(null);
-    };
-
     window.addEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-    window.addEventListener('appinstalled', handleAppInstalled);
 
     return () => {
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
-      window.removeEventListener('appinstalled', handleAppInstalled);
     };
   }, []);
 
@@ -111,7 +90,6 @@ export function usePWAInstall() {
     await deferredPrompt.prompt();
     const { outcome } = await deferredPrompt.userChoice;
     if (outcome === 'accepted') {
-      setIsInstalled(true);
       setDeferredPrompt(null);
       return true;
     }
@@ -119,8 +97,8 @@ export function usePWAInstall() {
   };
 
   return {
-    isInstallable: !!deferredPrompt && !isInstalled,
-    isInstalled,
+    isInstallable: !!deferredPrompt && !isNativeApp,
+    isInstalled: isNativeApp,
     isIOS,
     isAndroid,
     install,

@@ -13,7 +13,7 @@ export interface OfflineMediaStatus {
 }
 
 const OFFLINE_PACK_URL = '/assets/media/offline-media-pack.dat';
-const ESTIMATED_PACK_BYTES = 65 * 1024 * 1024; // 68,157,440 bytes
+const ESTIMATED_PACK_BYTES = 75 * 1024 * 1024; // 78,643,200 bytes (75 MiB / 78.6 MB)
 
 let cachedStatus: OfflineMediaStatus | null = null;
 
@@ -37,7 +37,7 @@ export async function checkOfflineMediaStatus(): Promise<OfflineMediaStatus> {
     cachedStatus = {
       bundledPackAvailable: false,
       packSizeBytes: 0,
-      packSizeFormatted: '65 MB (Offline Pack)',
+      packSizeFormatted: '75 MB (Offline Pack)',
       offlineCatalogReady: true,
       activeEngine: 'Web-Cache',
     };
@@ -47,5 +47,5 @@ export async function checkOfflineMediaStatus(): Promise<OfflineMediaStatus> {
 }
 
 export function getOfflinePackBadgeText(): string {
-  return '65 MB Offline Cinema Pack Pre-Installed';
+  return '75 MB Offline Cinema Pack Pre-Installed';
 }

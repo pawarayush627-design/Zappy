@@ -1,12 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import {
   Play,
-  Maximize,
-  Minimize,
-  X,
-  CheckCircle2,
   Loader2,
-  RotateCcw,
 } from 'lucide-react';
 import { MediaItem } from '../types/media';
 
@@ -78,11 +73,10 @@ export function buildVidlyEmbedUrl(
 
 export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   item,
-  autoPlay = false,
+  autoPlay = true,
   selectedTrackIndex = 0,
   reloadKey = 0,
   isCompleted = false,
-  onClose,
   onMarkWatched,
   onWatchComplete,
   onPlaybackProgress,
@@ -92,8 +86,6 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
 
   const [isStreamActive, setIsStreamActive] = useState<boolean>(autoPlay);
   const [iframeLoaded, setIframeLoaded] = useState<boolean>(false);
-  const [reloadNonce, setReloadNonce] = useState<number>(0);
-  const [isFullscreen, setIsFullscreen] = useState<boolean>(false);
   const [markedWatched, setMarkedWatched] = useState<boolean>(isCompleted);
   const elapsedSecondsRef = useRef<number>(0);
 
@@ -111,9 +103,9 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
   useEffect(() => {
     const t = setTimeout(() => {
       setIframeLoaded(true);
-    }, 3200);
+    }, 3000);
     return () => clearTimeout(t);
-  }, [embedUrl, reloadNonce, reloadKey]);
+  }, [embedUrl, reloadKey]);
 
   useEffect(() => {
     if (!isStreamActive) return;
@@ -156,164 +148,54 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
     onMarkWatched,
   ]);
 
-  useEffect(() => {
-    const handleFsChange = () => {
-      setIsFullscreen(Boolean(document.fullscreenElement));
-    };
-    document.addEventListener('fullscreenchange', handleFsChange);
-    return () =>
-      document.removeEventListener('fullscreenchange', handleFsChange);
-  }, []);
-
-  const toggleFullscreen = async () => {
-    const container = containerRef.current;
-    if (!container) return;
-    try {
-      if (!document.fullscreenElement) {
-        await container.requestFullscreen();
-      } else {
-        await document.exitFullscreen();
-      }
-    } catch {
-      // Ignore
-    }
-  };
-
   return (
     <div
       ref={containerRef}
-      className="relative w-full aspect-video rounded-xl overflow-hidden bg-[#0F0F0F] border border-[#262626] shadow-2xl select-none flex flex-col"
+      className="relative w-full aspect-video min-h-[250px] sm:min-h-[440px] lg:min-h-[560px] rounded-xl overflow-hidden bg-black border border-[#232632] shadow-2xl select-none"
     >
-      {/* Top Bar */}
-      <div className="flex flex-wrap items-center justify-between gap-2 px-3 py-2 sm:px-4 sm:py-2.5 bg-[#141414] border-b border-[#262626] z-20">
-        <div className="flex items-center gap-2.5 min-w-0">
-          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md bg-[#E50000] text-white text-[10px] sm:text-xs font-bold uppercase tracking-wider shrink-0">
-            <span className="w-1.5 h-1.5 rounded-full bg-white animate-pulse" />
-            4K Stream
-          </span>
-          <span className="text-xs sm:text-sm font-semibold text-white truncate">
-            {item.title}
-          </span>
+      {!isStreamActive ? (
+        <div
+          onClick={() => {
+            setIsStreamActive(true);
+            onWatchProgress?.(item, 1, 1);
+          }}
+          className="relative w-full h-full flex items-center justify-center cursor-pointer group"
+        >
+          <img
+            src={item.backdropUrl || item.posterUrl}
+            alt={item.title}
+            referrerPolicy="no-referrer"
+            className="absolute inset-0 w-full h-full object-cover transition-transform duration-500 group-hover:scale-[1.02]"
+          />
+          <div className="absolute inset-0 bg-black/35 group-hover:bg-black/25 transition-colors" />
+
+          <div className="relative z-10 w-16 h-16 sm:w-20 sm:h-20 rounded-full bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] text-white flex items-center justify-center shadow-2xl transition-transform duration-200 group-hover:scale-110">
+            <Play className="w-7 h-7 sm:w-8 sm:h-8 fill-current ml-1" />
+          </div>
         </div>
-
-        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2">
-          <button
-            type="button"
-            onClick={() => {
-              setIframeLoaded(false);
-              setReloadNonce((n) => n + 1);
-            }}
-            className="px-2.5 py-1.5 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-[11px] font-medium text-[#999999] hover:text-white flex items-center gap-1 transition-colors cursor-pointer"
-            title="Reload Stream"
-          >
-            <RotateCcw className="w-3.5 h-3.5" />
-            <span className="hidden md:inline">Reload</span>
-          </button>
-
-          {(onWatchComplete || onMarkWatched) && (
-            <button
-              type="button"
-              onClick={() => {
-                setMarkedWatched(true);
-                onWatchComplete?.(item);
-                onMarkWatched?.();
-              }}
-              className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-semibold flex items-center gap-1.5 transition-colors cursor-pointer ${
-                markedWatched
-                  ? 'bg-emerald-500/20 border-emerald-500/50 text-emerald-300'
-                  : 'bg-[#1A1A1A] hover:bg-emerald-500/15 border-[#262626] hover:border-emerald-500/40 text-white'
-              }`}
-              title="Mark as Watched Fully (Automatically removes from Watchlist)"
-            >
-              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-400" />
-              <span>{markedWatched ? 'Watched ✓' : 'Finish'}</span>
-            </button>
-          )}
-
-          <button
-            type="button"
-            onClick={toggleFullscreen}
-            className="p-1.5 rounded-lg bg-[#1A1A1A] hover:bg-[#262626] border border-[#262626] text-[#999999] hover:text-white transition-colors cursor-pointer"
-            aria-label={isFullscreen ? 'Exit Fullscreen' : 'Enter Fullscreen'}
-          >
-            {isFullscreen ? (
-              <Minimize className="w-4 h-4" />
-            ) : (
-              <Maximize className="w-4 h-4" />
-            )}
-          </button>
-
-          {onClose && (
-            <button
-              type="button"
-              onClick={onClose}
-              className="p-1.5 rounded-lg bg-[#1A1A1A] hover:bg-[#E50000] border border-[#262626] text-[#999999] hover:text-white transition-colors cursor-pointer"
-              aria-label="Close Player"
-            >
-              <X className="w-4 h-4" />
-            </button>
-          )}
-        </div>
-      </div>
-
-      {/* Main Viewport */}
-      <div className="relative flex-1 w-full h-full bg-black overflow-hidden">
-        {!isStreamActive ? (
-          <div className="relative w-full h-full flex flex-col items-center justify-center p-6 text-center">
-            <img
-              src={item.backdropUrl || item.posterUrl}
-              alt={item.title}
-              referrerPolicy="no-referrer"
-              className="absolute inset-0 w-full h-full object-cover opacity-45"
-            />
-            <div className="absolute inset-0 bg-gradient-to-t from-[#141414] via-[#141414]/60 to-black/40" />
-
-            <div className="relative z-10 max-w-lg space-y-4">
-              <h3 className="text-xl sm:text-3xl font-bold text-white font-display">
-                {item.title}
-              </h3>
-              <p className="text-xs sm:text-sm text-[#999999] line-clamp-2">
-                {item.synopsis}
+      ) : (
+        <div className="relative w-full h-full bg-black">
+          {!iframeLoaded && (
+            <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#08090D] gap-3 pointer-events-none">
+              <Loader2 className="w-9 h-9 text-[#FFB800] animate-spin" />
+              <p className="text-xs sm:text-sm text-white font-medium">
+                Loading {item.title}...
               </p>
-              <div className="pt-1 flex items-center justify-center">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setIsStreamActive(true);
-                    onWatchProgress?.(item, 1, 1);
-                  }}
-                  className="px-7 py-3.5 rounded-lg bg-[#E50000] hover:bg-[#FF1A1A] text-white font-semibold text-sm flex items-center gap-2.5 transition-all cursor-pointer shadow-lg shadow-[#E50000]/30"
-                >
-                  <Play className="w-4 h-4 fill-current" />
-                  <span>Play Now</span>
-                </button>
-              </div>
             </div>
-          </div>
-        ) : (
-          <div className="relative w-full h-full bg-black">
-            {!iframeLoaded && (
-              <div className="absolute inset-0 z-10 flex flex-col items-center justify-center bg-[#0F0F0F]/90 gap-3 pointer-events-none">
-                <Loader2 className="w-9 h-9 text-[#E50000] animate-spin" />
-                <p className="text-xs sm:text-sm text-white font-medium">
-                  Starting stream for {item.title}...
-                </p>
-              </div>
-            )}
+          )}
 
-            <iframe
-              key={`${embedUrl}-${reloadNonce}-${reloadKey}`}
-              src={embedUrl}
-              title={`${item.title} Video Stream`}
-              className="w-full h-full border-0 bg-black"
-              allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
-              allowFullScreen
-              referrerPolicy="origin"
-              onLoad={() => setIframeLoaded(true)}
-            />
-          </div>
-        )}
-      </div>
+          <iframe
+            key={`${embedUrl}-${reloadKey}`}
+            src={embedUrl}
+            title={`${item.title} Video Stream`}
+            className="w-full h-full border-0 bg-black"
+            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+            allowFullScreen
+            referrerPolicy="origin"
+            onLoad={() => setIframeLoaded(true)}
+          />
+        </div>
+      )}
     </div>
   );
 };

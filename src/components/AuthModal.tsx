@@ -23,6 +23,8 @@ import {
   sendPasswordReset,
   signInWithGithub,
   signInWithGoogle,
+  signInWithGoogleCredential,
+  GOOGLE_OAUTH_CLIENT_ID,
   getFriendlyAuthErrorMessage,
   saveUserProfile,
   updateUserProfile,
@@ -1105,7 +1107,81 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  // 7. Handle Google Sign In
+  // Handle Google Identity Services (One Tap) credential login
+  const handleGoogleCredentialSuccess = async (idToken: string) => {
+    setIsGoogleLoading(true);
+    setErrorMessage('');
+    setInfoMessage('');
+
+    try {
+      const result = await signInWithGoogleCredential(idToken);
+      if (result && result.user) {
+        if (result.user.email) {
+          const cleanUserEmail = result.user.email.trim().toLowerCase();
+          await saveRegisteredEmailToFirestore(cleanUserEmail, {
+            displayName: result.user.displayName || '',
+            uid: result.user.uid,
+          });
+          if (typeof window !== 'undefined') {
+            window.localStorage.setItem(
+              `zappy_known_email_${cleanUserEmail}`,
+              '1'
+            );
+          }
+        }
+        onGoogleLoginSuccess?.(result.user);
+        onSuccess?.();
+        onClose();
+      }
+    } catch (err: unknown) {
+      console.warn('Google credential sign-in notice:', err);
+      const friendlyMsg = getFriendlyAuthErrorMessage(err);
+      setErrorMessage(friendlyMsg);
+    } finally {
+      setIsGoogleLoading(false);
+    }
+  };
+
+  // Listen for Google One Tap availability when AuthModal is open
+  useEffect(() => {
+    if (!isOpen) return;
+    if (typeof window === 'undefined') return;
+
+    let cancelTimer: NodeJS.Timeout | null = null;
+    const attemptInitGsi = () => {
+      const gObj = (window as unknown as { google?: { accounts?: { id?: {
+        initialize: (cfg: unknown) => void;
+        prompt: (notif?: unknown) => void;
+      } } } }).google;
+
+      if (gObj?.accounts?.id) {
+        try {
+          gObj.accounts.id.initialize({
+            client_id: GOOGLE_OAUTH_CLIENT_ID,
+            callback: (res: { credential?: string }) => {
+              if (res?.credential) {
+                void handleGoogleCredentialSuccess(res.credential);
+              }
+            },
+            auto_select: false,
+            cancel_on_tap_outside: true,
+          });
+          gObj.accounts.id.prompt();
+        } catch (e) {
+          console.debug('GSI prompt notice:', e);
+        }
+      }
+    };
+
+    attemptInitGsi();
+    cancelTimer = setTimeout(attemptInitGsi, 700);
+
+    return () => {
+      if (cancelTimer) clearTimeout(cancelTimer);
+    };
+  }, [isOpen]);
+
+  // 7. Handle Google Sign In (opens Account Selection popup window directly)
   const handleGoogleSignIn = async () => {
     setIsGoogleLoading(true);
     setErrorMessage('');

@@ -3,6 +3,8 @@ package com.zappyfun.app;
 import android.os.Bundle;
 import android.view.Window;
 import android.view.WindowManager;
+import android.webkit.WebSettings;
+import android.webkit.WebView;
 import androidx.core.view.WindowCompat;
 import androidx.core.view.WindowInsetsControllerCompat;
 import com.getcapacitor.BridgeActivity;
@@ -31,5 +33,18 @@ public class MainActivity extends BridgeActivity {
 
         // Set root decor view background to pure black
         window.getDecorView().setBackgroundColor(0xFF050505);
+
+        // Tag the native Android APK WebView user-agent so the web bundle knows 100% it is inside the APK
+        try {
+            if (getBridge() != null && getBridge().getWebView() != null) {
+                WebView webView = getBridge().getWebView();
+                WebSettings settings = webView.getSettings();
+                String ua = settings.getUserAgentString();
+                if (ua != null && !ua.contains("ZappyFunNativeApp")) {
+                    settings.setUserAgentString(ua + " ZappyFunNativeApp/1.0");
+                }
+            }
+        } catch (Exception ignored) {
+        }
     }
 }
