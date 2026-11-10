@@ -2453,7 +2453,7 @@ export default function App() {
       {/* =========================================================
           MOBILE TOP HEADER (Original ZappyFun Logo, Search, Admin Pill, Profile)
       ========================================================= */}
-      <header className="md:hidden sticky top-0 z-40 w-full bg-[#14161D]/95 backdrop-blur-xl border-b border-[#292C35] px-4 h-14 flex items-center justify-between">
+      <header className="md:hidden sticky top-0 z-40 w-full bg-[#14161D]/95 backdrop-blur-xl border-b border-[#292C35] px-4 pt-[env(safe-area-inset-top,0px)] min-h-14 flex items-center justify-between">
         <button
           type="button"
           onClick={() => handleNavigate('home')}

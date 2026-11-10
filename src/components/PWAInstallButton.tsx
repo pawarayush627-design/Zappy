@@ -11,7 +11,7 @@ import {
   AlertTriangle,
   Info,
 } from 'lucide-react';
-import { usePWAInstall } from '../hooks/usePWAInstall';
+import { usePWAInstall, isAppEnvironment } from '../hooks/usePWAInstall';
 
 interface PWAInstallButtonProps {
   variant?: 'header' | 'banner' | 'card';
@@ -22,13 +22,13 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   variant = 'header',
   className = '',
 }) => {
-  const { isInstallable, isInstalled, isIOS, isAndroid, install } = usePWAInstall();
+  const { isInstallable, isInstalled, install } = usePWAInstall();
   const [showInstallModal, setShowInstallModal] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
   const [apkStatus, setApkStatus] = useState<'idle' | 'checking' | 'downloading' | 'not_ready'>('idle');
 
-  // If already installed and running standalone, do not clutter the UI
-  if (isInstalled) {
+  // If running inside the native Android APK app or installed standalone, NEVER show the install button!
+  if (isInstalled || isAppEnvironment()) {
     return null;
   }
 

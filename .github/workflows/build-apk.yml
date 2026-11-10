@@ -15,7 +15,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: 'temurin'
           java-version: '21'
@@ -28,25 +28,39 @@ jobs:
       - name: Install Dependencies
         run: npm install --legacy-peer-deps
 
-      - name: Build Web App
-        run: npm run build
+      - name: Build Web App & Offline Media Pack
+        run: |
+          node scripts/generate-offline-pack.js
+          npm run build
 
       - name: Sync Capacitor Android
         run: npx cap sync android
 
-      - name: Make Gradle executable
-        run: chmod +x android/gradlew
+      - name: Make Gradle executable & normalize line endings
+        run: |
+          sed -i 's/\r$//' android/gradlew
+          chmod +x android/gradlew
+
+      - name: Accept Android SDK Licenses
+        run: |
+          export PATH=$PATH:$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_SDK_ROOT/cmdline-tools/latest/bin
+          yes | sdkmanager --licenses 2>/dev/null || true
 
       - name: Build Debug APK
         run: |
           cd android
           ./gradlew assembleDebug --no-daemon --stacktrace
 
-      - name: Stage APK
+      - name: Stage APK & Validate Size
         run: |
           find android/app/build/outputs/apk/ -name "*.apk" -type f -exec cp -v {} zappyfun.apk \;
           test -f zappyfun.apk
-          ls -lh zappyfun.apk
+          APK_SIZE=$(ls -lh zappyfun.apk | awk '{print $5}')
+          echo "Generated APK size: $APK_SIZE"
+          echo "### 🚀 ZappyFun Android APK Build Successful!" >> $GITHUB_STEP_SUMMARY
+          echo "- **Package ID:** \`com.zappyfun.app\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **APK Size:** \`$APK_SIZE\`" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** Ready for download from Artifacts" >> $GITHUB_STEP_SUMMARY
 
       - name: Upload APK Artifact
         uses: actions/upload-artifact@v4
