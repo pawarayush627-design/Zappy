@@ -11,6 +11,10 @@ export const PWAInstallButton: React.FC<PWAInstallButtonProps> = ({
   variant = 'header',
   className = '',
 }) => {
+  // Hidden for now as requested so it can later be re-enabled with app download link
+  return null;
+
+  /* eslint-disable-next-line no-unreachable */
   const { isInstallable, isInstalled, isIOS, isAndroid, install } = usePWAInstall();
   const [showGuideModal, setShowGuideModal] = useState(false);
   const [isInstalling, setIsInstalling] = useState(false);
