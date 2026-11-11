@@ -63,6 +63,7 @@ interface LocalOtpChallenge {
   salt: string;
   expiresAtMs: number;
   attempts: number;
+  challengeToken?: string;
 }
 
 const LOGO_ICON_URL = '/assets/aistudio/20261023_170257_6e6b6602.png';
@@ -126,9 +127,22 @@ export const AuthModal: React.FC<AuthModalProps> = ({
 
       if (typeof window !== 'undefined') {
         try {
-          const params = new URLSearchParams(window.location.search);
-          const resetEmailParam = (params.get('resetEmail') || '').trim().toLowerCase();
-          const resetCodeParam = (params.get('resetCode') || '').trim();
+          const searchParams = new URLSearchParams(window.location.search);
+          const hashParams = new URLSearchParams(
+            window.location.hash.replace(/^#/, '')
+          );
+          const resetEmailParam = (
+            hashParams.get('resetEmail') ||
+            searchParams.get('resetEmail') ||
+            ''
+          )
+            .trim()
+            .toLowerCase();
+          const resetCodeParam = (
+            hashParams.get('resetCode') ||
+            searchParams.get('resetCode') ||
+            ''
+          ).trim();
           if (resetEmailParam && resetEmailParam.includes('@')) {
             setEmail(resetEmailParam);
             setOtpTargetEmail(resetEmailParam);
@@ -248,14 +262,27 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       void storeOtpChallengeInFirestore(cleanTarget, clientOtp);
 
       // Send the OTP via Gmail SMTP endpoint (Netlify Function or Express Server)
-      await safeApiFetchJson<{ ok?: boolean; error?: string }>(
-        '/api/auth/send-otp',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ email: cleanTarget, otp: clientOtp }),
+      const sendRes = await safeApiFetchJson<{
+        ok?: boolean;
+        error?: string;
+        challengeToken?: string;
+      }>('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ email: cleanTarget, otp: clientOtp }),
+      });
+
+      if (sendRes.data?.challengeToken && activeChallengeRef.current) {
+        activeChallengeRef.current.challengeToken = sendRes.data.challengeToken;
+        if (typeof window !== 'undefined') {
+          try {
+            window.sessionStorage.setItem(
+              `zappy_otp_${cleanTarget}`,
+              JSON.stringify(activeChallengeRef.current)
+            );
+          } catch {}
         }
-      );
+      }
 
       // CRITICAL: NEVER bypass OTP! The 6-digit OTP verification page must ALWAYS appear!
       setStep('OTP_VERIFICATION');
@@ -395,13 +422,17 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     setInfoMessage('');
 
     try {
-      await signInWithEmail(cleanEmail, password);
+      const signInCred = await signInWithEmail(cleanEmail, password);
 
       // Automatically ensure existing login email is recorded in Firestore registered_emails!
       await saveRegisteredEmailToFirestore(cleanEmail);
+      const idToken = signInCred.user ? await signInCred.user.getIdToken().catch(() => '') : '';
       void safeApiFetchJson('/api/auth/record-user', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+        },
         body: JSON.stringify({ email: cleanEmail }),
       });
       if (typeof window !== 'undefined') {
@@ -524,7 +555,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           void safeApiFetchJson('/api/auth/verify-otp', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email: activeEmail, otp: cleanOtp }),
+            body: JSON.stringify({
+              email: activeEmail,
+              otp: cleanOtp,
+              challengeToken: currentChallenge.challengeToken,
+            }),
           });
 
           setStep('CREATE_ACCOUNT');
@@ -562,7 +597,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }>('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: activeEmail, otp: cleanOtp }),
+        body: JSON.stringify({
+          email: activeEmail,
+          otp: cleanOtp,
+          challengeToken: currentChallenge?.challengeToken,
+        }),
       });
 
       if (verifyRes.ok && verifyRes.data && verifyRes.data.valid) {
@@ -915,21 +954,35 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         typeof window !== 'undefined' && window.location.origin
           ? window.location.origin
           : 'https://zappyfun.netlify.app';
-      const resetUrl = `${origin}/?resetEmail=${encodeURIComponent(cleanTarget)}&resetCode=${resetOtp}`;
+      const resetUrl = `${origin}/#resetEmail=${encodeURIComponent(cleanTarget)}&resetCode=${resetOtp}`;
 
-      await safeApiFetchJson<{ ok?: boolean; error?: string }>(
-        '/api/auth/send-otp',
-        {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            email: cleanTarget,
-            otp: resetOtp,
-            purpose: 'reset',
-            resetUrl,
-          }),
+      const resetSendRes = await safeApiFetchJson<{
+        ok?: boolean;
+        error?: string;
+        challengeToken?: string;
+      }>('/api/auth/send-otp', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          email: cleanTarget,
+          otp: resetOtp,
+          purpose: 'reset',
+          resetUrl,
+        }),
+      });
+
+      if (resetSendRes.data?.challengeToken && activeChallengeRef.current) {
+        activeChallengeRef.current.challengeToken =
+          resetSendRes.data.challengeToken;
+        if (typeof window !== 'undefined') {
+          try {
+            window.sessionStorage.setItem(
+              `zappy_otp_${cleanTarget}`,
+              JSON.stringify(activeChallengeRef.current)
+            );
+          } catch {}
         }
-      );
+      }
 
       void sendPasswordReset(cleanTarget).catch(() => {});
 
@@ -1091,7 +1144,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       if (typeof window !== 'undefined') {
         window.localStorage.setItem(`zappy_known_email_${cleanEmail}`, '1');
         try {
-          if (window.location.search.includes('resetEmail')) {
+          if (
+            window.location.search.includes('resetEmail') ||
+            window.location.hash.includes('resetEmail')
+          ) {
             window.history.replaceState({}, '', window.location.pathname);
           }
         } catch {}
@@ -1142,44 +1198,10 @@ export const AuthModal: React.FC<AuthModalProps> = ({
     }
   };
 
-  // Listen for Google One Tap availability when AuthModal is open
-  useEffect(() => {
-    if (!isOpen) return;
-    if (typeof window === 'undefined') return;
-
-    let cancelTimer: NodeJS.Timeout | null = null;
-    const attemptInitGsi = () => {
-      const gObj = (window as unknown as { google?: { accounts?: { id?: {
-        initialize: (cfg: unknown) => void;
-        prompt: (notif?: unknown) => void;
-      } } } }).google;
-
-      if (gObj?.accounts?.id) {
-        try {
-          gObj.accounts.id.initialize({
-            client_id: GOOGLE_OAUTH_CLIENT_ID,
-            callback: (res: { credential?: string }) => {
-              if (res?.credential) {
-                void handleGoogleCredentialSuccess(res.credential);
-              }
-            },
-            auto_select: false,
-            cancel_on_tap_outside: true,
-          });
-          gObj.accounts.id.prompt();
-        } catch (e) {
-          console.debug('GSI prompt notice:', e);
-        }
-      }
-    };
-
-    attemptInitGsi();
-    cancelTimer = setTimeout(attemptInitGsi, 700);
-
-    return () => {
-      if (cancelTimer) clearTimeout(cancelTimer);
-    };
-  }, [isOpen]);
+  // Google Identity Services is only invoked when the user explicitly clicks "Continue with Google"
+  // (preventing unsolicited One Tap full-screen overlays from blanking out WebViews on modal open).
+  void GOOGLE_OAUTH_CLIENT_ID;
+  void handleGoogleCredentialSuccess;
 
   // 7. Handle Google Sign In (opens Account Selection popup window directly)
   const handleGoogleSignIn = async () => {
@@ -1336,7 +1358,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
   const pwdStrength = calculatePasswordStrength(password);
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-black/85 backdrop-blur-md overflow-y-auto animate-fadeIn">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center p-3 sm:p-4 bg-black/90 overflow-y-auto">
       <div className="relative w-full max-w-md my-auto max-h-[92vh] overflow-y-auto bg-[#15121D] border border-[#231E30] rounded-3xl p-5 sm:p-7 shadow-2xl text-white">
         <div className="absolute top-0 left-0 right-0 h-1 bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#8B35FF] rounded-t-3xl" />
 

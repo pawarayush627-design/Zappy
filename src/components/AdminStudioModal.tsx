@@ -598,7 +598,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     }
   }, [apkRelease]);
 
-  const handleUploadApkFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleUploadApkFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file) return;
 
@@ -608,10 +608,14 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setStatusMessage(null);
 
     const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
+    const idToken = currentUser ? await currentUser.getIdToken().catch(() => '') : '';
 
     const xhr = new XMLHttpRequest();
     xhr.open('POST', '/api/admin/upload-apk', true);
     xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+    if (idToken) {
+      xhr.setRequestHeader('Authorization', `Bearer ${idToken}`);
+    }
 
     xhr.upload.onprogress = (evt) => {
       if (evt.lengthComputable && evt.total > 0) {
@@ -697,9 +701,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           },
           { merge: true }
         );
+        const idToken = await currentUser.getIdToken().catch(() => '');
         await safeApiFetchJson('/api/apk-release', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          },
           body: JSON.stringify({ apkRelease: nextRelease }),
         });
       }

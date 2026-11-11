@@ -39,6 +39,8 @@ public class MainActivity extends BridgeActivity {
             if (getBridge() != null && getBridge().getWebView() != null) {
                 WebView webView = getBridge().getWebView();
                 WebSettings settings = webView.getSettings();
+                settings.setDomStorageEnabled(true);
+                settings.setJavaScriptCanOpenWindowsAutomatically(true);
                 String ua = settings.getUserAgentString();
                 if (ua != null && !ua.contains("ZappyFunNativeApp")) {
                     settings.setUserAgentString(ua + " ZappyFunNativeApp/1.0");

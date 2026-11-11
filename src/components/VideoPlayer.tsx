@@ -189,7 +189,7 @@ export const VideoPlayer: React.FC<VideoPlayerProps> = ({
             src={embedUrl}
             title={`${item.title} Video Stream`}
             className="w-full h-full border-0 bg-black"
-            allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share; fullscreen"
+            allow="accelerometer; autoplay; encrypted-media; gyroscope; picture-in-picture; fullscreen"
             allowFullScreen
             referrerPolicy="origin"
             onLoad={() => setIframeLoaded(true)}

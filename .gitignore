@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+smtp-config.json
+registered-emails.json
+public/zappyfun.apk

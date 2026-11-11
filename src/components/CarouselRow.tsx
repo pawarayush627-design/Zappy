@@ -31,25 +31,36 @@ export const CarouselRow: React.FC<CarouselRowProps> = ({
   const [canScrollLeft, setCanScrollLeft] = useState<boolean>(false);
   const [canScrollRight, setCanScrollRight] = useState<boolean>(true);
 
+  const rafRef = useRef<number | null>(null);
+
   const syncScrollMetrics = useCallback(() => {
-    const el = scrollContainerRef.current;
-    if (!el) return;
-    const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
-    const current = Math.max(0, el.scrollLeft);
-    setCanScrollLeft(current > 8);
-    setCanScrollRight(maxScroll - current > 8);
-    if (maxScroll <= 8) {
-      setPageIdx(0);
-    } else {
-      const ratio = Math.min(1, Math.max(0, current / maxScroll));
-      setPageIdx(Math.min(3, Math.round(ratio * 3)));
-    }
+    if (rafRef.current !== null) return;
+    rafRef.current = window.requestAnimationFrame(() => {
+      rafRef.current = null;
+      const el = scrollContainerRef.current;
+      if (!el) return;
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      const current = Math.max(0, el.scrollLeft);
+      setCanScrollLeft(current > 8);
+      setCanScrollRight(maxScroll - current > 8);
+      if (maxScroll <= 8) {
+        setPageIdx(0);
+      } else {
+        const ratio = Math.min(1, Math.max(0, current / maxScroll));
+        setPageIdx(Math.min(3, Math.round(ratio * 3)));
+      }
+    });
   }, []);
 
   useEffect(() => {
     syncScrollMetrics();
     window.addEventListener('resize', syncScrollMetrics);
-    return () => window.removeEventListener('resize', syncScrollMetrics);
+    return () => {
+      window.removeEventListener('resize', syncScrollMetrics);
+      if (rafRef.current !== null) {
+        window.cancelAnimationFrame(rafRef.current);
+      }
+    };
   }, [items.length, syncScrollMetrics]);
 
   if (items.length === 0) {

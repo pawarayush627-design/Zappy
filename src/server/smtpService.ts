@@ -292,6 +292,13 @@ export function validateRegistrationToken(
   return { valid: true };
 }
 
+function maskEmailForLog(email: string): string {
+  const [local, domain] = email.split('@');
+  if (!local || !domain) return '***';
+  const visible = local.slice(0, 2);
+  return `${visible}***@${domain}`;
+}
+
 /**
  * Sends the 6-digit OTP or Password Reset email using clean, minimal, professional plain text.
  */
@@ -305,7 +312,7 @@ export async function sendOtpEmail(
   const isReset = options?.purpose === 'reset';
 
   if (!config.pass || config.pass.trim().length === 0) {
-    console.error(`[SMTP ERROR] Missing SMTP Password for ${cleanEmail}`);
+    console.error(`[SMTP ERROR] Missing SMTP Password for ${maskEmailForLog(cleanEmail)}`);
     return {
       success: false,
       simulated: false,
@@ -357,12 +364,12 @@ If you did not request this verification code, you can safely ignore this email.
     });
 
     console.log(
-      `[SMTP SUCCESS] Sent 6-digit ${isReset ? 'password reset' : 'verification'} code to ${cleanEmail} via Gmail (${config.user})`
+      `[SMTP SUCCESS] Sent 6-digit ${isReset ? 'password reset' : 'verification'} code to ${maskEmailForLog(cleanEmail)}`
     );
     return { success: true, simulated: false };
   } catch (err: unknown) {
     const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[SMTP ERROR] Failed to send email to ${cleanEmail}:`, errorMsg);
+    console.error(`[SMTP ERROR] Failed to send email to ${maskEmailForLog(cleanEmail)}`);
     return {
       success: false,
       simulated: false,
@@ -370,3 +377,4 @@ If you did not request this verification code, you can safely ignore this email.
     };
   }
 }
+

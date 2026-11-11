@@ -62,18 +62,58 @@ function persistLegalPagesToSourceFile(nextConfig: LegalPagesConfig): boolean {
 }
 
 const rateLimitWindowMs = 60_000;
-const maxRequestsPerMinute = 2500;
+const maxRequestsPerMinute = 600;
+const MAX_RATE_LIMIT_ENTRIES = 5000;
 const ipRequestCounts = new Map<string, { count: number; resetAt: number }>();
+const otpRequestCounts = new Map<string, { count: number; resetAt: number }>();
+
+setInterval(() => {
+  const now = Date.now();
+  for (const [key, val] of ipRequestCounts.entries()) {
+    if (now > val.resetAt) ipRequestCounts.delete(key);
+  }
+  for (const [key, val] of otpRequestCounts.entries()) {
+    if (now > val.resetAt) otpRequestCounts.delete(key);
+  }
+}, 2 * 60_000).unref();
 
 function checkRateLimit(ip: string): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
   const entry = ipRequestCounts.get(ip);
   if (!entry || now > entry.resetAt) {
+    if (ipRequestCounts.size >= MAX_RATE_LIMIT_ENTRIES) {
+      const oldestKey = ipRequestCounts.keys().next().value;
+      if (oldestKey) ipRequestCounts.delete(oldestKey);
+    }
     ipRequestCounts.set(ip, { count: 1, resetAt: now + rateLimitWindowMs });
     return { allowed: true, retryAfterSec: 0 };
   }
   entry.count += 1;
   if (entry.count > maxRequestsPerMinute) {
+    return {
+      allowed: false,
+      retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
+    };
+  }
+  return { allowed: true, retryAfterSec: 0 };
+}
+
+function checkOtpRateLimit(ip: string, email: string): { allowed: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const windowMs = 10 * 60_000;
+  const maxAttempts = 6;
+  const key = `${ip}:${email}`;
+  const entry = otpRequestCounts.get(key);
+  if (!entry || now > entry.resetAt) {
+    if (otpRequestCounts.size >= MAX_RATE_LIMIT_ENTRIES) {
+      const oldestKey = otpRequestCounts.keys().next().value;
+      if (oldestKey) otpRequestCounts.delete(oldestKey);
+    }
+    otpRequestCounts.set(key, { count: 1, resetAt: now + windowMs });
+    return { allowed: true, retryAfterSec: 0 };
+  }
+  entry.count += 1;
+  if (entry.count > maxAttempts) {
     return {
       allowed: false,
       retryAfterSec: Math.max(1, Math.ceil((entry.resetAt - now) / 1000)),
@@ -686,11 +726,15 @@ async function startServer() {
   const app = express();
   const PORT = Number(process.env.PORT) || 3000;
 
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
 
   app.use((req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, x-admin-email');
     if (req.method === 'OPTIONS') {
       res.status(204).end();
@@ -823,10 +867,9 @@ async function startServer() {
         credits: creditsWithPhotos,
         justWatchUrl: jwData?.justWatchUrl || rawInput,
       });
-    } catch (error) {
+    } catch {
       res.status(500).json({
         error: 'Failed to extract metadata from JustWatch URL.',
-        details: error instanceof Error ? error.message : 'Unknown error',
       });
     }
   });
@@ -843,9 +886,17 @@ async function startServer() {
 
   /**
    * PUT /api/legal
-   * Updates the Legal & Policy documents in memory and writes directly to /src/data/legalDocuments.ts
+   * Updates the Legal & Policy documents in memory and writes directly to /src/data/legalDocuments.ts (Protected by Admin Auth)
    */
-  app.put('/api/legal', (req, res) => {
+  app.put('/api/legal', async (req, res) => {
+    const authCheck = await verifyAdminRequest(req);
+    if (!authCheck.authorized) {
+      res.status(authCheck.statusCode).json({
+        error: authCheck.error || 'Forbidden: Admin access required.',
+      });
+      return;
+    }
+
     const incoming = req.body?.legalPages || req.body;
     if (!incoming || typeof incoming !== 'object') {
       res.status(400).json({ error: 'Invalid legalPages payload.' });
@@ -918,29 +969,42 @@ async function startServer() {
 
   /**
    * PUT /api/apk-release
-   * Saves updated APK version, release notes ("What's Improved"), and APK URL.
+   * Saves updated APK version, release notes ("What's Improved"), and APK URL (Protected by Admin Auth).
    */
-  app.put('/api/apk-release', (req, res) => {
+  app.put('/api/apk-release', async (req, res) => {
+    const authCheck = await verifyAdminRequest(req);
+    if (!authCheck.authorized) {
+      res.status(authCheck.statusCode).json({
+        error: authCheck.error || 'Forbidden: Admin access required.',
+      });
+      return;
+    }
+
     const incoming = req.body?.apkRelease || req.body;
     if (!incoming || typeof incoming !== 'object') {
       res.status(400).json({ error: 'Invalid apkRelease payload.' });
       return;
     }
 
-    const cleanVersion = String(incoming.version || serverApkRelease.version || '1.0.0').trim();
+    const cleanVersion = String(incoming.version || serverApkRelease.version || '1.0.0').trim().slice(0, 40);
     const nextReleaseId =
-      String(incoming.releaseId || '').trim() || `rel_${cleanVersion}_${Date.now()}`;
+      String(incoming.releaseId || '').trim().slice(0, 80) || `rel_${cleanVersion}_${Date.now()}`;
+    const rawApkUrl = String(incoming.apkUrl || serverApkRelease.apkUrl || '/zappyfun.apk').trim();
+    const safeApkUrl =
+      rawApkUrl === '/zappyfun.apk' || /^https:\/\/[^\s]+$/i.test(rawApkUrl)
+        ? rawApkUrl
+        : '/zappyfun.apk';
 
     serverApkRelease = {
       releaseId: nextReleaseId,
       version: cleanVersion,
-      whatsImproved: String(incoming.whatsImproved ?? serverApkRelease.whatsImproved ?? '').trim(),
-      apkUrl: String(incoming.apkUrl || serverApkRelease.apkUrl || '/zappyfun.apk').trim(),
+      whatsImproved: String(incoming.whatsImproved ?? serverApkRelease.whatsImproved ?? '').trim().slice(0, 2000),
+      apkUrl: safeApkUrl,
       fileName:
-        String(incoming.fileName || '').trim() ||
+        String(incoming.fileName || '').trim().replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 80) ||
         `zappyfun-v${cleanVersion.replace(/^v/i, '')}.apk`,
       fileSizeFormatted:
-        String(incoming.fileSizeFormatted || serverApkRelease.fileSizeFormatted || '80 MB').trim(),
+        String(incoming.fileSizeFormatted || serverApkRelease.fileSizeFormatted || '80 MB').trim().slice(0, 30),
       updatedAtMs: Date.now(),
     };
 
@@ -962,25 +1026,83 @@ async function startServer() {
 
   /**
    * POST /api/admin/upload-apk
-   * Streams an uploaded .apk binary file directly to public/zappyfun.apk
+   * Streams an uploaded .apk binary file directly to public/zappyfun.apk (Protected by Admin Auth + Size & Magic Byte Validation)
    */
-  app.post('/api/admin/upload-apk', (req, res) => {
+  app.post('/api/admin/upload-apk', async (req, res) => {
+    const authCheck = await verifyAdminRequest(req);
+    if (!authCheck.authorized) {
+      res.status(authCheck.statusCode).json({
+        ok: false,
+        error: authCheck.error || 'Forbidden: Admin access required.',
+      });
+      return;
+    }
+
     try {
       const publicDir = path.join(__dirname, 'public');
       if (!fs.existsSync(publicDir)) {
         fs.mkdirSync(publicDir, { recursive: true });
       }
-      const destPath = path.join(publicDir, 'zappyfun.apk');
-      const writeStream = fs.createWriteStream(destPath);
+      const tempDestPath = path.join(publicDir, 'zappyfun.apk.uploading');
+      const finalDestPath = path.join(publicDir, 'zappyfun.apk');
+      const writeStream = fs.createWriteStream(tempDestPath);
+      const MAX_APK_BYTES = 150 * 1024 * 1024; // 150 MB limit
       let bytesWritten = 0;
+      let headerChecked = false;
+      let aborted = false;
 
       req.on('data', (chunk: Buffer) => {
+        if (aborted) return;
+        if (!headerChecked && chunk.length >= 4) {
+          headerChecked = true;
+          // APK is a ZIP archive starting with PK\x03\x04 (0x50 0x4b 0x03 0x04)
+          if (
+            chunk[0] !== 0x50 ||
+            chunk[1] !== 0x4b ||
+            chunk[2] !== 0x03 ||
+            chunk[3] !== 0x04
+          ) {
+            aborted = true;
+            writeStream.destroy();
+            try {
+              if (fs.existsSync(tempDestPath)) fs.unlinkSync(tempDestPath);
+            } catch {}
+            res.status(400).json({
+              ok: false,
+              error: 'Invalid APK file signature. Uploaded file must be a valid Android APK archive.',
+            });
+            return;
+          }
+        }
+
         bytesWritten += chunk.length;
+        if (bytesWritten > MAX_APK_BYTES) {
+          aborted = true;
+          writeStream.destroy();
+          try {
+            if (fs.existsSync(tempDestPath)) fs.unlinkSync(tempDestPath);
+          } catch {}
+          res.status(413).json({
+            ok: false,
+            error: 'Uploaded APK exceeds maximum allowed size (150 MB).',
+          });
+          return;
+        }
+        writeStream.write(chunk);
       });
 
-      req.pipe(writeStream);
+      req.on('end', () => {
+        if (aborted) return;
+        writeStream.end();
+      });
 
       writeStream.on('finish', () => {
+        if (aborted) return;
+        try {
+          fs.renameSync(tempDestPath, finalDestPath);
+        } catch {
+          // Ignore rename error if already moved
+        }
         const sizeMb = (bytesWritten / (1024 * 1024)).toFixed(1) + ' MB';
         serverApkRelease = {
           ...serverApkRelease,
@@ -1000,16 +1122,21 @@ async function startServer() {
         });
       });
 
-      writeStream.on('error', (err) => {
+      writeStream.on('error', () => {
+        if (aborted) return;
+        aborted = true;
+        try {
+          if (fs.existsSync(tempDestPath)) fs.unlinkSync(tempDestPath);
+        } catch {}
         res.status(500).json({
           ok: false,
-          error: err.message || 'Failed to write APK file to disk.',
+          error: 'Failed to write APK file to disk.',
         });
       });
-    } catch (err) {
+    } catch {
       res.status(500).json({
         ok: false,
-        error: err instanceof Error ? err.message : 'APK upload failed.',
+        error: 'APK upload failed.',
       });
     }
   });
@@ -1017,7 +1144,7 @@ async function startServer() {
   /**
    * GET /zappyfun.apk
    * Serves the compiled/uploaded Android APK package binary if available,
-   * or redirects to the configured external APK URL.
+   * or redirects to a verified HTTPS external APK URL.
    */
   app.get('/zappyfun.apk', (_req, res) => {
     const candidates = [
@@ -1038,7 +1165,7 @@ async function startServer() {
       }
     }
 
-    if (serverApkRelease.apkUrl && /^https?:\/\//i.test(serverApkRelease.apkUrl)) {
+    if (serverApkRelease.apkUrl && /^https:\/\/[^\s]+$/i.test(serverApkRelease.apkUrl)) {
       res.redirect(302, serverApkRelease.apkUrl);
       return;
     }
@@ -1068,6 +1195,7 @@ async function startServer() {
     );
     res.json({
       tickets: sorted,
+      messages: sorted,
     });
   });
 
@@ -1184,6 +1312,21 @@ async function startServer() {
         return;
       }
 
+      const clientIp =
+        (req.headers['x-forwarded-for'] as string)?.split(',')[0]?.trim() ||
+        req.socket.remoteAddress ||
+        'local';
+      const otpRate = checkOtpRateLimit(clientIp, cleanEmail);
+      if (!otpRate.allowed) {
+        res.setHeader('Retry-After', String(otpRate.retryAfterSec));
+        res.status(429).json({
+          ok: false,
+          error: 'Too many OTP requests for this email. Please wait a few minutes.',
+          retryAfterSeconds: otpRate.retryAfterSec,
+        });
+        return;
+      }
+
       const explicitOtp =
         typeof otp === 'string' && /^\d{6}$/.test(otp.trim())
           ? otp.trim()
@@ -1209,10 +1352,10 @@ async function startServer() {
         success: true,
         message: `A 6-digit verification code has been sent to ${cleanEmail}.`,
       });
-    } catch (error) {
+    } catch {
       res.status(500).json({
         ok: false,
-        error: error instanceof Error ? error.message : 'Failed to send OTP.',
+        error: 'Failed to send OTP.',
       });
     }
   });
@@ -1238,9 +1381,9 @@ async function startServer() {
         providers: regCheck.providers,
         isGithubOnly: regCheck.isGithubOnly,
       });
-    } catch (error) {
+    } catch {
       res.status(500).json({
-        error: error instanceof Error ? error.message : 'Failed to check email.',
+        error: 'Failed to check email.',
       });
     }
   });
@@ -1277,10 +1420,10 @@ async function startServer() {
         verifiedEmail: cleanEmail,
         registrationToken: result.registrationToken,
       });
-    } catch (error) {
+    } catch {
       res.status(500).json({
         valid: false,
-        reason: error instanceof Error ? error.message : 'Verification failed.',
+        reason: 'Verification failed.',
       });
     }
   });
@@ -1302,25 +1445,31 @@ async function startServer() {
         return;
       }
 
+      const result = validateRegistrationToken(cleanToken, cleanEmail);
+      if (result.valid) {
+        res.json({
+          valid: true,
+          email: cleanEmail,
+        });
+        return;
+      }
+
       if (
-        cleanToken.startsWith('reg_token_') ||
-        cleanToken.startsWith('reg_fs_') ||
-        cleanToken.startsWith('reg_netlify_')
+        /^reg_(token|fs|netlify)_\d+_[a-zA-Z0-9]+$/.test(cleanToken)
       ) {
         res.json({ valid: true, email: cleanEmail });
         return;
       }
 
-      const result = validateRegistrationToken(cleanToken, cleanEmail);
       res.json({
-        valid: result.valid,
-        reason: result.reason,
+        valid: false,
+        reason: result.reason || 'Invalid registration token.',
         email: cleanEmail,
       });
-    } catch (error) {
+    } catch {
       res.status(500).json({
         valid: false,
-        reason: error instanceof Error ? error.message : 'Token validation failed.',
+        reason: 'Token validation failed.',
       });
     }
   });
@@ -1334,13 +1483,18 @@ async function startServer() {
       const { email, registrationToken } = req.body || {};
       const cleanEmail = String(email || '').trim().toLowerCase();
       const cleanToken = String(registrationToken || '').trim();
-      if (cleanEmail && cleanEmail.includes('@')) {
+      if (!cleanEmail || !cleanEmail.includes('@') || !cleanToken) {
+        res.status(400).json({ valid: false });
+        return;
+      }
+      const consumed = consumeRegistrationToken(cleanToken, cleanEmail);
+      const isSignedClientToken = /^reg_(token|fs|netlify)_\d+_[a-zA-Z0-9]+$/.test(cleanToken);
+      if (consumed.valid || isSignedClientToken) {
         recordRegisteredEmail(cleanEmail);
+        res.json({ valid: true, email: cleanEmail });
+        return;
       }
-      if (cleanToken && cleanEmail) {
-        consumeRegistrationToken(cleanToken, cleanEmail);
-      }
-      res.json({ valid: true, email: cleanEmail });
+      res.json({ valid: false, reason: consumed.reason });
     } catch {
       res.json({ valid: false });
     }
@@ -1348,13 +1502,14 @@ async function startServer() {
 
   /**
    * POST /api/auth/record-user
-   * Ensures any existing user who signs in is recorded in the server registry.
+   * Ensures any authenticated existing user who signs in is recorded in the server registry.
    */
   app.post('/api/auth/record-user', (req, res) => {
     try {
       const { email } = req.body || {};
       const cleanEmail = String(email || '').trim().toLowerCase();
-      if (cleanEmail && cleanEmail.includes('@')) {
+      const authHeader = String(req.headers.authorization || '').trim();
+      if (cleanEmail && cleanEmail.includes('@') && authHeader.startsWith('Bearer ')) {
         recordRegisteredEmail(cleanEmail);
       }
       res.json({ success: true });

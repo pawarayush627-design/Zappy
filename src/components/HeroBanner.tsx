@@ -31,19 +31,16 @@ export const HeroBanner: React.FC<HeroBannerProps> = ({
   const pointerStartXRef = useRef<number | null>(null);
   const didSwipeRef = useRef<boolean>(false);
 
-  // Preload all hero spotlight backdrop & poster images into browser cache so slide transitions are instantaneous
+  // Preload only the next hero spotlight backdrop image so transitions are smooth without network/decode lag
   useEffect(() => {
-    if (heroPool.length === 0 || typeof window === 'undefined') return;
-    heroPool.forEach((item) => {
-      const urls = [item.backdropUrl, item.posterUrl].filter(Boolean);
-      urls.forEach((raw) => {
-        if (!raw || raw.startsWith('data:')) return;
-        const img = new window.Image();
-        img.referrerPolicy = 'no-referrer';
-        img.src = raw;
-      });
-    });
-  }, [heroPool]);
+    if (heroPool.length <= 1 || typeof window === 'undefined') return;
+    const nextItem = heroPool[(safeIndex + 1) % heroPool.length];
+    const nextUrl = nextItem?.backdropUrl || nextItem?.posterUrl;
+    if (!nextUrl || nextUrl.startsWith('data:')) return;
+    const img = new window.Image();
+    img.referrerPolicy = 'no-referrer';
+    img.src = nextUrl;
+  }, [heroPool, safeIndex]);
 
   // Automatic 7-second rotation through the active hero spotlight items (pauses on hover)
   useEffect(() => {

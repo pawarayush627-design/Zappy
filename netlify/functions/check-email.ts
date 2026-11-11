@@ -15,6 +15,7 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Content-Type': 'application/json',
+  'X-Content-Type-Options': 'nosniff',
 };
 
 export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => {
@@ -36,7 +37,8 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
 
   try {
     const payload = event.body ? JSON.parse(event.body) : {};
-    const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
+    const email =
+      typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
 
     if (!email || !email.includes('@')) {
       return {
@@ -54,18 +56,18 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
       headers: CORS_HEADERS,
       body: JSON.stringify({
         email,
-        registered: isAdmin ? true : null, // Fall back to client Firestore registered_emails check
+        registered: isAdmin ? true : null,
         hasPassword: isAdmin ? true : false,
         isGithubOnly: false,
         fallbackToClient: !isAdmin,
       }),
     };
-  } catch (err) {
+  } catch {
     return {
       statusCode: 500,
       headers: CORS_HEADERS,
       body: JSON.stringify({
-        error: 'Failed to verify email status: ' + (err instanceof Error ? err.message : String(err)),
+        error: 'Failed to verify email status.',
         fallbackToClient: true,
       }),
     };

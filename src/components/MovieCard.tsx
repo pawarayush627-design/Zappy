@@ -1,5 +1,4 @@
 import React from 'react';
-import { motion, AnimatePresence } from 'motion/react';
 import { Play, Plus, Check, Sparkles } from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
@@ -55,31 +54,17 @@ function renderHighlightedText(text: string, query?: string): React.ReactNode {
   );
 }
 
-export const MovieCard: React.FC<MovieCardProps> = ({
+const MovieCardComponent: React.FC<MovieCardProps> = ({
   item,
   inWatchlist,
   rankNumber,
-  index = 0,
   highlightQuery,
   matchReason,
   onSelect,
   onToggleWatchlist,
 }) => {
   return (
-    <motion.article
-      initial={{ opacity: 0, y: 16, scale: 0.96 }}
-      animate={{ opacity: 1, y: 0, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.94, transition: { duration: 0.18 } }}
-      whileHover={{ y: -7, scale: 1.02 }}
-      whileTap={{ scale: 0.985 }}
-      transition={{
-        type: 'spring',
-        stiffness: 320,
-        damping: 24,
-        delay: Math.min(index * 0.02, 0.2),
-      }}
-      className="group relative flex flex-col select-none min-w-0 rounded-2xl bg-[#14161D] border border-[#292C35] hover:border-[#FF5A36]/80 p-2 sm:p-2.5 transition-all duration-300 cinema-card-shadow cinema-glow-hover will-change-transform"
-    >
+    <article className="group relative flex flex-col select-none min-w-0 rounded-2xl bg-[#14161D] border border-[#292C35] hover:border-[#FF5A36]/80 hover:-translate-y-1.5 active:scale-[0.99] p-2 sm:p-2.5 transition-all duration-200 cinema-card-shadow cinema-glow-hover">
       {/* Poster Container with Glass Sheen Sweep */}
       <div className="relative aspect-[2/3] w-full overflow-hidden rounded-xl bg-[#0F1117] zf-sheen">
         <button
@@ -93,17 +78,15 @@ export const MovieCard: React.FC<MovieCardProps> = ({
             alt={item.title}
             item={item}
             aspectRatio="poster"
-            className="w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-[1.08] group-hover:brightness-105"
+            className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-[1.06]"
           />
 
-          <div className="absolute inset-0 bg-gradient-to-t from-[#08090D] via-transparent to-transparent opacity-55 group-hover:opacity-85 transition-opacity duration-300" />
+          <div className="absolute inset-0 bg-gradient-to-t from-[#08090D] via-transparent to-transparent opacity-55 group-hover:opacity-85 transition-opacity duration-200" />
         </button>
 
-        {/* Direct Instant-Play Center Overlay Button on Hover with Spring Pop */}
-        <div className="hidden sm:flex absolute inset-0 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none z-10">
-          <motion.button
-            whileHover={{ scale: 1.15 }}
-            whileTap={{ scale: 0.92 }}
+        {/* Direct Instant-Play Center Overlay Button on Hover */}
+        <div className="hidden sm:flex absolute inset-0 items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-10">
+          <button
             type="button"
             onClick={(e) => {
               e.stopPropagation();
@@ -111,10 +94,10 @@ export const MovieCard: React.FC<MovieCardProps> = ({
             }}
             aria-label={`Play ${item.title} now`}
             title={`Play ${item.title}`}
-            className="pointer-events-none group-hover:pointer-events-auto w-11 h-11 sm:w-12 sm:h-12 rounded-full zf-gradient-btn text-white flex items-center justify-center transform scale-75 group-hover:scale-100 transition-transform duration-300 font-bold cursor-pointer shadow-2xl"
+            className="pointer-events-none group-hover:pointer-events-auto w-11 h-11 sm:w-12 sm:h-12 rounded-full zf-gradient-btn text-white flex items-center justify-center transform scale-90 group-hover:scale-100 hover:scale-110 active:scale-95 transition-transform duration-200 font-bold cursor-pointer shadow-2xl"
           >
             <Play className="w-5 h-5 fill-current ml-0.5" />
-          </motion.button>
+          </button>
         </div>
 
         {/* Top 10 Stylized Gold Rank Number */}
@@ -130,25 +113,24 @@ export const MovieCard: React.FC<MovieCardProps> = ({
         {isItemRecentlyAdded(item) && (
           <div className="absolute top-2 left-2 z-20 pointer-events-none select-none">
             <span
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wider text-white shadow-md backdrop-blur-md border border-white/20 bg-gradient-to-r from-[#FF5A36] via-[#FF168B] to-[#8B35FF]"
+              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wider text-white shadow-md border border-white/20 bg-gradient-to-r from-[#FF5A36] via-[#FF168B] to-[#8B35FF]"
               aria-label="Recently Added"
             >
-              <Sparkles className="w-2.5 h-2.5 shrink-0 text-amber-200 fill-amber-200 animate-pulse" />
+              <Sparkles className="w-2.5 h-2.5 shrink-0 text-amber-200 fill-amber-200" />
               <span>Recently Added</span>
             </span>
           </div>
         )}
 
-        {/* Top Action Bar (Touch-Friendly Animated Watchlist Button) */}
+        {/* Top Action Bar (Touch-Friendly Watchlist Button) */}
         <div className="absolute top-2 right-2 flex items-center gap-1 z-20">
-          <motion.button
-            whileTap={{ scale: 0.85 }}
+          <button
             type="button"
             onClick={(e) => onToggleWatchlist(item, e)}
-            className={`w-9 h-9 rounded-xl flex items-center justify-center border transition-colors duration-200 cursor-pointer backdrop-blur-md ${
+            className={`w-9 h-9 rounded-xl flex items-center justify-center border transition-all duration-150 active:scale-90 cursor-pointer ${
               inWatchlist
                 ? 'bg-[#FFB800] border-[#FFB800] text-[#08090D] shadow-md shadow-[#FFB800]/25'
-                : 'bg-[#14161D]/85 border-white/15 text-white hover:bg-[#252832] hover:border-[#FFB800]/70'
+                : 'bg-[#14161D]/90 border-white/15 text-white hover:bg-[#252832] hover:border-[#FFB800]/70'
             }`}
             aria-label={
               inWatchlist
@@ -157,30 +139,12 @@ export const MovieCard: React.FC<MovieCardProps> = ({
             }
             title={inWatchlist ? 'In Watchlist' : 'Add to Watchlist'}
           >
-            <AnimatePresence mode="wait" initial={false}>
-              {inWatchlist ? (
-                <motion.span
-                  key="saved"
-                  initial={{ scale: 0.4, rotate: -45, opacity: 0 }}
-                  animate={{ scale: 1, rotate: 0, opacity: 1 }}
-                  exit={{ scale: 0.4, rotate: 45, opacity: 0 }}
-                  transition={{ duration: 0.16 }}
-                >
-                  <Check className="w-4 h-4 stroke-[2.5]" />
-                </motion.span>
-              ) : (
-                <motion.span
-                  key="add"
-                  initial={{ scale: 0.4, rotate: 45, opacity: 0 }}
-                  animate={{ scale: 1, rotate: 0, opacity: 1 }}
-                  exit={{ scale: 0.4, rotate: -45, opacity: 0 }}
-                  transition={{ duration: 0.16 }}
-                >
-                  <Plus className="w-4 h-4 stroke-[2.5]" />
-                </motion.span>
-              )}
-            </AnimatePresence>
-          </motion.button>
+            {inWatchlist ? (
+              <Check className="w-4 h-4 stroke-[2.5]" />
+            ) : (
+              <Plus className="w-4 h-4 stroke-[2.5]" />
+            )}
+          </button>
         </div>
       </div>
 
@@ -210,12 +174,26 @@ export const MovieCard: React.FC<MovieCardProps> = ({
         )}
       </div>
 
-      {/* Search Match Attribution (only shown when searching and matched on Cast / Director / Tagline / Year) */}
+      {/* Search Match Attribution */}
       {matchReason && (
         <p className="mt-1 text-[10px] font-semibold text-[#FFB800]/90 truncate">
           {matchReason}
         </p>
       )}
-    </motion.article>
+    </article>
   );
 };
+
+export const MovieCard = React.memo(
+  MovieCardComponent,
+  (prev, next) =>
+    prev.item.id === next.item.id &&
+    prev.item.title === next.item.title &&
+    prev.item.posterUrl === next.item.posterUrl &&
+    prev.item.releaseYear === next.item.releaseYear &&
+    prev.item.durationMinutes === next.item.durationMinutes &&
+    prev.inWatchlist === next.inWatchlist &&
+    prev.rankNumber === next.rankNumber &&
+    prev.highlightQuery === next.highlightQuery &&
+    prev.matchReason === next.matchReason
+);

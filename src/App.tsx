@@ -712,12 +712,6 @@ export default function App() {
             docSnap.id === 'movie-search' ||
             rawEmbed.includes('tt29730964');
           if (isBogusSearchEntry) {
-            if (
-              auth.currentUser &&
-              isUserAdmin(auth.currentUser.email, auth.currentUser.emailVerified)
-            ) {
-              deleteDoc(doc(db, 'catalog', docSnap.id)).catch(() => {});
-            }
             return false;
           }
           return true;
@@ -761,18 +755,6 @@ export default function App() {
             mediaType === 'tv'
               ? `https://vidly.pro/tv/${resolvedNumericId}/1/1`
               : `https://vidly.pro/movie/${resolvedNumericId}`;
-
-          if (
-            auth.currentUser &&
-            isUserAdmin(auth.currentUser.email, auth.currentUser.emailVerified) &&
-            (!rawEmbedStr.includes('vidly.pro') || !data.cinesrcEmbedUrl)
-          ) {
-            updateDoc(doc(db, 'catalog', docSnap.id), {
-              cinesrcEmbedUrl: normalizedVidlyUrl,
-              tmdbId: resolvedNumericId,
-              updatedAt: serverTimestamp(),
-            }).catch(() => {});
-          }
 
             // Resolve created timestamp: Firestore Timestamp object (.toMillis()), number, or string
             let resolvedCreatedAtMs: number | undefined = undefined;
@@ -1045,8 +1027,13 @@ export default function App() {
 
   const [isAuthModalOpen, setIsAuthModalOpen] = useState<boolean>(() => {
     try {
-      const params = new URLSearchParams(window.location.search);
-      return Boolean(params.get('resetEmail'));
+      const searchParams = new URLSearchParams(window.location.search);
+      const hashParams = new URLSearchParams(
+        window.location.hash.replace(/^#/, '')
+      );
+      return Boolean(
+        hashParams.get('resetEmail') || searchParams.get('resetEmail')
+      );
     } catch {
       return false;
     }
@@ -1458,9 +1445,13 @@ export default function App() {
 
       // 1. Persist directly into source code (/src/data/legalDocuments.ts) via backend API
       try {
+        const idToken = currentUser ? await currentUser.getIdToken().catch(() => '') : '';
         await safeApiFetchJson('/api/legal', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          },
           body: JSON.stringify({ legalPages: normalized }),
         });
       } catch {
@@ -1505,9 +1496,13 @@ export default function App() {
 
       // 1. Persist to backend server (/api/apk-release)
       try {
+        const idToken = currentUser ? await currentUser.getIdToken().catch(() => '') : '';
         await fetch('/api/apk-release', {
           method: 'PUT',
-          headers: { 'Content-Type': 'application/json' },
+          headers: {
+            'Content-Type': 'application/json',
+            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
+          },
           body: JSON.stringify({ apkRelease: normalized }),
         });
       } catch {
@@ -4073,7 +4068,7 @@ export default function App() {
                   {moviesList.length > 0 && (
                     <CarouselRow
                       title="Popular Movies"
-                      items={moviesList}
+                      items={moviesList.slice(0, 16)}
                       watchlistIds={activeWatchlistIds}
                       onSelectMedia={handleSelectMedia}
                       onToggleWatchlist={handleToggleWatchlist}

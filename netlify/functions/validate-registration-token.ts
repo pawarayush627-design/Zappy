@@ -1,3 +1,5 @@
+import crypto from 'crypto';
+
 interface NetlifyEvent {
   httpMethod: string;
   body: string | null;
@@ -15,7 +17,16 @@ const CORS_HEADERS = {
   'Access-Control-Allow-Headers': 'Content-Type, Authorization',
   'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
   'Content-Type': 'application/json',
+  'X-Content-Type-Options': 'nosniff',
 };
+
+function getHmacSecret(): string {
+  return (
+    process.env.OTP_HMAC_SECRET ||
+    process.env.SMTP_PASS ||
+    'zappyfun-otp-hmac-secret-2026'
+  ).trim();
+}
 
 export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => {
   if (event.httpMethod === 'OPTIONS') {
@@ -36,8 +47,12 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
 
   try {
     const payload = event.body ? JSON.parse(event.body) : {};
-    const email = typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
-    const token = typeof payload.registrationToken === 'string' ? payload.registrationToken.trim() : '';
+    const email =
+      typeof payload.email === 'string' ? payload.email.trim().toLowerCase() : '';
+    const token =
+      typeof payload.registrationToken === 'string'
+        ? payload.registrationToken.trim()
+        : '';
 
     if (!email || !token) {
       return {
@@ -50,13 +65,47 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
       };
     }
 
-    if (!token.startsWith('reg_')) {
+    if (!token.startsWith('reg_netlify_')) {
       return {
         statusCode: 200,
         headers: CORS_HEADERS,
         body: JSON.stringify({
           valid: false,
           reason: 'Invalid registration authorization token format.',
+        }),
+      };
+    }
+
+    const parts = token.split('_');
+    // Expected: reg_netlify_<expiresAt>_<mac>
+    const expiresAtMs = Number(parts[2]);
+    const providedMac = parts[3] || '';
+    if (!expiresAtMs || !providedMac || Date.now() > expiresAtMs) {
+      return {
+        statusCode: 200,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          valid: false,
+          reason: 'Registration session expired. Please verify your email again.',
+        }),
+      };
+    }
+
+    const expectedMac = crypto
+      .createHmac('sha256', getHmacSecret())
+      .update(`reg:${email}:${expiresAtMs}`)
+      .digest('hex');
+
+    if (
+      providedMac.length !== expectedMac.length ||
+      !crypto.timingSafeEqual(Buffer.from(providedMac), Buffer.from(expectedMac))
+    ) {
+      return {
+        statusCode: 200,
+        headers: CORS_HEADERS,
+        body: JSON.stringify({
+          valid: false,
+          reason: 'Invalid registration authorization token.',
         }),
       };
     }
@@ -69,13 +118,13 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
         email,
       }),
     };
-  } catch (err) {
+  } catch {
     return {
       statusCode: 500,
       headers: CORS_HEADERS,
       body: JSON.stringify({
         valid: false,
-        reason: 'Token validation error: ' + (err instanceof Error ? err.message : String(err)),
+        reason: 'Token validation error.',
       }),
     };
   }

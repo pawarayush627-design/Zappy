@@ -195,23 +195,62 @@ service cloud.firestore {
       allow create, update, delete: if false;
     }
 
+    function isValidUserProfile(data) {
+      return data.keys().hasAll(['uid', 'email', 'displayName', 'age']) &&
+        data.keys().hasOnly([
+          'uid', 'email', 'displayName', 'age',
+          'photoURL', 'favoriteGenres', 'onboardingCompleted', 'updatedAt'
+        ]) &&
+        isValidId(data.uid) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 120 &&
+        data.age is int && data.age >= 1 && data.age <= 125 &&
+        (!('photoURL' in data) || (data.photoURL is string && data.photoURL.size() <= 500000)) &&
+        (!('favoriteGenres' in data) || (data.favoriteGenres is list && data.favoriteGenres.size() <= 12)) &&
+        (!('onboardingCompleted' in data) || data.onboardingCompleted is bool) &&
+        (!('updatedAt' in data) || data.updatedAt is timestamp);
+    }
+
+    function isValidRegisteredEmail(data) {
+      return data.keys().hasAll(['email', 'registeredAt']) &&
+        data.keys().hasOnly(['email', 'displayName', 'uid', 'registeredAt']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        (!('displayName' in data) || (data.displayName is string && data.displayName.size() <= 120)) &&
+        (!('uid' in data) || (data.uid is string && data.uid.size() <= 128)) &&
+        data.registeredAt is timestamp;
+    }
+
+    function isValidOtpChallenge(data) {
+      return data.keys().hasAll(['email', 'challengeHash', 'salt', 'expiresAtMs', 'createdAt']) &&
+        data.keys().hasOnly(['email', 'challengeHash', 'salt', 'expiresAtMs', 'createdAt']) &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 160 &&
+        data.challengeHash is string && data.challengeHash.size() == 64 &&
+        data.salt is string && data.salt.size() >= 8 && data.salt.size() <= 128 &&
+        data.expiresAtMs is int && data.expiresAtMs > 0 &&
+        data.createdAt is timestamp;
+    }
+
     // 9. Collection Rules: /users/{userId} (User Profile: name, age, email)
     match /users/{userId} {
-      allow get: if isSignedIn() && (request.auth.uid == userId || isAdmin());
+      allow get: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
       allow list: if isAdmin();
-      allow create, update: if isSignedIn() && request.auth.uid == userId;
-      allow delete: if isSignedIn() && request.auth.uid == userId;
+      allow create, update: if isSignedIn() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        isValidUserProfile(incoming()) &&
+        incoming().uid == userId;
+      allow delete: if isSignedIn() && isValidId(userId) && (request.auth.uid == userId || isAdmin());
     }
 
     // 10. Collection Rules: /registered_emails/{emailDocId} (Registered Account Lookup)
     match /registered_emails/{emailDocId} {
       allow get: if isValidId(emailDocId);
       allow list: if isAdmin();
-      allow create, update: if isValidId(emailDocId) &&
-        incoming().email is string &&
-        incoming().email.size() >= 3 &&
-        incoming().email.size() <= 160;
-      allow delete: if isAdmin();
+      allow create, update: if isSignedIn() &&
+        isValidId(emailDocId) &&
+        isValidRegisteredEmail(incoming()) &&
+        incoming().registeredAt == request.time;
+      allow delete: if isValidId(emailDocId) && isAdmin();
     }
 
     // 11. Collection Rules: /otp_challenges/{challengeId} (Temporary OTP Verification)
@@ -219,11 +258,11 @@ service cloud.firestore {
       allow get: if isValidId(challengeId);
       allow list: if false;
       allow create, update: if isValidId(challengeId) &&
-        incoming().email is string &&
-        incoming().email.size() >= 3 &&
-        incoming().email.size() <= 160;
+        isValidOtpChallenge(incoming()) &&
+        incoming().createdAt == request.time;
       allow delete: if isValidId(challengeId);
     }
   }
 }
+
 

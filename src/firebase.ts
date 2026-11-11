@@ -178,52 +178,28 @@ async function testConnection() {
 }
 testConnection();
 
-const BRIDGE_SECRET = 'zf_cinema_vault_2026_key';
-
-function encodeBridgeCredential(password: string): string {
-  let out = '';
-  for (let i = 0; i < password.length; i++) {
-    const code =
-      password.charCodeAt(i) ^ BRIDGE_SECRET.charCodeAt(i % BRIDGE_SECRET.length);
-    out += code.toString(16).padStart(4, '0');
-  }
-  return out;
-}
-
-function decodeBridgeCredential(encoded: string): string {
-  if (!encoded || encoded.length % 4 !== 0) return '';
-  let out = '';
-  for (let i = 0; i < encoded.length; i += 4) {
-    const idx = i / 4;
-    const code =
-      parseInt(encoded.slice(i, i + 4), 16) ^
-      BRIDGE_SECRET.charCodeAt(idx % BRIDGE_SECRET.length);
-    out += String.fromCharCode(code);
-  }
-  return out;
-}
-
-export function storeCredentialBridge(email: string, password: string): void {
-  if (typeof window === 'undefined' || !email || !password) return;
+// Purge any legacy credential bridge entries from localStorage so passwords are never persisted in browser storage
+if (typeof window !== 'undefined') {
   try {
-    const docId = encodeEmailToDocId(email.trim().toLowerCase());
-    window.localStorage.setItem(
-      `zappy_cred_bridge_${docId}`,
-      encodeBridgeCredential(password)
-    );
-  } catch {}
-}
-
-export function getCredentialBridge(email: string): string | null {
-  if (typeof window === 'undefined' || !email) return null;
-  try {
-    const docId = encodeEmailToDocId(email.trim().toLowerCase());
-    const raw = window.localStorage.getItem(`zappy_cred_bridge_${docId}`);
-    if (!raw) return null;
-    return decodeBridgeCredential(raw) || null;
+    const keysToRemove: string[] = [];
+    for (let i = 0; i < window.localStorage.length; i++) {
+      const k = window.localStorage.key(i);
+      if (k && k.startsWith('zappy_cred_bridge_')) {
+        keysToRemove.push(k);
+      }
+    }
+    keysToRemove.forEach((k) => window.localStorage.removeItem(k));
   } catch {
-    return null;
+    // Ignore storage errors
   }
+}
+
+export function storeCredentialBridge(_email: string, _password: string): void {
+  // Intentionally no-op: user passwords must never be stored in browser localStorage
+}
+
+export function getCredentialBridge(_email: string): string | null {
+  return null;
 }
 
 function buildShadowAliasEmail(email: string): string {
@@ -614,11 +590,18 @@ export async function signInWithGoogle(): Promise<UserCredential> {
       throw popupErr;
     }
 
-    // Only if popups are explicitly blocked by browser settings does it fall back to redirect
-    if (errorObj?.code === 'auth/popup-blocked') {
-      console.warn('Google popup was blocked by browser. Attempting redirect fallback...');
+    // If popups are blocked or unsupported in native WebView, fall back to redirect with a safety timeout
+    if (
+      errorObj?.code === 'auth/popup-blocked' ||
+      errorObj?.code === 'auth/operation-not-supported-in-this-environment'
+    ) {
+      console.warn('Google popup unavailable. Attempting redirect fallback...');
       await signInWithRedirect(auth, googleProvider);
-      return new Promise<never>(() => {});
+      return await new Promise<UserCredential>((_, reject) => {
+        setTimeout(() => {
+          reject(new Error('Google sign-in redirect did not complete. Please check browser popup settings.'));
+        }, 4000);
+      });
     }
 
     throw popupErr;
@@ -724,8 +707,92 @@ export function encodeEmailToDocId(email: string): string {
   return hex.slice(0, 128);
 }
 
+function pureJsSha256Hex(ascii: string): string {
+  const rightRotate = (value: number, amount: number) =>
+    (value >>> amount) | (value << (32 - amount));
+
+  const mathPow = Math.pow;
+  const maxWord = mathPow(2, 32);
+  let result = '';
+
+  const words: number[] = [];
+  const utf8Str = unescape(encodeURIComponent(ascii));
+  const asciiBitLength = utf8Str.length * 8;
+
+  const hash: number[] = [];
+  const k: number[] = [];
+  let primeCounter = 0;
+
+  const isComposite: Record<number, number> = {};
+  for (let candidate = 2; primeCounter < 64; candidate++) {
+    if (!isComposite[candidate]) {
+      for (let i = 0; i < 313; i += candidate) {
+        isComposite[i] = candidate;
+      }
+      hash[primeCounter] = (mathPow(candidate, 0.5) * maxWord) | 0;
+      k[primeCounter++] = (mathPow(candidate, 1 / 3) * maxWord) | 0;
+    }
+  }
+
+  let padded = utf8Str + '\x80';
+  while ((padded.length % 64) - 56) padded += '\x00';
+  for (let i = 0; i < padded.length; i++) {
+    const j = padded.charCodeAt(i);
+    words[i >> 2] |= j << (((3 - i) % 4) * 8);
+  }
+  words[words.length] = (asciiBitLength / maxWord) | 0;
+  words[words.length] = asciiBitLength;
+
+  for (let j = 0; j < words.length; ) {
+    const w = words.slice(j, (j += 16));
+    const oldHash = hash.slice(0);
+
+    for (let i = 0; i < 64; i++) {
+      const i2 = i + j;
+      void i2;
+      const w15 = w[i - 15],
+        w2 = w[i - 2];
+
+      const a = hash[0],
+        e = hash[4];
+      const temp1 =
+        hash[7] +
+        (rightRotate(e, 6) ^ rightRotate(e, 11) ^ rightRotate(e, 25)) +
+        ((e & hash[5]) ^ (~e & hash[6])) +
+        k[i] +
+        (w[i] =
+          i < 16
+            ? w[i]
+            : (w[i - 16] +
+                (rightRotate(w15, 7) ^ rightRotate(w15, 18) ^ (w15 >>> 3)) +
+                w[i - 7] +
+                (rightRotate(w2, 17) ^ rightRotate(w2, 19) ^ (w2 >>> 10))) |
+              0);
+      const temp2 =
+        (rightRotate(a, 2) ^ rightRotate(a, 13) ^ rightRotate(a, 22)) +
+        ((a & hash[1]) ^ (a & hash[2]) ^ (hash[1] & hash[2]));
+
+      hash.unshift((temp1 + temp2) | 0);
+      hash[4] = (hash[4] + temp1) | 0;
+      hash.pop();
+    }
+
+    for (let i = 0; i < 8; i++) {
+      hash[i] = (hash[i] + oldHash[i]) | 0;
+    }
+  }
+
+  for (let i = 0; i < 8; i++) {
+    for (let j = 3; j + 1; j--) {
+      const b = (hash[i] >> (j * 8)) & 255;
+      result += (b < 16 ? 0 : '') + b.toString(16);
+    }
+  }
+  return result;
+}
+
 /**
- * Computes a SHA-256 hex string in both browser and server runtimes.
+ * Computes a standard 256-bit SHA-256 hex digest in both browser and server runtimes.
  */
 export async function sha256Hex(str: string): Promise<string> {
   if (typeof globalThis.crypto !== 'undefined' && globalThis.crypto.subtle) {
@@ -738,25 +805,10 @@ export async function sha256Hex(str: string): Promise<string> {
         .map((b) => b.toString(16).padStart(2, '0'))
         .join('');
     } catch {
-      // Fallback below
+      // Fallback to pure JS SHA-256 implementation below
     }
   }
-  let h1 = 0xdeadbeef,
-    h2 = 0x41c6ce57;
-  for (let i = 0; i < str.length; i++) {
-    const ch = str.charCodeAt(i);
-    h1 = Math.imul(h1 ^ ch, 2654435761);
-    h2 = Math.imul(h2 ^ ch, 1597334677);
-  }
-  h1 =
-    Math.imul(h1 ^ (h1 >>> 16), 2246822507) ^
-    Math.imul(h2 ^ (h2 >>> 13), 3266489909);
-  h2 =
-    Math.imul(h2 ^ (h2 >>> 16), 2246822507) ^
-    Math.imul(h1 ^ (h1 >>> 13), 3266489909);
-  return (4294967296 * (2097151 & h2) + (h1 >>> 0))
-    .toString(16)
-    .padStart(64, '0');
+  return pureJsSha256Hex(str);
 }
 
 /**
