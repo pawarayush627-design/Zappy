@@ -28,8 +28,6 @@ function loadEmails(): Set<string> {
           }
         }
       }
-    } else {
-      fs.writeFileSync(REGISTERED_FILE, JSON.stringify(Array.from(set), null, 2), 'utf-8');
     }
   } catch (err) {
     console.warn('Could not read registered-emails.json:', err);
@@ -53,7 +51,9 @@ export function recordRegisteredEmail(email: string): void {
 
   set.add(clean);
   try {
-    fs.writeFileSync(REGISTERED_FILE, JSON.stringify(Array.from(set), null, 2), 'utf-8');
+    if (fs.existsSync(REGISTERED_FILE)) {
+      fs.writeFileSync(REGISTERED_FILE, JSON.stringify(Array.from(set), null, 2), 'utf-8');
+    }
   } catch (err) {
     console.error('Failed to update registered-emails.json:', err);
   }

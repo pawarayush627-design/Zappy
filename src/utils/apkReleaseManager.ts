@@ -117,26 +117,41 @@ export async function triggerDirectApkDownload(
     return true;
   }
 
-  // Otherwise check the local/server binary endpoint (/zappyfun.apk)
-  try {
-    const cacheBustUrl = `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}t=${Date.now()}`;
-    const headRes = await fetch(cacheBustUrl, { method: 'HEAD' });
-    const contentType = (headRes.headers.get('content-type') || '').toLowerCase();
-    if (
-      headRes.ok &&
-      (contentType.includes('vnd.android.package-archive') ||
-        contentType.includes('application/octet-stream'))
-    ) {
-      const a = document.createElement('a');
-      a.href = cacheBustUrl;
-      a.download = cleanFileName;
-      document.body.appendChild(a);
-      a.click();
-      document.body.removeChild(a);
-      return true;
+  // Otherwise check the local/server binary endpoint (/zappyfun.apk) and fallback backend origin
+  const candidateUrls = [
+    `${targetUrl}${targetUrl.includes('?') ? '&' : '?'}t=${Date.now()}`,
+  ];
+  const fallbackOrigin = 'https://ais-pre-h3khdspljkh5i75p226uvc-268382957607.asia-east1.run.app';
+  if (
+    targetUrl.startsWith('/') &&
+    window.location.origin !== fallbackOrigin
+  ) {
+    candidateUrls.push(
+      `${fallbackOrigin}${targetUrl}${targetUrl.includes('?') ? '&' : '?'}t=${Date.now()}`
+    );
+  }
+
+  for (const urlToTry of candidateUrls) {
+    try {
+      const headRes = await fetch(urlToTry, { method: 'HEAD' });
+      const contentType = (headRes.headers.get('content-type') || '').toLowerCase();
+      if (
+        headRes.ok &&
+        (contentType.includes('vnd.android.package-archive') ||
+          contentType.includes('application/octet-stream'))
+      ) {
+        const a = document.createElement('a');
+        a.href = urlToTry;
+        a.download = cleanFileName;
+        a.rel = 'noopener noreferrer';
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        return true;
+      }
+    } catch {
+      // Try next candidate
     }
-  } catch {
-    // Fall through
   }
 
   if (onFallbackNotReady) {

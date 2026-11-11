@@ -44,12 +44,14 @@ export async function safeApiFetchJson<T = any>(
     if (isJsonResponse(primaryRes, primaryText)) {
       try {
         const parsed = JSON.parse(primaryText) as T;
-        return {
-          ok: primaryRes.ok,
-          status: primaryRes.status,
-          data: parsed,
-          isStaticFallback: false,
-        };
+        if (primaryRes.ok || primaryRes.status < 500) {
+          return {
+            ok: primaryRes.ok,
+            status: primaryRes.status,
+            data: parsed,
+            isStaticFallback: false,
+          };
+        }
       } catch {
         // Continue to fallback if JSON parse fails
       }
@@ -75,12 +77,14 @@ export async function safeApiFetchJson<T = any>(
           const netlifyText = await netlifyFnRes.text();
           if (isJsonResponse(netlifyFnRes, netlifyText)) {
             const parsed = JSON.parse(netlifyText) as T;
-            return {
-              ok: netlifyFnRes.ok,
-              status: netlifyFnRes.status,
-              data: parsed,
-              isStaticFallback: false,
-            };
+            if (netlifyFnRes.ok || netlifyFnRes.status < 500) {
+              return {
+                ok: netlifyFnRes.ok,
+                status: netlifyFnRes.status,
+                data: parsed,
+                isStaticFallback: false,
+              };
+            }
           }
         } catch {
           // Ignore

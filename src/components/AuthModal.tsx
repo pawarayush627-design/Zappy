@@ -1498,13 +1498,11 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    setStep('FORGOT_PASSWORD');
-                    setErrorMessage('');
-                    setInfoMessage('');
+                    void handleRequestPasswordResetOtp(email);
                   }}
                   className="text-xs text-[#FF5A36] hover:underline cursor-pointer"
                 >
-                  Forgot Password?
+                  Forgot Password? (Send OTP)
                 </button>
               </div>
               <div className="relative">
@@ -1549,6 +1547,18 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}
+            </button>
+
+            <button
+              type="button"
+              disabled={isLoading}
+              onClick={() => {
+                void handleRequestOtp(email);
+              }}
+              className="w-full py-2.5 px-4 rounded-xl bg-[#0D0B12] hover:bg-[#1F1B2B] border border-[#231E30] text-[#B8B4C2] hover:text-white font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
+            >
+              <ShieldCheck className="w-3.5 h-3.5 text-[#FFB800]" />
+              <span>Send 6-Digit Email OTP Instead</span>
             </button>
 
             <div className="text-center pt-1 text-xs text-[#B8B4C2]">

@@ -610,48 +610,66 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
     const idToken = currentUser ? await currentUser.getIdToken().catch(() => '') : '';
 
-    const xhr = new XMLHttpRequest();
-    xhr.open('POST', '/api/admin/upload-apk', true);
-    xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-    if (idToken) {
-      xhr.setRequestHeader('Authorization', `Bearer ${idToken}`);
-    }
-
-    xhr.upload.onprogress = (evt) => {
-      if (evt.lengthComputable && evt.total > 0) {
-        const pct = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
-        setApkUploadProgress(pct);
+    const fallbackOrigin = 'https://ais-pre-h3khdspljkh5i75p226uvc-268382957607.asia-east1.run.app';
+    const sendUpload = (endpointUrl: string, isFallbackRetry: boolean) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', endpointUrl, true);
+      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+      if (idToken) {
+        xhr.setRequestHeader('Authorization', `Bearer ${idToken}`);
       }
-    };
 
-    xhr.onload = () => {
-      setIsUploadingApkFile(false);
-      setApkUploadProgress(100);
-      if (xhr.status >= 200 && xhr.status < 300) {
-        setApkDraft((prev) => ({
-          ...prev,
-          apkUrl: '/zappyfun.apk',
-          fileName: file.name.endsWith('.apk') ? file.name : `${file.name}.apk`,
-          fileSizeFormatted: sizeMb,
-        }));
-        setStatusMessage(
-          `Attached "${file.name}" (${sizeMb})! Now enter the Version and What's Improved and click Publish APK Update.`
-        );
-      } else {
+      xhr.upload.onprogress = (evt) => {
+        if (evt.lengthComputable && evt.total > 0) {
+          const pct = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
+          setApkUploadProgress(pct);
+        }
+      };
+
+      xhr.onload = () => {
+        const contentType = (xhr.getResponseHeader('content-type') || '').toLowerCase();
+        const isJsonSuccess =
+          xhr.status >= 200 &&
+          xhr.status < 300 &&
+          contentType.includes('application/json');
+
+        if (isJsonSuccess) {
+          setIsUploadingApkFile(false);
+          setApkUploadProgress(100);
+          setApkDraft((prev) => ({
+            ...prev,
+            apkUrl: isFallbackRetry ? `${fallbackOrigin}/zappyfun.apk` : '/zappyfun.apk',
+            fileName: file.name.endsWith('.apk') ? file.name : `${file.name}.apk`,
+            fileSizeFormatted: sizeMb,
+          }));
+          setStatusMessage(
+            `Attached "${file.name}" (${sizeMb})! Now enter the Version and What's Improved and click Publish APK Update.`
+          );
+        } else if (!isFallbackRetry && window.location.origin !== fallbackOrigin) {
+          sendUpload(`${fallbackOrigin}/api/admin/upload-apk`, true);
+        } else {
+          setIsUploadingApkFile(false);
+          setErrorMessage(
+            'Could not upload APK binary to server. You can also paste a direct APK download link below.'
+          );
+        }
+      };
+
+      xhr.onerror = () => {
+        if (!isFallbackRetry && window.location.origin !== fallbackOrigin) {
+          sendUpload(`${fallbackOrigin}/api/admin/upload-apk`, true);
+          return;
+        }
+        setIsUploadingApkFile(false);
         setErrorMessage(
-          'Could not upload APK binary to server (or static host active). You can also paste a direct APK download link below.'
+          'Upload interrupted. If hosting on a static CDN, paste the direct APK download URL below.'
         );
-      }
+      };
+
+      xhr.send(file);
     };
 
-    xhr.onerror = () => {
-      setIsUploadingApkFile(false);
-      setErrorMessage(
-        'Upload interrupted. If hosting on a static CDN, paste the direct APK download URL below.'
-      );
-    };
-
-    xhr.send(file);
+    sendUpload('/api/admin/upload-apk', false);
   };
 
   const handlePublishApkUpdate = async (e?: React.FormEvent) => {
