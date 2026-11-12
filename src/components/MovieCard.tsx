@@ -1,5 +1,5 @@
 import React from 'react';
-import { Play, Plus, Check, Sparkles } from 'lucide-react';
+import { Play, Plus, Check } from 'lucide-react';
 import { MediaItem } from '../types/media';
 import { MediaArtwork } from './MediaArtwork';
 
@@ -15,18 +15,6 @@ interface MovieCardProps {
   onToggleWatchlist: (item: MediaItem, e: React.MouseEvent) => void;
 }
 
-const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-
-function isItemRecentlyAdded(item: MediaItem): boolean {
-  if (item.recentlyAdded === true) return true;
-  const ts = item.createdAtMs || item.heroAddedAtMs;
-  if (typeof ts === 'number' && ts > 0) {
-    const age = Date.now() - ts;
-    return age <= SEVEN_DAYS_MS && age >= 0;
-  }
-  return false;
-}
-
 function formatDurationFigma(minutes: number): string {
   const hrs = Math.floor((minutes || 120) / 60);
   const mins = (minutes || 120) % 60;
@@ -35,13 +23,24 @@ function formatDurationFigma(minutes: number): string {
 }
 
 function renderHighlightedText(text: string, query?: string): React.ReactNode {
-  if (!query || !query.trim()) return text;
+  if (!query || !query.trim() || !text) return text;
   const cleanQuery = query.trim();
-  const escaped = cleanQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  const parts = text.split(new RegExp(`(${escaped})`, 'gi'));
+  const stopWords = new Set(['movie', 'movies', 'film', 'films', 'watch', 'online', 'full', 'free', 'the', 'of', 'in', 'and']);
+  const rawTokens = cleanQuery
+    .split(/\s+/)
+    .map((t) => t.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'))
+    .filter((t) => t.length >= 2 && !stopWords.has(t.toLowerCase()));
+  const fullEscaped = cleanQuery.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  const patterns = Array.from(new Set([fullEscaped, ...rawTokens])).sort(
+    (a, b) => b.length - a.length
+  );
+  if (patterns.length === 0) return text;
+  const regex = new RegExp(`(${patterns.join('|')})`, 'gi');
+  const parts = text.split(regex);
   if (parts.length <= 1) return text;
+  const lowerPatterns = patterns.map((p) => p.replace(/\\(.)/g, '$1').toLowerCase());
   return parts.map((part, i) =>
-    part.toLowerCase() === cleanQuery.toLowerCase() ? (
+    lowerPatterns.includes(part.toLowerCase()) ? (
       <mark
         key={i}
         className="bg-[#FFB800]/25 text-[#FFB800] rounded px-0.5 font-extrabold"
@@ -64,7 +63,10 @@ const MovieCardComponent: React.FC<MovieCardProps> = ({
   onToggleWatchlist,
 }) => {
   return (
-    <article className="group relative flex flex-col select-none min-w-0 rounded-2xl bg-[#14161D] border border-[#292C35] hover:border-[#FF5A36]/80 hover:-translate-y-1.5 active:scale-[0.99] p-2 sm:p-2.5 transition-all duration-200 cinema-card-shadow cinema-glow-hover">
+    <article
+      style={{ contentVisibility: 'auto', containIntrinsicSize: '220px 360px' }}
+      className="group relative flex flex-col select-none min-w-0 rounded-2xl bg-[#14161D] border border-[#292C35] hover:border-[#FF5A36]/80 hover:-translate-y-1 active:scale-[0.99] p-2 sm:p-2.5 transition-transform duration-150 cinema-card-shadow"
+    >
       {/* Poster Container with Glass Sheen Sweep */}
       <div className="relative aspect-[2/3] w-full overflow-hidden rounded-xl bg-[#0F1117] zf-sheen">
         <button
@@ -105,19 +107,6 @@ const MovieCardComponent: React.FC<MovieCardProps> = ({
           <div className="absolute bottom-1 left-2 z-10 pointer-events-none drop-shadow-[0_4px_12px_rgba(0,0,0,0.95)] select-none">
             <span className="text-3xl sm:text-5xl font-black text-[#FFB800] tracking-tighter font-display italic tabular-nums">
               #{rankNumber}
-            </span>
-          </div>
-        )}
-
-        {/* Recently Added Visual Badge (items added in the last 7 days) */}
-        {isItemRecentlyAdded(item) && (
-          <div className="absolute top-2 left-2 z-20 pointer-events-none select-none">
-            <span
-              className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg text-[10px] font-extrabold uppercase tracking-wider text-white shadow-md border border-white/20 bg-gradient-to-r from-[#FF5A36] via-[#FF168B] to-[#8B35FF]"
-              aria-label="Recently Added"
-            >
-              <Sparkles className="w-2.5 h-2.5 shrink-0 text-amber-200 fill-amber-200" />
-              <span>Recently Added</span>
             </span>
           </div>
         )}

@@ -75,12 +75,6 @@ import {
   normalizeLegalPagesConfig,
 } from './InfoModal';
 import { safeApiFetchJson } from '../utils/apiClient';
-import {
-  ApkReleaseConfig,
-  DEFAULT_APK_RELEASE,
-  normalizeApkReleaseConfig,
-  triggerDirectApkDownload,
-} from '../utils/apkReleaseManager';
 
 const LOGO_ASSET_URL =
   '/assets/aistudio/20261023_170257_6e6b6602.png';
@@ -153,11 +147,9 @@ interface AdminStudioModalProps {
   prefillMedia?: MediaItem | null;
   catalog: MediaItem[];
   supportMessages?: SupportMessageItem[];
-  initialTab?: 'catalog' | 'support' | 'legal' | 'apk';
+  initialTab?: 'catalog' | 'support' | 'legal';
   legalPages?: LegalPagesConfig;
   onSaveLegalPages?: (nextLegal: LegalPagesConfig) => Promise<void> | void;
-  apkRelease?: ApkReleaseConfig;
-  onSaveApkRelease?: (nextApk: ApkReleaseConfig) => Promise<void> | void;
   heroBatchInfo?: {
     activeBatchNumber: number;
     totalBatches: number;
@@ -300,7 +292,7 @@ const RESERVED_NON_TITLE_PATHS = new Set([
 ]);
 
 /**
- * Parses up to 150 JustWatch links or titles from any bulk text format:
+ * Parses up to 500 JustWatch links or titles from any bulk text format:
  * - Comma-separated, newline-separated, semicolon-separated
  * - Space-separated URLs or glued URLs (https://...https://...)
  * - Automatically strips out bare non-title links like /in/search or /in/movies
@@ -389,7 +381,7 @@ function parseBulkJustWatchLinks(rawText: string): string[] {
       seenKeys.add(dedupeKey);
       unique.push(token);
     }
-    if (unique.length >= 150) break;
+    if (unique.length >= 500) break;
   }
 
   return unique;
@@ -553,8 +545,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   initialTab = 'catalog',
   legalPages = DEFAULT_LEGAL_PAGES,
   onSaveLegalPages,
-  apkRelease = DEFAULT_APK_RELEASE,
-  onSaveApkRelease,
   heroBatchInfo,
   onAdvanceHeroBatch,
   onResetHeroCycleNow,
@@ -567,7 +557,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const isAdmin = isUserAdmin(currentUser?.email, currentUser?.emailVerified);
 
   const [activeAdminTab, setActiveAdminTab] = useState<
-    'catalog' | 'support' | 'legal' | 'apk'
+    'catalog' | 'support' | 'legal'
   >(initialTab);
 
   // Admin Email Sign In State
@@ -582,168 +572,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [statusMessage, setStatusMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-
-  // APK & Updates Release State
-  const [apkDraft, setApkDraft] = useState<ApkReleaseConfig>(() =>
-    normalizeApkReleaseConfig(apkRelease)
-  );
-  const [isUploadingApkFile, setIsUploadingApkFile] = useState<boolean>(false);
-  const [apkUploadProgress, setApkUploadProgress] = useState<number>(0);
-  const [isSavingApkRelease, setIsSavingApkRelease] = useState<boolean>(false);
-  const apkFileInputRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    if (apkRelease) {
-      setApkDraft(normalizeApkReleaseConfig(apkRelease));
-    }
-  }, [apkRelease]);
-
-  const handleUploadApkFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-
-    setIsUploadingApkFile(true);
-    setApkUploadProgress(0);
-    setErrorMessage(null);
-    setStatusMessage(null);
-
-    const sizeMb = (file.size / (1024 * 1024)).toFixed(1) + ' MB';
-    const idToken = currentUser ? await currentUser.getIdToken().catch(() => '') : '';
-
-    const fallbackOrigin = 'https://ais-pre-h3khdspljkh5i75p226uvc-268382957607.asia-east1.run.app';
-    const sendUpload = (endpointUrl: string, isFallbackRetry: boolean) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', endpointUrl, true);
-      xhr.setRequestHeader('Content-Type', 'application/octet-stream');
-      if (idToken) {
-        xhr.setRequestHeader('Authorization', `Bearer ${idToken}`);
-      }
-
-      xhr.upload.onprogress = (evt) => {
-        if (evt.lengthComputable && evt.total > 0) {
-          const pct = Math.min(99, Math.round((evt.loaded / evt.total) * 100));
-          setApkUploadProgress(pct);
-        }
-      };
-
-      xhr.onload = () => {
-        const contentType = (xhr.getResponseHeader('content-type') || '').toLowerCase();
-        const isJsonSuccess =
-          xhr.status >= 200 &&
-          xhr.status < 300 &&
-          contentType.includes('application/json');
-
-        if (isJsonSuccess) {
-          setIsUploadingApkFile(false);
-          setApkUploadProgress(100);
-          setApkDraft((prev) => ({
-            ...prev,
-            apkUrl: isFallbackRetry ? `${fallbackOrigin}/zappyfun.apk` : '/zappyfun.apk',
-            fileName: file.name.endsWith('.apk') ? file.name : `${file.name}.apk`,
-            fileSizeFormatted: sizeMb,
-          }));
-          setStatusMessage(
-            `Attached "${file.name}" (${sizeMb})! Now enter the Version and What's Improved and click Publish APK Update.`
-          );
-        } else if (!isFallbackRetry && window.location.origin !== fallbackOrigin) {
-          sendUpload(`${fallbackOrigin}/api/admin/upload-apk`, true);
-        } else {
-          setIsUploadingApkFile(false);
-          setErrorMessage(
-            'Could not upload APK binary to server. You can also paste a direct APK download link below.'
-          );
-        }
-      };
-
-      xhr.onerror = () => {
-        if (!isFallbackRetry && window.location.origin !== fallbackOrigin) {
-          sendUpload(`${fallbackOrigin}/api/admin/upload-apk`, true);
-          return;
-        }
-        setIsUploadingApkFile(false);
-        setErrorMessage(
-          'Upload interrupted. If hosting on a static CDN, paste the direct APK download URL below.'
-        );
-      };
-
-      xhr.send(file);
-    };
-
-    sendUpload('/api/admin/upload-apk', false);
-  };
-
-  const handlePublishApkUpdate = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    if (!currentUser || !isAdmin) {
-      setErrorMessage(`Only ${ADMIN_EMAIL} can publish APK updates.`);
-      return;
-    }
-
-    const cleanVersion = (apkDraft.version || '1.0.0').trim();
-    const cleanWhatsImproved = (apkDraft.whatsImproved || '').trim();
-    const cleanApkUrl = (apkDraft.apkUrl || '/zappyfun.apk').trim();
-
-    if (!cleanVersion) {
-      setErrorMessage('Please enter an App Version (for example: 1.2.0).');
-      return;
-    }
-
-    setIsSavingApkRelease(true);
-    setErrorMessage(null);
-    setStatusMessage(null);
-
-    try {
-      const nextRelease: ApkReleaseConfig = {
-        releaseId: `rel_${cleanVersion.replace(/[^a-zA-Z0-9._-]/g, '')}_${Date.now()}`,
-        version: cleanVersion,
-        whatsImproved: cleanWhatsImproved,
-        apkUrl: cleanApkUrl,
-        fileName:
-          (apkDraft.fileName || '').trim() ||
-          `zappyfun-v${cleanVersion.replace(/^v/i, '')}.apk`,
-        fileSizeFormatted: (apkDraft.fileSizeFormatted || '80 MB').trim(),
-        updatedAtMs: Date.now(),
-      };
-
-      if (onSaveApkRelease) {
-        await onSaveApkRelease(nextRelease);
-      } else {
-        await setDoc(
-          doc(db, 'ui_config', 'apk_release'),
-          {
-            id: 'apk_release',
-            overridesJson: JSON.stringify(nextRelease),
-            ...nextRelease,
-            authorUid: currentUser.uid,
-            updatedAt: serverTimestamp(),
-          },
-          { merge: true }
-        );
-        const idToken = await currentUser.getIdToken().catch(() => '');
-        await safeApiFetchJson('/api/apk-release', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-          },
-          body: JSON.stringify({ apkRelease: nextRelease }),
-        });
-      }
-
-      setApkDraft(nextRelease);
-      setStatusMessage(
-        `Published APK v${cleanVersion}! Clicking Install now downloads this APK, and all users will see the one-time "What's Improved" popup next time they open the app or website.`
-      );
-    } catch (err) {
-      setErrorMessage(
-        `Failed to publish APK update: ${
-          err instanceof Error ? err.message : String(err)
-        }`
-      );
-    } finally {
-      setIsSavingApkRelease(false);
-    }
-  };
 
   // Legal & Policies Editor State
   const [legalDraft, setLegalDraft] = useState<LegalPagesConfig>(() =>
@@ -819,12 +647,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     }));
   };
 
-  // Multi-Link JustWatch Batch Importer State (Up to 100 Comma-Separated Links)
+  // Multi-Link JustWatch Batch Importer State (Up to 500 Comma-Separated Links)
   const [multiLinksInput, setMultiLinksInput] = useState<string>('');
   const [isBatchRunning, setIsBatchRunning] = useState<boolean>(false);
   const [batchResults, setBatchResults] = useState<BatchLinkResultItem[]>([]);
   const [batchCompletedCount, setBatchCompletedCount] = useState<number>(0);
   const [batchTotalCount, setBatchTotalCount] = useState<number>(0);
+  const [visibleBatchCount, setVisibleBatchCount] = useState<number>(60);
   const cancelBatchRef = useRef<boolean>(false);
 
   // Firebase Project Switcher & Security Rules Drawer State
@@ -859,10 +688,24 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
   // Live Preview Modal State inside Admin Studio
   const [showLivePreview, setShowLivePreview] = useState<boolean>(false);
+  const [visibleAdminCatalogCount, setVisibleAdminCatalogCount] =
+    useState<number>(24);
+  const [adminCatalogFilter, setAdminCatalogFilter] = useState<string>('');
+
+  const filteredAdminCatalog = useMemo(() => {
+    const q = adminCatalogFilter.trim().toLowerCase();
+    if (!q) return catalog;
+    return catalog.filter(
+      (item) =>
+        item.title.toLowerCase().includes(q) ||
+        String(item.releaseYear).includes(q) ||
+        item.genres.some((g) => g.toLowerCase().includes(q))
+    );
+  }, [catalog, adminCatalogFilter]);
 
   const formRef = useRef<HTMLFormElement>(null);
 
-  // Parse up to 150 comma/newline/space/glued JustWatch links while filtering out bare /search pages
+  // Parse up to 500 comma/newline/space/glued JustWatch links while filtering out bare /search pages
   const parsedMultiLinks = useMemo(
     () => parseBulkJustWatchLinks(multiLinksInput),
     [multiLinksInput]
@@ -1139,15 +982,15 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   };
 
   /**
-   * Multi-Link JustWatch Batch Processor (Up to 100+ Links at One Time without UI freezing)
+   * Multi-Link JustWatch Batch Processor (Up to 500 Links at One Time without UI freezing)
    * Uses throttled UI state flushes, event-loop yielding, and batched Firestore commits
-   * so uploading 100 movies at once never blocks the browser thread or triggers 100 snapshot re-renders.
+   * so uploading 500 movies at once never blocks the browser thread or triggers 500 snapshot re-renders.
    */
   const handleRunMultiLinkBatch = async (
     autoPublishToFirestore: boolean,
     explicitLinks?: string[]
   ) => {
-    const linksToProcess = (explicitLinks || parsedMultiLinks).slice(0, 150);
+    const linksToProcess = (explicitLinks || parsedMultiLinks).slice(0, 500);
     if (linksToProcess.length === 0) {
       setErrorMessage(
         'Please paste valid JustWatch movie links (e.g. https://www.justwatch.com/in/movie/...).'
@@ -1166,6 +1009,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setStatusMessage(null);
     setBatchTotalCount(linksToProcess.length);
     setBatchCompletedCount(0);
+    setVisibleBatchCount(60);
 
     const workingResults: BatchLinkResultItem[] = linksToProcess.map(
       (raw, idx) => ({
@@ -1176,8 +1020,39 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     );
     setBatchResults([...workingResults]);
 
-    // Track both existing catalog movies and newly extracted movies in this batch to prevent duplicates
-    const localKnownMovies: MediaItem[] = [...catalog];
+    // O(1) Set lookup maps for existing catalog movies + newly extracted movies in this batch
+    const knownTitleMap = new Map<string, MediaItem>();
+    const knownTmdbMap = new Map<number, MediaItem>();
+    const knownJwMap = new Map<string, MediaItem>();
+    const registerKnownMovie = (m: MediaItem) => {
+      const nt = m.title.trim().toLowerCase();
+      if (nt) knownTitleMap.set(nt, m);
+      if (m.tmdbId && m.tmdbId !== 157336 && m.tmdbId !== 10000) {
+        knownTmdbMap.set(Number(m.tmdbId), m);
+      }
+      const njw = (m.justWatchUrl || '').trim().toLowerCase().replace(/\/+$/, '');
+      if (njw) knownJwMap.set(njw, m);
+    };
+    catalog.forEach(registerKnownMovie);
+
+    const findFastDuplicate = (candidate: Partial<MediaItem>): MediaItem | undefined => {
+      if (candidate.tmdbId && candidate.tmdbId !== 157336 && candidate.tmdbId !== 10000) {
+        const byTmdb = knownTmdbMap.get(Number(candidate.tmdbId));
+        if (byTmdb) return byTmdb;
+      }
+      const nt = (candidate.title || '').trim().toLowerCase();
+      if (nt) {
+        const byTitle = knownTitleMap.get(nt);
+        if (byTitle) return byTitle;
+      }
+      const njw = (candidate.justWatchUrl || '').trim().toLowerCase().replace(/\/+$/, '');
+      if (njw) {
+        const byJw = knownJwMap.get(njw);
+        if (byJw) return byJw;
+      }
+      return undefined;
+    };
+
     const pendingFirestoreWrites: Array<{
       item: MediaItem;
       serializedCredits: string;
@@ -1191,7 +1066,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
     const flushUiState = (force = false) => {
       const now = Date.now();
-      if (force || now - lastUiFlushMs >= 180) {
+      if (force || now - lastUiFlushMs >= 350) {
         lastUiFlushMs = now;
         setBatchCompletedCount(completedCount);
         setBatchResults([...workingResults]);
@@ -1214,7 +1089,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
       await batch.commit();
     };
 
-    const concurrency = Math.min(6, linksToProcess.length);
+    const concurrency = Math.min(10, linksToProcess.length);
 
     const worker = async () => {
       while (!cancelBatchRef.current) {
@@ -1228,9 +1103,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           status: 'extracting',
         };
         flushUiState(false);
-
-        // Yield to browser main thread so scrolling and typing never freeze
-        await new Promise((resolve) => setTimeout(resolve, 0));
 
         try {
           const isUrl =
@@ -1257,7 +1129,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           const { item, serializedCredits } =
             buildMediaItemFromExtractedData(extracted);
 
-          const existingDuplicate = findDuplicateMovie(item, localKnownMovies);
+          const existingDuplicate = findFastDuplicate(item);
           if (existingDuplicate) {
             failCount += 1;
             workingResults[currentIndex] = {
@@ -1270,15 +1142,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
             continue;
           }
 
-          localKnownMovies.push(item);
+          registerKnownMovie(item);
 
           if (autoPublishToFirestore) {
             pendingFirestoreWrites.push({ item, serializedCredits });
-            // Commit in atomic chunks of 25 movies so Firestore onSnapshot doesn't fire 100 times
-            if (pendingFirestoreWrites.length >= 25) {
-              const chunkToCommit = pendingFirestoreWrites.splice(0, 25);
-              await flushFirestoreBatchChunk(chunkToCommit);
-            }
           }
 
           successCount += 1;
@@ -1305,6 +1172,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
 
     await Promise.all(Array.from({ length: concurrency }, () => worker()));
 
+    // Commit all extracted movies at the end in fast 50-item atomic batches
+    // so Firestore onSnapshot never interrupts extraction workers mid-flight
     if (autoPublishToFirestore && pendingFirestoreWrites.length > 0) {
       try {
         while (pendingFirestoreWrites.length > 0) {
@@ -1332,7 +1201,8 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
   };
 
   /**
-   * Publishes all already-extracted items in the batch queue in one atomic Firestore batch
+   * Publishes all already-extracted items in the batch queue in fast 50-item Firestore batches
+   * with O(1) duplicate detection for up to 500 movies
    */
   const handlePublishAllExtractedBatch = async () => {
     if (!currentUser || !isAdmin) return;
@@ -1344,7 +1214,39 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
     setIsBatchRunning(true);
     let publishedNow = 0;
     const nextResults = [...batchResults];
-    const localKnownMovies: MediaItem[] = [...catalog];
+
+    const knownTitleMap = new Map<string, MediaItem>();
+    const knownTmdbMap = new Map<number, MediaItem>();
+    const knownJwMap = new Map<string, MediaItem>();
+    const registerKnownMovie = (m: MediaItem) => {
+      const nt = m.title.trim().toLowerCase();
+      if (nt) knownTitleMap.set(nt, m);
+      if (m.tmdbId && m.tmdbId !== 157336 && m.tmdbId !== 10000) {
+        knownTmdbMap.set(Number(m.tmdbId), m);
+      }
+      const njw = (m.justWatchUrl || '').trim().toLowerCase().replace(/\/+$/, '');
+      if (njw) knownJwMap.set(njw, m);
+    };
+    catalog.forEach(registerKnownMovie);
+
+    const findFastDuplicate = (candidate: Partial<MediaItem>): MediaItem | undefined => {
+      if (candidate.tmdbId && candidate.tmdbId !== 157336 && candidate.tmdbId !== 10000) {
+        const byTmdb = knownTmdbMap.get(Number(candidate.tmdbId));
+        if (byTmdb) return byTmdb;
+      }
+      const nt = (candidate.title || '').trim().toLowerCase();
+      if (nt) {
+        const byTitle = knownTitleMap.get(nt);
+        if (byTitle) return byTitle;
+      }
+      const njw = (candidate.justWatchUrl || '').trim().toLowerCase().replace(/\/+$/, '');
+      if (njw) {
+        const byJw = knownJwMap.get(njw);
+        if (byJw) return byJw;
+      }
+      return undefined;
+    };
+
     const writesToCommit: Array<{
       item: MediaItem;
       serializedCredits: string;
@@ -1356,7 +1258,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
         const { item, serializedCredits } = buildMediaItemFromExtractedData(
           entry.extractedData
         );
-        const existingDuplicate = findDuplicateMovie(item, localKnownMovies);
+        const existingDuplicate = findFastDuplicate(item);
         if (existingDuplicate) {
           const targetIdx = nextResults.findIndex((b) => b.index === entry.index);
           if (targetIdx !== -1) {
@@ -1368,7 +1270,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
           }
           continue;
         }
-        localKnownMovies.push(item);
+        registerKnownMovie(item);
         writesToCommit.push({
           item,
           serializedCredits,
@@ -1727,34 +1629,33 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
             className="w-full max-w-6xl rounded-3xl bg-[#0F1117] border border-[#292C35] shadow-2xl overflow-hidden my-auto flex flex-col max-h-[92vh]"
           >
             {/* Tier 1: Modal Identity & Global Utility Actions */}
-            <div className="px-4 py-3.5 sm:px-6 sm:py-4 border-b border-[#292C35] bg-[#14161D] flex flex-col gap-3">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="flex items-center gap-3 sm:gap-4 min-w-0 flex-1">
-                  <div className="h-9 sm:h-10 flex items-center justify-center shrink-0">
+            <div className="px-3 py-3 sm:px-6 sm:py-4 border-b border-[#292C35] bg-[#14161D] flex flex-col gap-3 shrink-0">
+              <div className="flex flex-wrap items-center justify-between gap-2.5 sm:gap-3">
+                <div className="flex items-center gap-2.5 sm:gap-4 min-w-0 flex-1">
+                  <div className="h-8 sm:h-10 flex items-center justify-center shrink-0">
                     <img
                       src={LOGO_ASSET_URL}
                       alt="ZappyFun Logo"
-                      className="h-9 sm:h-10 w-auto max-w-[136px] object-contain select-none pointer-events-none"
+                      className="h-8 sm:h-10 w-auto max-w-[120px] sm:max-w-[136px] object-contain select-none pointer-events-none"
                     />
                   </div>
-                  <div className="min-w-0 border-l border-[#292C35] pl-3 sm:pl-4">
+                  <div className="min-w-0 border-l border-[#292C35] pl-2.5 sm:pl-4 flex-1">
                     <h2
                       id="admin-studio-title"
-                      className="text-sm sm:text-lg font-bold text-white font-display truncate"
+                      className="text-xs sm:text-lg font-bold text-white font-display truncate"
                     >
                       Admin Studio — Catalog &amp; Support Center
                     </h2>
-                    <p className="text-[11px] sm:text-xs text-[#A7A9B4] truncate">
+                    <p className="text-[10px] sm:text-xs text-[#A7A9B4] truncate">
                       {isAdmin
-                        ? `Admin: ${currentUser?.email} · DB: ${ACTIVE_FIREBASE_PROJECT_ID}`
+                        ? `${catalog.length} movies published · Admin: ${currentUser?.email}`
                         : `Restricted to ${ADMIN_EMAIL}`}
                     </p>
                   </div>
                 </div>
 
                 {/* Global Utility Toolbar + Close Button */}
-                <div className="flex flex-wrap items-center gap-2 shrink-0">
-
+                <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 shrink-0 max-w-full">
                   <button
                     type="button"
                     onClick={() => {
@@ -1768,20 +1669,20 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       );
                       setTimeout(() => setRulesCopied(false), 3000);
                     }}
-                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-xs font-bold text-[#FFC400] flex items-center gap-1.5 cursor-pointer whitespace-nowrap transition-colors"
+                    className="min-h-[36px] px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-[11px] sm:text-xs font-bold text-[#FFC400] flex items-center gap-1.5 cursor-pointer transition-colors"
                   >
                     <Copy className="w-3.5 h-3.5 shrink-0" />
-                    <span>
+                    <span className="truncate">
                       {rulesCopied
                         ? 'Rules Copied!'
                         : showRulesDrawer
-                          ? 'Hide Security Rules'
+                          ? 'Hide Rules'
                           : 'Security Rules'}
                     </span>
                   </button>
 
                   <div
-                    className="min-h-[36px] px-3 py-1.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-bold text-white/90 flex items-center gap-1.5 whitespace-nowrap select-none"
+                    className="min-h-[36px] px-2.5 sm:px-3 py-1.5 rounded-xl bg-[#08090D] border border-[#292C35] text-[11px] sm:text-xs font-bold text-white/90 hidden xs:flex items-center gap-1.5 select-none"
                     title="Running exclusively on ZappyFun Firebase"
                   >
                     <Database className="w-3.5 h-3.5 text-[#22C55E] shrink-0" />
@@ -1802,31 +1703,31 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
               {/* Tier 2: Dedicated Navigation Tab Bar */}
               {isAdmin && (
                 <div className="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-[#292C35]/80">
-                  <div className="flex flex-wrap items-center gap-1.5">
+                  <div className="flex flex-wrap items-center gap-1.5 w-full sm:w-auto">
                     <button
                       type="button"
                       onClick={() => setActiveAdminTab('catalog')}
-                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
                         activeAdminTab === 'catalog'
                           ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
                           : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
                       }`}
                     >
                       <Film className="w-3.5 h-3.5 shrink-0" />
-                      <span>Catalog Management ({catalog.length})</span>
+                      <span>Catalog ({catalog.length})</span>
                     </button>
 
                     <button
                       type="button"
                       onClick={() => setActiveAdminTab('support')}
-                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
                         activeAdminTab === 'support'
                           ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
                           : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
                       }`}
                     >
                       <MessageSquare className="w-3.5 h-3.5 shrink-0" />
-                      <span>Support Inbox ({supportMessages.length})</span>
+                      <span>Support ({supportMessages.length})</span>
                       {openSupportCount > 0 && (
                         <span className="px-1.5 py-0.5 rounded-md bg-[#08090D] text-[#FFC400] text-[10px] font-extrabold">
                           {openSupportCount}
@@ -1837,7 +1738,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     <button
                       type="button"
                       onClick={() => setActiveAdminTab('legal')}
-                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
+                      className={`min-h-[36px] px-3 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 ${
                         activeAdminTab === 'legal'
                           ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
                           : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
@@ -1846,26 +1747,13 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       <FileText className="w-3.5 h-3.5 shrink-0" />
                       <span>Legal &amp; Policies</span>
                     </button>
-
-                    <button
-                      type="button"
-                      onClick={() => setActiveAdminTab('apk')}
-                      className={`min-h-[36px] px-3.5 py-1.5 rounded-xl text-xs font-bold transition-colors cursor-pointer flex items-center gap-1.5 whitespace-nowrap ${
-                        activeAdminTab === 'apk'
-                          ? 'bg-[#FFC400] text-[#08090D] shadow-sm'
-                          : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white'
-                      }`}
-                    >
-                      <Smartphone className="w-3.5 h-3.5 shrink-0" />
-                      <span>
-                        APK &amp; Updates (v{apkDraft.version || '1.0.0'})
-                      </span>
-                    </button>
                   </div>
 
-                  <span className="text-[11px] text-[#747784] font-mono-tabular hidden sm:inline">
-                    Active Cloud DB: {ACTIVE_FIREBASE_PROJECT_ID}
-                  </span>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px] text-[#A7A9B4] font-mono-tabular">
+                    <span className="hidden md:inline text-[#747784]">
+                      DB: {ACTIVE_FIREBASE_PROJECT_ID}
+                    </span>
+                  </div>
                 </div>
               )}
             </div>
@@ -2062,239 +1950,6 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </button>
                   </form>
                 </div>
-              ) : activeAdminTab === 'apk' ? (
-                /* =========================================================
-                    APK UPLOAD & VERSION UPDATE MANAGER TAB
-                ========================================================= */
-                <form
-                  onSubmit={handlePublishApkUpdate}
-                  className="space-y-5"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#292C35] pb-4">
-                    <div>
-                      <h3 className="text-base sm:text-lg font-bold text-white font-display flex items-center gap-2">
-                        <Smartphone className="w-5 h-5 text-[#FFC400]" />
-                        <span>Official Android APK &amp; Update Notification Manager</span>
-                      </h3>
-                      <p className="text-xs text-[#A7A9B4] mt-1">
-                        Attach or update your Android APK file, set the version number, and write what&apos;s improved. Whenever you publish an update, users entering the app or website next time will get a one-time popup with your version and release notes.
-                      </p>
-                    </div>
-                    <div className="flex flex-wrap items-center gap-2">
-                      <button
-                        type="button"
-                        onClick={() => triggerDirectApkDownload(apkDraft)}
-                        className="min-h-[38px] px-3.5 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-white text-xs font-semibold flex items-center gap-1.5 cursor-pointer transition-colors"
-                      >
-                        <Download className="w-3.5 h-3.5 text-[#FFC400]" />
-                        <span>Test Download APK</span>
-                      </button>
-
-                      <button
-                        type="submit"
-                        disabled={isSavingApkRelease || isUploadingApkFile}
-                        className="min-h-[38px] px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer shadow-lg shadow-[#FFC400]/20 disabled:opacity-60"
-                      >
-                        {isSavingApkRelease ? (
-                          <>
-                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                            <span>Publishing Update...</span>
-                          </>
-                        ) : (
-                          <>
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span>Publish APK &amp; Send Update Popup</span>
-                          </>
-                        )}
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-                    {/* Left Card: Attach APK File or Direct Link */}
-                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 space-y-4">
-                      <div>
-                        <h4 className="text-sm font-bold text-white font-display">
-                          1. Attach or Update APK File
-                        </h4>
-                        <p className="text-xs text-[#A7A9B4] mt-0.5">
-                          Upload your compiled <code className="text-[#FFC400]">.apk</code> file from your device or paste a direct APK download URL (such as your GitHub Release <code className="text-[#FFC400]">zappyfun.apk</code> link).
-                        </p>
-                      </div>
-
-                      <input
-                        ref={apkFileInputRef}
-                        type="file"
-                        accept=".apk,application/vnd.android.package-archive"
-                        onChange={handleUploadApkFile}
-                        className="hidden"
-                      />
-
-                      <div className="p-4 rounded-xl bg-[#08090D] border border-dashed border-[#292C35] hover:border-[#FFC400]/60 transition-colors flex flex-col items-center justify-center text-center gap-2.5">
-                        <div className="w-11 h-11 rounded-xl bg-[#FFC400]/15 border border-[#FFC400]/30 flex items-center justify-center text-[#FFC400]">
-                          <Upload className="w-5 h-5" />
-                        </div>
-                        <div className="space-y-0.5">
-                          <p className="text-xs font-bold text-white">
-                            {apkDraft.fileName || 'zappyfun.apk'}{' '}
-                            {apkDraft.fileSizeFormatted ? `(${apkDraft.fileSizeFormatted})` : ''}
-                          </p>
-                          <p className="text-[11px] text-[#747784]">
-                            Supports 75+ MB Android APK packages
-                          </p>
-                        </div>
-
-                        <button
-                          type="button"
-                          disabled={isUploadingApkFile}
-                          onClick={() => apkFileInputRef.current?.click()}
-                          className="min-h-[36px] px-4 py-1.5 rounded-xl bg-[#252832] hover:bg-[#303442] text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors disabled:opacity-50"
-                        >
-                          {isUploadingApkFile ? (
-                            <>
-                              <Loader2 className="w-3.5 h-3.5 animate-spin text-[#FFC400]" />
-                              <span>Uploading APK ({apkUploadProgress}%)...</span>
-                            </>
-                          ) : (
-                            <>
-                              <Upload className="w-3.5 h-3.5 text-[#FFC400]" />
-                              <span>Select .apk File from Device</span>
-                            </>
-                          )}
-                        </button>
-
-                        {isUploadingApkFile && (
-                          <div className="w-full h-1.5 rounded-full bg-[#14161D] overflow-hidden mt-1">
-                            <div
-                              className="h-full bg-[#FFC400] transition-all duration-200"
-                              style={{ width: `${apkUploadProgress}%` }}
-                            />
-                          </div>
-                        )}
-                      </div>
-
-                      <div className="space-y-3 pt-1">
-                        <div>
-                          <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
-                            APK Download Path or Direct URL
-                          </label>
-                          <input
-                            type="text"
-                            value={apkDraft.apkUrl}
-                            onChange={(e) =>
-                              setApkDraft((prev) => ({
-                                ...prev,
-                                apkUrl: e.target.value,
-                              }))
-                            }
-                            placeholder="/zappyfun.apk or https://github.com/.../releases/download/latest-apk/zappyfun.apk"
-                            className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
-                          />
-                        </div>
-
-                        <div className="grid grid-cols-2 gap-3">
-                          <div>
-                            <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
-                              Download File Name
-                            </label>
-                            <input
-                              type="text"
-                              value={apkDraft.fileName}
-                              onChange={(e) =>
-                                setApkDraft((prev) => ({
-                                  ...prev,
-                                  fileName: e.target.value,
-                                }))
-                              }
-                              placeholder="zappyfun.apk"
-                              className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
-                            />
-                          </div>
-
-                          <div>
-                            <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
-                              Displayed File Size
-                            </label>
-                            <input
-                              type="text"
-                              value={apkDraft.fileSizeFormatted}
-                              onChange={(e) =>
-                                setApkDraft((prev) => ({
-                                  ...prev,
-                                  fileSizeFormatted: e.target.value,
-                                }))
-                              }
-                              placeholder="80 MB"
-                              className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white focus:outline-none focus:border-[#FFC400]"
-                            />
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Right Card: Version & What's Improved Release Notes */}
-                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-5 space-y-4">
-                      <div>
-                        <h4 className="text-sm font-bold text-white font-display">
-                          2. Version &amp; &ldquo;What&apos;s Improved&rdquo; Popup Details
-                        </h4>
-                        <p className="text-xs text-[#A7A9B4] mt-0.5">
-                          Every time you publish a new version here, users entering the app or website next time will see a one-time update popup showing this version and what you improved.
-                        </p>
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
-                          App Version Number
-                        </label>
-                        <input
-                          type="text"
-                          value={apkDraft.version}
-                          onChange={(e) =>
-                            setApkDraft((prev) => ({
-                              ...prev,
-                              version: e.target.value,
-                            }))
-                          }
-                          placeholder="e.g. 1.2.0 or 2.0.0"
-                          className="w-full h-10 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-[#FFC400] font-bold focus:outline-none focus:border-[#FFC400]"
-                          required
-                        />
-                      </div>
-
-                      <div>
-                        <label className="block text-xs font-semibold text-[#A7A9B4] mb-1">
-                          What&apos;s Improved in This Update (One improvement per line)
-                        </label>
-                        <textarea
-                          rows={7}
-                          value={apkDraft.whatsImproved}
-                          onChange={(e) =>
-                            setApkDraft((prev) => ({
-                              ...prev,
-                              whatsImproved: e.target.value,
-                            }))
-                          }
-                          placeholder={`Faster 4K movie playback & instant loading\nFull-screen cinema player with zero button clutter\nDirect Google account selection window\nNew movies added to catalog`}
-                          className="w-full p-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white leading-relaxed focus:outline-none focus:border-[#FFC400]"
-                        />
-                      </div>
-
-                      {apkDraft.releaseId && (
-                        <div className="p-3 rounded-xl bg-[#08090D] border border-[#292C35] flex items-center justify-between text-xs text-[#A7A9B4]">
-                          <span>
-                            Active Release: <strong className="text-white">v{apkDraft.version}</strong>
-                          </span>
-                          <span className="font-mono text-[11px] text-[#747784]">
-                            {apkDraft.updatedAtMs
-                              ? new Date(apkDraft.updatedAtMs).toLocaleString()
-                              : 'Published'}
-                          </span>
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                </form>
               ) : activeAdminTab === 'legal' ? (
                 /* =========================================================
                     LEGAL & POLICIES EDITOR TAB
@@ -2582,11 +2237,10 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                 /* =========================================================
                     CATALOG, MULTI-LINK BATCH IMPORTER & DIRECT JUSTWATCH TAB
                 ========================================================= */
-                <div className="space-y-6">
-
+                <div className="space-y-6 min-w-0">
                   {/* HERO BANNER 8-MOVIE DAILY CYCLE (24h Batch Rotation / 28h Movie Tenure) */}
                   {heroBatchInfo && (
-                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+                    <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center justify-between gap-4 min-w-0">
                       <div className="space-y-1">
                         <div className="flex flex-wrap items-center gap-2">
                           <Clock className="w-4 h-4 text-[#FFC400]" />
@@ -2631,7 +2285,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                   )}
 
                   {/* =========================================================
-                      MULTI-JUSTWATCH LINK BATCH IMPORTER (UP TO 100 COMMA-SEPARATED LINKS)
+                      MULTI-JUSTWATCH LINK BATCH IMPORTER (UP TO 500 COMMA-SEPARATED LINKS)
                   ========================================================= */}
                   <div className="rounded-2xl bg-[#14161D] border border-[#FFC400]/45 p-4 sm:p-6 space-y-4 shadow-xl">
                     <div className="flex flex-wrap items-center justify-between gap-3">
@@ -2639,17 +2293,17 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                         <div className="flex items-center gap-2">
                           <Layers className="w-4 h-4 text-[#FFC400]" />
                           <h3 className="text-sm sm:text-base font-bold text-white font-display">
-                            Multi-Link JustWatch Batch Importer (Up to 100 Comma-Separated Links at Once)
+                            Multi-Link JustWatch Batch Importer (Up to 500 Comma-Separated Links at Once)
                           </h3>
                         </div>
                         <p className="text-xs text-[#A7A9B4]">
-                          Paste up to 100 JustWatch movie or TV show links separated by commas (<code className="text-[#FFC400]">,</code>) or new lines to extract and publish them all in one go.
+                          Paste up to 500 JustWatch movie or TV show links separated by commas (<code className="text-[#FFC400]">,</code>) or new lines to extract and publish them all in one go.
                         </p>
                       </div>
 
                       <div className="flex items-center gap-3 text-xs font-mono-tabular">
                         <span className="text-[#FFC400] font-bold">
-                          {parsedMultiLinks.length} / 100 links detected
+                          {parsedMultiLinks.length} / 500 links detected
                         </span>
                         {multiLinksInput && (
                           <button
@@ -2672,25 +2326,25 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       value={multiLinksInput}
                       disabled={isBatchRunning}
                       onChange={(e) => setMultiLinksInput(e.target.value)}
-                      placeholder="Paste up to 100 comma-separated JustWatch URLs here, e.g.:&#10;https://www.justwatch.com/in/movie/interstellar, https://www.justwatch.com/in/tv-show/breaking-bad, https://www.justwatch.com/in/movie/dune-part-two"
+                      placeholder="Paste up to 500 comma-separated JustWatch URLs here, e.g.:&#10;https://www.justwatch.com/in/movie/interstellar, https://www.justwatch.com/in/tv-show/breaking-bad, https://www.justwatch.com/in/movie/dune-part-two"
                       className="w-full p-3.5 rounded-xl bg-[#08090D] border border-[#292C35] text-xs sm:text-sm text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400] font-mono-tabular leading-relaxed"
                     />
 
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div className="text-[11px] text-[#747784]">
-                        Automatically extracts Title, Year, Synopsis, Poster, Backdrop, Cast Photos, Verified Stream &amp; Seasons/Episodes for every link.
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                      <div className="text-[11px] text-[#747784] min-w-0">
+                        Automatically extracts Title, Year, Synopsis, Poster, Backdrop, Cast Photos, Verified Stream &amp; Runtime for every link.
                       </div>
 
-                      <div className="flex flex-wrap items-center gap-2.5">
+                      <div className="flex flex-wrap items-center gap-2.5 w-full sm:w-auto">
                         {isBatchRunning ? (
                           <button
                             type="button"
                             onClick={() => {
                               cancelBatchRef.current = true;
                             }}
-                            className="min-h-[42px] px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-xs font-bold flex items-center gap-2 cursor-pointer"
+                            className="min-h-[42px] w-full sm:w-auto justify-center px-4 py-2 rounded-xl bg-red-500/20 hover:bg-red-500/30 border border-red-500/40 text-red-200 text-xs font-bold flex items-center gap-2 cursor-pointer"
                           >
-                            <X className="w-4 h-4" />
+                            <X className="w-4 h-4 shrink-0" />
                             <span>
                               Stop Batch ({batchCompletedCount}/{batchTotalCount})
                             </span>
@@ -2701,9 +2355,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               type="button"
                               disabled={parsedMultiLinks.length === 0}
                               onClick={() => handleRunMultiLinkBatch(false)}
-                              className="min-h-[42px] px-4 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
+                              className="min-h-[42px] w-full sm:w-auto justify-center px-4 py-2 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-white flex items-center gap-2 cursor-pointer transition-colors disabled:opacity-50"
                             >
-                              <Eye className="w-4 h-4 text-[#FFC400]" />
+                              <Eye className="w-4 h-4 text-[#FFC400] shrink-0" />
                               <span>
                                 Extract All ({parsedMultiLinks.length}) for Preview
                               </span>
@@ -2713,9 +2367,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               type="button"
                               disabled={parsedMultiLinks.length === 0}
                               onClick={() => handleRunMultiLinkBatch(true)}
-                              className="min-h-[42px] px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 transition-colors disabled:opacity-50"
+                              className="min-h-[42px] w-full sm:w-auto justify-center px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs sm:text-sm font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 transition-colors disabled:opacity-50"
                             >
-                              <Sparkles className="w-4 h-4" />
+                              <Sparkles className="w-4 h-4 shrink-0" />
                               <span>
                                 Extract &amp; Publish All ({parsedMultiLinks.length}) to App
                               </span>
@@ -2769,20 +2423,26 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           />
                         </div>
 
-                        {/* Scrollable Batch Items Grid */}
-                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-[280px] overflow-y-auto pr-1">
-                          {batchResults.map((entry) => {
+                         {/* Scrollable Batch Items Grid */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5 max-h-[260px] overflow-y-auto pr-1">
+                          {batchResults.slice(0, visibleBatchCount).map((entry) => {
                             const draft = entry.draftItem;
+                            const thumbUrl = draft?.posterUrl
+                              ? draft.posterUrl
+                                  .replace('/s718/', '/s166/')
+                                  .replace(/\.(jpg|jpeg|png)$/i, '.webp')
+                              : '';
                             return (
                               <div
                                 key={`${entry.index}-${entry.rawInput}`}
+                                style={{ contentVisibility: 'auto', containIntrinsicSize: '260px 64px' }}
                                 className="rounded-xl bg-[#08090D] border border-[#292C35] p-2.5 flex items-center justify-between gap-2.5"
                               >
                                 <div className="flex items-center gap-2.5 min-w-0">
-                                  {draft?.posterUrl ? (
+                                  {thumbUrl ? (
                                     <img
-                                      src={draft.posterUrl}
-                                      alt={draft.title}
+                                      src={thumbUrl}
+                                      alt={draft?.title || ''}
                                       loading="lazy"
                                       decoding="async"
                                       referrerPolicy="no-referrer"
@@ -2851,6 +2511,21 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                             );
                           })}
                         </div>
+                        {batchResults.length > visibleBatchCount && (
+                          <div className="flex justify-center pt-1">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setVisibleBatchCount((prev) =>
+                                  Math.min(batchResults.length, prev + 100)
+                                )
+                              }
+                              className="px-4 py-1.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-bold text-[#FFC400] cursor-pointer transition-colors"
+                            >
+                              Show More Queue Items ({batchResults.length - visibleBatchCount} remaining)
+                            </button>
+                          </div>
+                        )}
                       </div>
                     )}
                   </div>
@@ -3362,7 +3037,7 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </div>
 
                     {/* Action Buttons: Preview Before Publishing + Publish to App */}
-                    <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
+                    <div className="flex flex-wrap items-center justify-end gap-2.5 sm:gap-3 pt-2">
                       <button
                         type="button"
                         onClick={() => {
@@ -3374,9 +3049,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                           }
                           setShowLivePreview(true);
                         }}
-                        className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-[#FFC400] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
+                        className="min-h-[44px] w-full sm:w-auto justify-center px-5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-[#FFC400] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
                       >
-                        <Eye className="w-4 h-4" />
+                        <Eye className="w-4 h-4 shrink-0" />
                         <span>Preview Player &amp; Layout</span>
                       </button>
 
@@ -3396,9 +3071,9 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                               onPreviewDraftInApp(draft);
                             }
                           }}
-                          className="min-h-[44px] px-5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-white font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
+                          className="min-h-[44px] w-full sm:w-auto justify-center px-5 py-2.5 rounded-xl bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-white font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2"
                         >
-                          <ExternalLink className="w-4 h-4 text-[#FFC400]" />
+                          <ExternalLink className="w-4 h-4 text-[#FFC400] shrink-0" />
                           <span>Full-Page App Preview</span>
                         </button>
                       )}
@@ -3406,16 +3081,16 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                       <button
                         type="submit"
                         disabled={isSaving}
-                        className="min-h-[44px] px-6 py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-[#FFC400]/20 disabled:opacity-60"
+                        className="min-h-[44px] w-full sm:w-auto justify-center px-6 py-2.5 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] font-bold text-xs sm:text-sm transition-all cursor-pointer flex items-center gap-2 shadow-lg shadow-[#FFC400]/20 disabled:opacity-60"
                       >
                         {isSaving ? (
                           <>
-                            <Loader2 className="w-4 h-4 animate-spin" />
+                            <Loader2 className="w-4 h-4 animate-spin shrink-0" />
                             <span>Publishing to App...</span>
                           </>
                         ) : (
                           <>
-                            <Plus className="w-4 h-4" />
+                            <Plus className="w-4 h-4 shrink-0" />
                             <span>
                               {editingId
                                 ? 'Update Movie in App'
@@ -3427,128 +3102,188 @@ export const AdminStudioModal: React.FC<AdminStudioModalProps> = ({
                     </div>
                   </form>
 
-                  {/* Published Firestore Catalog List */}
-                  <div className="space-y-3">
-                    <div className="flex flex-wrap items-center justify-between gap-2">
+                  {/* Published Firestore Catalog List (Paginated & Filterable for Zero Lag) */}
+                  <div className="space-y-3 min-w-0">
+                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
                       <h3 className="text-sm font-bold text-white font-display">
                         Published Movies in Cloud Firestore ({catalog.length})
                       </h3>
-                      {catalog.length > 0 && (
-                        confirmingClearAll ? (
-                          <div className="flex items-center gap-2">
-                            <span className="text-xs text-red-300 font-semibold">
-                              Confirm remove all {catalog.length} movies?
-                            </span>
+                      <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
+                        {catalog.length > 0 && (
+                          <input
+                            type="search"
+                            value={adminCatalogFilter}
+                            onChange={(e) => {
+                              setAdminCatalogFilter(e.target.value);
+                              setVisibleAdminCatalogCount(24);
+                            }}
+                            placeholder="Filter published movies..."
+                            className="h-9 w-full sm:w-56 px-3 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFC400]"
+                          />
+                        )}
+                        {catalog.length > 0 && (
+                          confirmingClearAll ? (
+                            <div className="flex flex-wrap items-center gap-2">
+                              <span className="text-xs text-red-300 font-semibold">
+                                Confirm remove all {catalog.length} movies?
+                              </span>
+                              <button
+                                type="button"
+                                disabled={isClearingAll}
+                                onClick={handleClearEntireCatalog}
+                                className="min-h-[32px] px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
+                              >
+                                Yes, Remove All
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmingClearAll(false)}
+                                className="min-h-[32px] px-3 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-[#A7A9B4] hover:text-white cursor-pointer"
+                              >
+                                Cancel
+                              </button>
+                            </div>
+                          ) : (
                             <button
                               type="button"
                               disabled={isClearingAll}
-                              onClick={handleClearEntireCatalog}
-                              className="min-h-[32px] px-3 py-1 rounded-lg bg-red-600 hover:bg-red-500 text-white text-xs font-bold cursor-pointer"
+                              onClick={() => setConfirmingClearAll(true)}
+                              className="min-h-[32px] px-3 py-1.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
                             >
-                              Yes, Remove All
+                              {isClearingAll ? (
+                                <>
+                                  <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                  <span>Removing All Movies...</span>
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                  <span>Remove Every Movie</span>
+                                </>
+                              )}
                             </button>
-                            <button
-                              type="button"
-                              onClick={() => setConfirmingClearAll(false)}
-                              className="min-h-[32px] px-3 py-1 rounded-lg bg-[#08090D] border border-[#292C35] text-xs text-[#A7A9B4] hover:text-white cursor-pointer"
-                            >
-                              Cancel
-                            </button>
-                          </div>
-                        ) : (
-                          <button
-                            type="button"
-                            disabled={isClearingAll}
-                            onClick={() => setConfirmingClearAll(true)}
-                            className="min-h-[32px] px-3 py-1.5 rounded-xl bg-red-600/20 hover:bg-red-600/30 border border-red-500/30 text-red-300 text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors"
-                          >
-                            {isClearingAll ? (
-                              <>
-                                <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                                <span>Removing All Movies...</span>
-                              </>
-                            ) : (
-                              <>
-                                <Trash2 className="w-3.5 h-3.5" />
-                                <span>Remove Every Movie</span>
-                              </>
-                            )}
-                          </button>
-                        )
-                      )}
+                          )
+                        )}
+                      </div>
                     </div>
 
-                    {catalog.length === 0 ? (
+                    {filteredAdminCatalog.length === 0 ? (
                       <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-6 text-center text-xs text-[#747784]">
-                        Your catalog is currently empty. Paste up to 100 JustWatch movie links above to extract and publish!
+                        {catalog.length === 0
+                          ? 'Your catalog is currently empty. Paste up to 500 JustWatch movie links above to extract and publish!'
+                          : 'No published movies match your filter.'}
                       </div>
                     ) : (
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                        {catalog.map((item) => (
-                          <div
-                            key={item.id}
-                            className="rounded-2xl bg-[#14161D] border border-[#292C35] p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
-                          >
-                            <div className="flex items-center gap-3 min-w-0 flex-1">
-                              <img
-                                src={item.backdropUrl || item.posterUrl}
-                                alt={item.title}
-                                referrerPolicy="no-referrer"
-                                className="w-20 h-12 rounded-lg object-cover border border-[#292C35] shrink-0 bg-black"
-                              />
-                              <div className="min-w-0 flex-1">
-                                <div className="flex items-center gap-1.5 text-[11px] font-mono-tabular text-[#FFC400]">
-                                  <Film className="w-3 h-3 shrink-0" />
-                                  <span>MOVIE</span>
-                                  <span>·</span>
-                                  <span>{item.releaseYear}</span>
-                                </div>
-                                <p className="text-xs sm:text-sm font-bold text-white truncate">
-                                  {item.title}
-                                </p>
-                                <p className="text-[10px] text-[#A7A9B4] truncate font-mono-tabular">
-                                  {item.genres.join(' · ')}
-                                </p>
-                              </div>
-                            </div>
-
-                            <div className="flex items-center justify-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#292C35]/60">
-                              {onSelectMediaToWatch && (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    onClose();
-                                    onSelectMediaToWatch(item);
+                      <div className="space-y-3">
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                          {filteredAdminCatalog
+                            .slice(0, visibleAdminCatalogCount)
+                            .map((item) => {
+                              const rawThumb =
+                                item.posterUrl || item.backdropUrl || '';
+                              const fastThumb = rawThumb.includes(
+                                'images.justwatch.com'
+                              )
+                                ? rawThumb
+                                    .replace('/s1920/', '/s332/')
+                                    .replace('/s718/', '/s166/')
+                                    .replace(/\.(jpg|jpeg|png)$/i, '.webp')
+                                : rawThumb;
+                              return (
+                                <div
+                                  key={item.id}
+                                  style={{
+                                    contentVisibility: 'auto',
+                                    containIntrinsicSize: '320px 72px',
                                   }}
-                                  className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
-                                  title="Watch Stream"
+                                  className="rounded-2xl bg-[#14161D] border border-[#292C35] p-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                                 >
-                                  <Play className="w-3 h-3 fill-current shrink-0" />
-                                  <span>Play</span>
-                                </button>
-                              )}
-                              <button
-                                type="button"
-                                onClick={() => populateFormFromItem(item)}
-                                className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
-                                title="Edit"
-                              >
-                                <Edit3 className="w-3 h-3 shrink-0" />
-                                <span>Edit</span>
-                              </button>
-                              <button
-                                type="button"
-                                onClick={() =>
-                                  handleDeleteFromFirestore(item.id, item.title)
-                                }
-                                className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-xs text-red-300 flex items-center justify-center cursor-pointer transition-colors shrink-0"
-                                title="Delete"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            </div>
+                                  <div className="flex items-center gap-3 min-w-0 flex-1">
+                                    <img
+                                      src={fastThumb}
+                                      alt={item.title}
+                                      loading="lazy"
+                                      decoding="async"
+                                      referrerPolicy="no-referrer"
+                                      className="w-12 h-16 rounded-lg object-cover border border-[#292C35] shrink-0 bg-black"
+                                    />
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-1.5 text-[11px] font-mono-tabular text-[#FFC400]">
+                                        <Film className="w-3 h-3 shrink-0" />
+                                        <span>MOVIE</span>
+                                        <span>·</span>
+                                        <span>{item.releaseYear}</span>
+                                      </div>
+                                      <p className="text-xs sm:text-sm font-bold text-white truncate">
+                                        {item.title}
+                                      </p>
+                                      <p className="text-[10px] text-[#A7A9B4] truncate font-mono-tabular">
+                                        {item.genres.join(' · ')}
+                                      </p>
+                                    </div>
+                                  </div>
+
+                                  <div className="flex items-center justify-end gap-2 shrink-0 pt-2 sm:pt-0 border-t sm:border-t-0 border-[#292C35]/60">
+                                    {onSelectMediaToWatch && (
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          onClose();
+                                          onSelectMediaToWatch(item);
+                                        }}
+                                        className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                                        title="Watch Stream"
+                                      >
+                                        <Play className="w-3 h-3 fill-current shrink-0" />
+                                        <span>Play</span>
+                                      </button>
+                                    )}
+                                    <button
+                                      type="button"
+                                      onClick={() => populateFormFromItem(item)}
+                                      className="min-h-[34px] px-3 py-1.5 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#292C35] text-xs font-semibold text-white flex items-center gap-1.5 cursor-pointer transition-colors whitespace-nowrap"
+                                      title="Edit"
+                                    >
+                                      <Edit3 className="w-3 h-3 shrink-0" />
+                                      <span>Edit</span>
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() =>
+                                        handleDeleteFromFirestore(
+                                          item.id,
+                                          item.title
+                                        )
+                                      }
+                                      className="min-h-[34px] px-2.5 py-1.5 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-xs text-red-300 flex items-center justify-center cursor-pointer transition-colors shrink-0"
+                                      title="Delete"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </div>
+                                </div>
+                              );
+                            })}
+                        </div>
+                        {filteredAdminCatalog.length >
+                          visibleAdminCatalogCount && (
+                          <div className="flex justify-center pt-2">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setVisibleAdminCatalogCount(
+                                  (prev) => prev + 48
+                                )
+                              }
+                              className="px-5 py-2 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFC400]/60 text-xs font-bold text-[#FFC400] cursor-pointer transition-colors"
+                            >
+                              Show More Movies (
+                              {filteredAdminCatalog.length -
+                                visibleAdminCatalogCount}{' '}
+                              remaining)
+                            </button>
                           </div>
-                        ))}
+                        )}
                       </div>
                     )}
                   </div>

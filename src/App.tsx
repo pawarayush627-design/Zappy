@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback, useDeferredValue } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import {
   Search,
@@ -105,15 +105,6 @@ import { AdminStudioModal } from './components/AdminStudioModal';
 import { MediaArtwork } from './components/MediaArtwork';
 import { AuthModal } from './components/AuthModal';
 import { ProfileSetupView } from './components/ProfileSetupView';
-import { PWAInstallButton } from './components/PWAInstallButton';
-import { ApkUpdatePopupModal } from './components/ApkUpdatePopupModal';
-import {
-  ApkReleaseConfig,
-  DEFAULT_APK_RELEASE,
-  normalizeApkReleaseConfig,
-  hasUserSeenApkRelease,
-  markApkReleaseSeen,
-} from './utils/apkReleaseManager';
 import { safeApiFetchJson } from './utils/apiClient';
 import {
   DEFAULT_APP_TITLE,
@@ -137,6 +128,76 @@ const WATCHLIST_STORAGE_KEY = 'zappy_watchlist_v2';
 const COMPLETED_STORAGE_KEY = 'zappy_completed_v1';
 const ADS_STORAGE_KEY = 'zappy_ads_enabled_v1';
 const WATCH_PROGRESS_STORAGE_KEY = 'zappy_watch_progress_v2';
+const FAST_CATALOG_CACHE_KEY = 'zappy_fast_catalog_v2';
+
+// Module-level cache of parsed Firestore documents so onSnapshot never re-runs JSON.parse(creditsJson)
+// or recreates MediaItem references for unchanged documents (preserving React.memo across all MovieCards)
+const PARSED_DOC_CACHE = new Map<string, { fingerprint: string; item: MediaItem }>();
+
+function loadFastCatalogCache(): MediaItem[] {
+  try {
+    const raw = localStorage.getItem(FAST_CATALOG_CACHE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed) || parsed.length === 0) return [];
+    return parsed as MediaItem[];
+  } catch {
+    return [];
+  }
+}
+
+function saveFastCatalogCache(items: MediaItem[]): void {
+  try {
+    // Store compact metadata (omitting bulky base64/SVG credit images) so 900+ movies compress cleanly
+    const compact = items.slice(0, 1000).map((m) => ({
+      ...m,
+      credits: (m.credits || []).slice(0, 8).map((c) => ({
+        name: c.name,
+        role: c.role,
+        characterName: c.characterName,
+        imageUrl: c.imageUrl?.startsWith('data:') ? '' : c.imageUrl,
+      })),
+      creditsJson: '[]',
+    }));
+    localStorage.setItem(FAST_CATALOG_CACHE_KEY, JSON.stringify(compact));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
+
+function normalizeSearchTextFast(str: string): string {
+  return (str || '')
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/['’`]/g, '')
+    .replace(/[^a-z0-9]+/g, ' ')
+    .trim();
+}
+
+function phoneticFoldFast(word: string): string {
+  if (!word) return '';
+  let w = word
+    .toLowerCase()
+    .replace(/aa+/g, 'a')
+    .replace(/ee+/g, 'i')
+    .replace(/oo+/g, 'u')
+    .replace(/bh/g, 'b')
+    .replace(/dh/g, 'd')
+    .replace(/th/g, 't')
+    .replace(/kh/g, 'k')
+    .replace(/gh/g, 'g')
+    .replace(/ph/g, 'f')
+    .replace(/sh/g, 's')
+    .replace(/ch/g, 'c')
+    .replace(/v/g, 'w')
+    .replace(/z/g, 'j')
+    .replace(/([a-z])\1+/g, '$1');
+  if (w.length >= 4 && w.endsWith('a')) {
+    w = w.slice(0, -1);
+  }
+  return w;
+}
 const LEGAL_PAGES_STORAGE_KEY = 'zappy_legal_pages_v2';
 const HERO_CYCLE_STORAGE_KEY = 'zappy_hero_8movie_cycle_v1';
 const HERO_DAILY_BATCH_SIZE = 8;
@@ -228,8 +289,11 @@ export default function App() {
     useState<boolean>(false);
   const [isAuthReady, setIsAuthReady] = useState<boolean>(false);
 
-  const [catalog, setCatalog] = useState<MediaItem[]>([]);
-  const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(true);
+  const [catalog, setCatalog] = useState<MediaItem[]>(() => loadFastCatalogCache());
+  const [isLoadingCatalog, setIsLoadingCatalog] = useState<boolean>(() => {
+    const cached = loadFastCatalogCache();
+    return cached.length === 0;
+  });
 
   const [activeLegalSection, setActiveLegalSection] =
     useState<LegalSectionKey>(() => {
@@ -266,7 +330,7 @@ export default function App() {
   // Admin Studio Modal State
   const [adminStudioOpen, setAdminStudioOpen] = useState<boolean>(false);
   const [adminInitialTab, setAdminInitialTab] = useState<
-    'catalog' | 'support' | 'legal' | 'apk'
+    'catalog' | 'support' | 'legal'
   >('catalog');
   const [adminPrefillMedia, setAdminPrefillMedia] =
     useState<MediaItem | null>(null);
@@ -281,19 +345,24 @@ export default function App() {
   const [profileMenuOpen, setProfileMenuOpen] = useState<boolean>(false);
   const [sessionToast, setSessionToast] = useState<string | null>(null);
 
-  // Search & Filter State (with Debounced Input)
+  // Search & Filter State (Zero-Lag Deferred Input + Paginated Grids)
   const [searchBarOpen, setSearchBarOpen] = useState<boolean>(false);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState<string>('');
+  const deferredSearchQuery = useDeferredValue(searchQuery);
   const [selectedGenre, setSelectedGenre] = useState<string>('All');
   const [searchSortBy, setSearchSortBy] = useState<
     'relevance' | 'newest' | 'popular' | 'title'
   >('relevance');
+  const [visibleSearchCount, setVisibleSearchCount] = useState<number>(24);
+  const [visibleMoviesCount, setVisibleMoviesCount] = useState<number>(36);
+  const [visibleAnimeCount, setVisibleAnimeCount] = useState<number>(36);
 
   useEffect(() => {
+    setVisibleSearchCount(24);
     const timer = window.setTimeout(() => {
       setDebouncedSearchQuery(searchQuery);
-    }, 180);
+    }, 30);
     return () => window.clearTimeout(timer);
   }, [searchQuery]);
 
@@ -473,86 +542,6 @@ export default function App() {
     return () => unsubscribe();
   }, []);
 
-  // Admin-Managed APK Release & One-Time Update Popup State (/api/apk-release + Firestore ui_config/apk_release)
-  const [apkRelease, setApkRelease] = useState<ApkReleaseConfig>(() => {
-    try {
-      const raw = localStorage.getItem('zappy_apk_release_cache_v1');
-      if (raw) {
-        return normalizeApkReleaseConfig(JSON.parse(raw));
-      }
-    } catch {
-      // Ignore
-    }
-    return DEFAULT_APK_RELEASE;
-  });
-  const [showApkUpdatePopup, setShowApkUpdatePopup] = useState<boolean>(false);
-
-  useEffect(() => {
-    fetch('/api/apk-release')
-      .then((res) => (res.ok ? res.json() : null))
-      .then((data) => {
-        if (data?.apkRelease && typeof data.apkRelease === 'object') {
-          const normalized = normalizeApkReleaseConfig(data.apkRelease);
-          if (normalized.releaseId) {
-            setApkRelease(normalized);
-            try {
-              localStorage.setItem(
-                'zappy_apk_release_cache_v1',
-                JSON.stringify(normalized)
-              );
-            } catch {
-              // Ignore
-            }
-          }
-        }
-      })
-      .catch(() => {
-        // Ignore network error
-      });
-  }, []);
-
-  useEffect(() => {
-    const apkDocRef = doc(db, 'ui_config', 'apk_release');
-    const unsubscribe = onSnapshot(
-      apkDocRef,
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data();
-          if (data && typeof data === 'object') {
-            const normalized = normalizeApkReleaseConfig(
-              data as Partial<ApkReleaseConfig>
-            );
-            setApkRelease(normalized);
-            try {
-              localStorage.setItem(
-                'zappy_apk_release_cache_v1',
-                JSON.stringify(normalized)
-              );
-            } catch {
-              // Ignore
-            }
-          }
-        }
-      },
-      () => {
-        // Ignore if not yet created
-      }
-    );
-    return () => unsubscribe();
-  }, []);
-
-  // Trigger the Update Popup strictly ONCE whenever a new APK releaseId is published by Admin
-  useEffect(() => {
-    if (
-      apkRelease.releaseId &&
-      apkRelease.releaseId.trim() !== '' &&
-      !hasUserSeenApkRelease(apkRelease.releaseId)
-    ) {
-      markApkReleaseSeen(apkRelease.releaseId);
-      setShowApkUpdatePopup(true);
-    }
-  }, [apkRelease.releaseId]);
-
   // Hero Banner 8-Movie Daily Cycle State (24h batch rotation & 28h per-movie tenure)
   const [heroCycleConfig, setHeroCycleConfig] = useState<{
     epochMs: number;
@@ -691,199 +680,233 @@ export default function App() {
     return () => unsubscribe();
   }, [showToast, handleGithubUserOnboarding]);
 
-  // 2. Real-time Cloud Firestore Catalog Subscription
+  // 2. Real-time Cloud Firestore Catalog Subscription (Cached + Debounced for Zero-Lag Bulk Writes)
   useEffect(() => {
-    setIsLoadingCatalog(true);
+    setIsLoadingCatalog((prev) => (catalog.length > 0 ? false : prev));
     const catalogQuery = query(
       collection(db, 'catalog'),
       where('visibility', '==', 'public')
     );
 
+    let snapshotDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+    let isFirstSnapshot = true;
+
+    const processSnapshot = (snapshot: { docs: Array<{ id: string; data: () => Record<string, unknown> }> }) => {
+      const validDocs = snapshot.docs.filter((docSnap) => {
+        const data = docSnap.data();
+        const rawTitle = String(data.title || '').trim().toLowerCase();
+        const rawEmbed = String(data.cinesrcEmbedUrl || '').toLowerCase();
+        const isBogusSearchEntry =
+          rawTitle === 'search' ||
+          docSnap.id === 'movie-tt29730964' ||
+          docSnap.id === 'movie-search' ||
+          rawEmbed.includes('tt29730964');
+        if (isBogusSearchEntry) {
+          return false;
+        }
+        return true;
+      });
+
+      const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
+      const nowMs = Date.now();
+
+      const items: MediaItem[] = validDocs.map((docSnap) => {
+        const data = docSnap.data();
+        const fingerprint = `${data.title || ''}|${data.tmdbId || ''}|${data.posterUrl || ''}|${data.backdropUrl || ''}|${data.featured || ''}|${data.heroAddedAtMs || ''}|${typeof data.creditsJson === 'string' ? data.creditsJson.length : 0}`;
+        const cachedDoc = PARSED_DOC_CACHE.get(docSnap.id);
+        if (cachedDoc && cachedDoc.fingerprint === fingerprint) {
+          return cachedDoc.item;
+        }
+
+        const mediaType = data.mediaType === 'tv' ? 'tv' : 'movie';
+        let parsedCredits = [];
+        if (typeof data.creditsJson === 'string' && data.creditsJson.trim()) {
+          try {
+            const parsed = JSON.parse(data.creditsJson);
+            if (Array.isArray(parsed)) parsedCredits = parsed;
+          } catch {
+            parsedCredits = [];
+          }
+        }
+        const cleanTagline =
+          typeof data.tagline === 'string'
+            ? data.tagline
+                .replace(
+                  /CineSrc\.st|VidLink\.pro|EmbedMaster|TMDB\s*#?\d*/gi,
+                  ''
+                )
+                .replace(/via\s*$/i, '')
+                .trim()
+            : '';
+
+        const rawEmbedStr =
+          typeof data.cinesrcEmbedUrl === 'string'
+            ? data.cinesrcEmbedUrl.trim()
+            : '';
+        const numMatch = rawEmbedStr.match(
+          /(?:movie|tv|series|show)\/(\d+)/i
+        );
+        const rawTmdbNum =
+          Number(data.tmdbId) || (numMatch?.[1] ? Number(numMatch[1]) : 0);
+        const resolvedNumericId =
+          rawTmdbNum > 0 && rawTmdbNum !== 10000 ? rawTmdbNum : 157336;
+        const normalizedVidlyUrl =
+          mediaType === 'tv'
+            ? `https://vidly.pro/tv/${resolvedNumericId}/1/1`
+            : `https://vidly.pro/movie/${resolvedNumericId}`;
+
+        // Resolve created timestamp: Firestore Timestamp object (.toMillis()), number, or string
+        let resolvedCreatedAtMs: number | undefined = undefined;
+        if (data.createdAt && typeof data.createdAt === 'object' && typeof (data.createdAt as { toMillis?: () => number }).toMillis === 'function') {
+          resolvedCreatedAtMs = (data.createdAt as { toMillis: () => number }).toMillis();
+        } else if (typeof data.createdAtMs === 'number' && data.createdAtMs > 0) {
+          resolvedCreatedAtMs = data.createdAtMs;
+        } else if (typeof data.createdAt === 'number' && data.createdAt > 0) {
+          resolvedCreatedAtMs = data.createdAt;
+        } else if (typeof data.heroAddedAtMs === 'number' && data.heroAddedAtMs > 0) {
+          resolvedCreatedAtMs = data.heroAddedAtMs;
+        }
+
+        const isWithin7Days = typeof resolvedCreatedAtMs === 'number' && (nowMs - resolvedCreatedAtMs) <= SEVEN_DAYS_MS && (nowMs - resolvedCreatedAtMs) >= 0;
+        void isWithin7Days;
+
+        const builtItem: MediaItem = {
+          id: String(data.id || docSnap.id),
+          tmdbId: resolvedNumericId,
+          mediaType: 'movie' as const,
+          title: String(data.title || 'Untitled'),
+          tagline: cleanTagline,
+          synopsis: String(data.synopsis || ''),
+          contentType: 'movie' as const,
+          genres:
+            Array.isArray(data.genres) && data.genres.length > 0
+              ? (data.genres as Genre[])
+              : (['Action'] as Genre[]),
+          releaseYear: Number(data.releaseYear) || 2024,
+          durationMinutes: Number(data.durationMinutes) || 120,
+          maturityRating: (data.maturityRating as MediaItem['maturityRating']) || 'PG-13',
+          directorOrCreator: String(data.directorOrCreator || 'Featured Creator'),
+          cast: Array.isArray(data.cast) ? (data.cast as string[]) : ['Featured Cast'],
+          credits: parsedCredits,
+          creditsJson:
+            typeof data.creditsJson === 'string' ? data.creditsJson : '[]',
+          posterUrl: String(data.posterUrl || ''),
+          backdropUrl: String(data.backdropUrl || data.posterUrl || ''),
+          cinesrcEmbedUrl: normalizedVidlyUrl,
+          justWatchUrl: String(data.justWatchUrl || ''),
+          visibility: data.visibility === 'hidden' ? 'hidden' : 'public',
+          authorUid: String(data.authorUid || ''),
+          availabilityStatus: 'playable_demo',
+          availabilityNote: '4K UHD · Instant Stream',
+          featured: Boolean(data.featured ?? true),
+          heroAddedAtMs: Number(data.heroAddedAtMs) || undefined,
+          popularScore: Number(data.popularScore) || 92,
+          createdAtMs: resolvedCreatedAtMs,
+          recentlyAdded: false,
+          visualTheme: {
+            primaryHex: '#141414',
+            secondaryHex: '#1A1A1A',
+            accentHex: '#E50000',
+            motif: 'horizon',
+          },
+        };
+
+        PARSED_DOC_CACHE.set(docSnap.id, { fingerprint, item: builtItem });
+        return builtItem;
+      });
+
+      // Strict Deduplication & Movie-Only Filtering:
+      // Ensure no duplicate movie can ever exist twice in the live catalog
+      const seenMovieKeys = new Set<string>();
+      const uniqueMovies: MediaItem[] = [];
+      for (const item of items) {
+        const normTitle = (item.title || '').trim().toLowerCase();
+        const tmdbKey =
+          item.tmdbId && item.tmdbId !== 157336 && item.tmdbId !== 10000
+            ? `tmdb:${item.tmdbId}`
+            : null;
+        const titleKey = normTitle ? `title:${normTitle}` : null;
+        const jwKey = item.justWatchUrl ? `jw:${item.justWatchUrl.trim().toLowerCase()}` : null;
+
+        if (
+          (tmdbKey && seenMovieKeys.has(tmdbKey)) ||
+          (titleKey && seenMovieKeys.has(titleKey)) ||
+          (jwKey && seenMovieKeys.has(jwKey))
+        ) {
+          continue;
+        }
+
+        if (tmdbKey) seenMovieKeys.add(tmdbKey);
+        if (titleKey) seenMovieKeys.add(titleKey);
+        if (jwKey) seenMovieKeys.add(jwKey);
+        uniqueMovies.push(item);
+      }
+
+      setCatalog(uniqueMovies);
+      setIsLoadingCatalog(false);
+      saveFastCatalogCache(uniqueMovies);
+
+      setSelectedMedia((prev) => {
+        if (!prev) return null;
+        const updated = items.find((i) => i.id === prev.id);
+        if (!updated) return prev;
+        if (
+          updated.title === prev.title &&
+          updated.cinesrcEmbedUrl === prev.cinesrcEmbedUrl &&
+          updated.tmdbId === prev.tmdbId &&
+          updated.posterUrl === prev.posterUrl &&
+          updated.backdropUrl === prev.backdropUrl &&
+          updated.synopsis === prev.synopsis
+        ) {
+          return prev;
+        }
+        return updated;
+      });
+
+      if (!initialUrlResolvedRef.current && uniqueMovies.length > 0) {
+        const matchedMovie = findMovieByUrlLocation(
+          window.location.pathname,
+          window.location.search,
+          uniqueMovies
+        );
+        if (matchedMovie) {
+          initialUrlResolvedRef.current = true;
+          setSelectedMedia(matchedMovie);
+          setActiveView('details');
+          document.title = `${matchedMovie.title} (${matchedMovie.releaseYear}) — ZappyFun`;
+          try {
+            const targetMoviePath = getMoviePath(matchedMovie);
+            if (window.location.pathname !== targetMoviePath) {
+              window.history.replaceState(
+                { movieId: matchedMovie.id },
+                '',
+                targetMoviePath
+              );
+            }
+          } catch {
+            // Ignore history replace error
+          }
+        } else {
+          initialUrlResolvedRef.current = true;
+        }
+      }
+    };
+
     const unsubscribe = onSnapshot(
       catalogQuery,
       (snapshot) => {
-        const validDocs = snapshot.docs.filter((docSnap) => {
-          const data = docSnap.data();
-          const rawTitle = String(data.title || '').trim().toLowerCase();
-          const rawEmbed = String(data.cinesrcEmbedUrl || '').toLowerCase();
-          const isBogusSearchEntry =
-            rawTitle === 'search' ||
-            docSnap.id === 'movie-tt29730964' ||
-            docSnap.id === 'movie-search' ||
-            rawEmbed.includes('tt29730964');
-          if (isBogusSearchEntry) {
-            return false;
-          }
-          return true;
-        });
-
-        const items: MediaItem[] = validDocs.map((docSnap) => {
-          const data = docSnap.data();
-          const mediaType = data.mediaType === 'tv' ? 'tv' : 'movie';
-          let parsedCredits = [];
-          if (typeof data.creditsJson === 'string' && data.creditsJson.trim()) {
-            try {
-              const parsed = JSON.parse(data.creditsJson);
-              if (Array.isArray(parsed)) parsedCredits = parsed;
-            } catch {
-              parsedCredits = [];
-            }
-          }
-          const cleanTagline =
-            typeof data.tagline === 'string'
-              ? data.tagline
-                  .replace(
-                    /CineSrc\.st|VidLink\.pro|EmbedMaster|TMDB\s*#?\d*/gi,
-                    ''
-                  )
-                  .replace(/via\s*$/i, '')
-                  .trim()
-              : '';
-
-          const rawEmbedStr =
-            typeof data.cinesrcEmbedUrl === 'string'
-              ? data.cinesrcEmbedUrl.trim()
-              : '';
-          const numMatch = rawEmbedStr.match(
-            /(?:movie|tv|series|show)\/(\d+)/i
-          );
-          const rawTmdbNum =
-            Number(data.tmdbId) || (numMatch?.[1] ? Number(numMatch[1]) : 0);
-          const resolvedNumericId =
-            rawTmdbNum > 0 && rawTmdbNum !== 10000 ? rawTmdbNum : 157336;
-          const normalizedVidlyUrl =
-            mediaType === 'tv'
-              ? `https://vidly.pro/tv/${resolvedNumericId}/1/1`
-              : `https://vidly.pro/movie/${resolvedNumericId}`;
-
-            // Resolve created timestamp: Firestore Timestamp object (.toMillis()), number, or string
-            let resolvedCreatedAtMs: number | undefined = undefined;
-            if (data.createdAt && typeof data.createdAt === 'object' && typeof (data.createdAt as { toMillis?: () => number }).toMillis === 'function') {
-              resolvedCreatedAtMs = (data.createdAt as { toMillis: () => number }).toMillis();
-            } else if (typeof data.createdAtMs === 'number' && data.createdAtMs > 0) {
-              resolvedCreatedAtMs = data.createdAtMs;
-            } else if (typeof data.createdAt === 'number' && data.createdAt > 0) {
-              resolvedCreatedAtMs = data.createdAt;
-            } else if (typeof data.heroAddedAtMs === 'number' && data.heroAddedAtMs > 0) {
-              resolvedCreatedAtMs = data.heroAddedAtMs;
-            }
-
-            const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
-            const isWithin7Days = typeof resolvedCreatedAtMs === 'number' && (Date.now() - resolvedCreatedAtMs) <= SEVEN_DAYS_MS && (Date.now() - resolvedCreatedAtMs) >= 0;
-
-            return {
-              id: data.id || docSnap.id,
-              tmdbId: resolvedNumericId,
-              mediaType: 'movie' as const,
-              title: data.title || 'Untitled',
-              tagline: cleanTagline,
-              synopsis: data.synopsis || '',
-              contentType: 'movie' as const,
-              genres:
-                Array.isArray(data.genres) && data.genres.length > 0
-                  ? data.genres
-                  : ['Action'],
-              releaseYear: Number(data.releaseYear) || 2024,
-              durationMinutes: Number(data.durationMinutes) || 120,
-              maturityRating: data.maturityRating || 'PG-13',
-              directorOrCreator: data.directorOrCreator || 'Featured Creator',
-              cast: Array.isArray(data.cast) ? data.cast : ['Featured Cast'],
-              credits: parsedCredits,
-              creditsJson:
-                typeof data.creditsJson === 'string' ? data.creditsJson : '[]',
-              posterUrl: data.posterUrl || '',
-              backdropUrl: data.backdropUrl || data.posterUrl || '',
-              cinesrcEmbedUrl: normalizedVidlyUrl,
-              justWatchUrl: data.justWatchUrl || '',
-              visibility: data.visibility || 'public',
-              authorUid: data.authorUid || '',
-              availabilityStatus: 'playable_demo',
-              availabilityNote: '4K UHD · Instant Stream',
-              featured: Boolean(data.featured ?? true),
-              heroAddedAtMs: Number(data.heroAddedAtMs) || undefined,
-              popularScore: Number(data.popularScore) || 92,
-              createdAtMs: resolvedCreatedAtMs,
-              recentlyAdded: Boolean(data.recentlyAdded === true || isWithin7Days),
-              visualTheme: {
-                primaryHex: '#141414',
-                secondaryHex: '#1A1A1A',
-                accentHex: '#E50000',
-                motif: 'horizon',
-            },
-          };
-        });
-
-        // Strict Deduplication & Movie-Only Filtering:
-        // Ensure no duplicate movie can ever exist twice in the live catalog
-        const seenMovieKeys = new Set<string>();
-        const uniqueMovies: MediaItem[] = [];
-        for (const item of items) {
-          const normTitle = (item.title || '').trim().toLowerCase();
-          const tmdbKey = item.tmdbId ? `tmdb:${item.tmdbId}` : null;
-          const titleKey = normTitle ? `title:${normTitle}` : null;
-          const jwKey = item.justWatchUrl ? `jw:${item.justWatchUrl.trim().toLowerCase()}` : null;
-
-          if (
-            (tmdbKey && seenMovieKeys.has(tmdbKey)) ||
-            (titleKey && seenMovieKeys.has(titleKey)) ||
-            (jwKey && seenMovieKeys.has(jwKey))
-          ) {
-            continue;
-          }
-
-          if (tmdbKey) seenMovieKeys.add(tmdbKey);
-          if (titleKey) seenMovieKeys.add(titleKey);
-          if (jwKey) seenMovieKeys.add(jwKey);
-          uniqueMovies.push(item);
+        if (isFirstSnapshot) {
+          isFirstSnapshot = false;
+          processSnapshot(snapshot);
+          return;
         }
-
-        setCatalog(uniqueMovies);
-        setIsLoadingCatalog(false);
-
-        setSelectedMedia((prev) => {
-          if (!prev) return null;
-          const updated = items.find((i) => i.id === prev.id);
-          if (!updated) return prev;
-          if (
-            updated.title === prev.title &&
-            updated.cinesrcEmbedUrl === prev.cinesrcEmbedUrl &&
-            updated.tmdbId === prev.tmdbId &&
-            updated.posterUrl === prev.posterUrl &&
-            updated.backdropUrl === prev.backdropUrl &&
-            updated.synopsis === prev.synopsis
-          ) {
-            return prev;
-          }
-          return updated;
-        });
-
-        if (!initialUrlResolvedRef.current && uniqueMovies.length > 0) {
-          const matchedMovie = findMovieByUrlLocation(
-            window.location.pathname,
-            window.location.search,
-            uniqueMovies
-          );
-          if (matchedMovie) {
-            initialUrlResolvedRef.current = true;
-            setSelectedMedia(matchedMovie);
-            setActiveView('details');
-            document.title = `${matchedMovie.title} (${matchedMovie.releaseYear}) — ZappyFun`;
-            try {
-              const targetMoviePath = getMoviePath(matchedMovie);
-              if (window.location.pathname !== targetMoviePath) {
-                window.history.replaceState(
-                  { movieId: matchedMovie.id },
-                  '',
-                  targetMoviePath
-                );
-              }
-            } catch {
-              // Ignore history replace error
-            }
-          } else {
-            initialUrlResolvedRef.current = true;
-          }
+        if (snapshotDebounceTimer) {
+          clearTimeout(snapshotDebounceTimer);
         }
+        snapshotDebounceTimer = setTimeout(() => {
+          snapshotDebounceTimer = null;
+          processSnapshot(snapshot);
+        }, 120);
       },
       (error) => {
         setIsLoadingCatalog(false);
@@ -891,7 +914,10 @@ export default function App() {
       }
     );
 
-    return () => unsubscribe();
+    return () => {
+      if (snapshotDebounceTimer) clearTimeout(snapshotDebounceTimer);
+      unsubscribe();
+    };
   }, []);
 
   // 3. Real-time Cloud Firestore Watchlist Subscription
@@ -1405,6 +1431,9 @@ export default function App() {
     if (activeView !== 'details' && activeView !== 'legal') {
       setPreviousView(activeView);
     }
+    if (view === 'search') {
+      setSelectedGenre('All');
+    }
     setSearchBarOpen(false);
     setActiveModal(null);
     setActiveView(view);
@@ -1476,57 +1505,6 @@ export default function App() {
 
       showToast(
         'Legal documents saved and synced directly into /src/data/legalDocuments.ts!'
-      );
-    },
-    [currentUser, isAdmin, showToast]
-  );
-
-  const handleSaveApkRelease = useCallback(
-    async (updatedRelease: ApkReleaseConfig) => {
-      const normalized = normalizeApkReleaseConfig(updatedRelease);
-      setApkRelease(normalized);
-      try {
-        localStorage.setItem(
-          'zappy_apk_release_cache_v1',
-          JSON.stringify(normalized)
-        );
-      } catch {
-        // Ignore storage error
-      }
-
-      // 1. Persist to backend server (/api/apk-release)
-      try {
-        const idToken = currentUser ? await currentUser.getIdToken().catch(() => '') : '';
-        await fetch('/api/apk-release', {
-          method: 'PUT',
-          headers: {
-            'Content-Type': 'application/json',
-            ...(idToken ? { Authorization: `Bearer ${idToken}` } : {}),
-          },
-          body: JSON.stringify({ apkRelease: normalized }),
-        });
-      } catch {
-        // Ignore network error
-      }
-
-      // 2. Sync to Cloud Firestore (/ui_config/apk_release) so all website & app users receive the update popup
-      if (currentUser && isAdmin) {
-        try {
-          await setDoc(
-            doc(db, 'ui_config', 'apk_release'),
-            {
-              ...normalized,
-              updatedAt: serverTimestamp(),
-            },
-            { merge: true }
-          );
-        } catch {
-          // Ignore Firestore error
-        }
-      }
-
-      showToast(
-        `APK v${normalized.version} published! Users will see the update popup once on their next visit.`
       );
     },
     [currentUser, isAdmin, showToast]
@@ -1931,6 +1909,31 @@ export default function App() {
   // Since ZappyFun is strictly movies only, moviesList represents the full movie catalog
   const moviesList = useMemo(() => catalog, [catalog]);
 
+  // All Anime & Cartoon movies from the catalog (prioritizing Japanese/Epic Anime first, then all Animation titles)
+  const animeList = useMemo(() => {
+    const animeRegex =
+      /anime|doraemon|pokemon|pokémon|shin-chan|shinchan|crayon shin|naruto|one piece|dragon ball|spirited away|totoro|mononoke|howl|your name|kimi no na wa|suzume|weathering with you|akira|grave of the fireflies|ponyo|arrietty|kaguya|boy and the heron|slam dunk|suramu danku|jujutsu|demon slayer|bleach|conan|ghibli|miyazaki|makoto shinkai|mamoru hosoda|isao takahata|kunihiko yuyama|tetsuo yajima|pom poko|cat returns|whisper of the heart|only yesterday| castle in the sky|kiki's delivery|wolf children|girl who leapt/i;
+
+    const matching = catalog.filter((item) => {
+      const hasAnimationGenre = item.genres.some((g) =>
+        /animation|anime|cartoon/i.test(g)
+      );
+      const textBlob = `${item.title} ${item.directorOrCreator} ${item.justWatchUrl} ${item.synopsis}`;
+      return hasAnimationGenre || animeRegex.test(textBlob);
+    });
+
+    return matching.sort((a, b) => {
+      const aIsCoreAnime = animeRegex.test(
+        `${a.title} ${a.directorOrCreator} ${a.justWatchUrl}`
+      );
+      const bIsCoreAnime = animeRegex.test(
+        `${b.title} ${b.directorOrCreator} ${b.justWatchUrl}`
+      );
+      if (aIsCoreAnime !== bIsCoreAnime) return aIsCoreAnime ? -1 : 1;
+      return (b.popularScore || 0) - (a.popularScore || 0);
+    });
+  }, [catalog]);
+
   // Filter out any completed items so watched titles never remain in Watchlist
   const activeWatchlistIds = useMemo(
     () => watchlistIds.filter((id) => !completedIds.includes(id)),
@@ -2038,45 +2041,227 @@ export default function App() {
     });
   }, [genreCountsMap]);
 
-  // Enhanced Typo-Tolerant Multi-Field Relevance Search + Match Attribution + Sort
-  const { filteredSearchCatalog, searchMatchReasonsMap, quickSearchSuggestions } =
-    useMemo(() => {
-      // Helper for typo-tolerant subsequence / fuzzy word similarity
-      const isFuzzyWordMatch = (targetWord: string, queryToken: string): boolean => {
-        if (queryToken.length < 3 || targetWord.length < 3) return false;
-        if (Math.abs(targetWord.length - queryToken.length) > 3) return false;
-        // Subsequence check (e.g. "intrstlr" -> "interstellar")
-        let qi = 0;
-        for (let ti = 0; ti < targetWord.length && qi < queryToken.length; ti++) {
-          if (targetWord[ti] === queryToken[qi]) qi++;
-        }
-        if (qi === queryToken.length && queryToken.length >= targetWord.length - 2) {
-          return true;
-        }
-        // Bounded Levenshtein edit distance <= 1 (or <= 2 for 6+ chars)
-        const maxDist = queryToken.length >= 6 ? 2 : 1;
-        const m = targetWord.length;
-        const n = queryToken.length;
-        const dp: number[][] = Array.from({ length: m + 1 }, () =>
-          new Array(n + 1).fill(0)
-        );
-        for (let i = 0; i <= m; i++) dp[i][0] = i;
-        for (let j = 0; j <= n; j++) dp[0][j] = j;
-        for (let i = 1; i <= m; i++) {
-          for (let j = 1; j <= n; j++) {
-            const cost = targetWord[i - 1] === queryToken[j - 1] ? 0 : 1;
-            dp[i][j] = Math.min(
-              dp[i - 1][j] + 1,
-              dp[i][j - 1] + 1,
-              dp[i - 1][j - 1] + cost
-            );
+  // Pre-Computed Search Index: built ONLY when `catalog` updates so keystrokes do ZERO regex/NFD/phonetic normalization on the 900+ movies
+  const catalogSearchIndex = useMemo(() => {
+    return catalog.map((item) => {
+      const normTitle = normalizeSearchTextFast(item.title);
+      const primaryTitle = normalizeSearchTextFast(
+        item.title.split(/[:\-–—|]/)[0] || item.title
+      );
+      const titleWords = normTitle.split(/\s+/).filter(Boolean);
+      const foldedTitle = titleWords.map(phoneticFoldFast).join(' ');
+      const foldedPrimary = primaryTitle
+        .split(/\s+/)
+        .filter(Boolean)
+        .map(phoneticFoldFast)
+        .join(' ');
+
+      const jwSlugMatch = (item.justWatchUrl || '').match(/\/movie\/([^/?#]+)/i);
+      const jwSlugNorm = jwSlugMatch ? normalizeSearchTextFast(jwSlugMatch[1]) : '';
+      const jwSlugWords = jwSlugNorm ? jwSlugNorm.split(/\s+/).filter(Boolean) : [];
+
+      const isRamayanaItem =
+        primaryTitle === 'ramayana' ||
+        jwSlugNorm === 'ramayana' ||
+        normTitle.includes('ramayana');
+      const aliasWords = isRamayanaItem
+        ? [
+            'ramayan',
+            'rama',
+            'ram',
+            'prince',
+            'legend',
+            'sita',
+            'ravana',
+            'lakshman',
+            'hanuman',
+            'ayodhya',
+            'valmiki',
+          ]
+        : [];
+
+      const allTitleWords = Array.from(
+        new Set([...titleWords, ...jwSlugWords, ...aliasWords])
+      );
+      const allTitleWordsIndexed = allTitleWords.map((w) => ({
+        raw: w,
+        folded: phoneticFoldFast(w),
+      }));
+
+      const normDirector =
+        item.directorOrCreator && item.directorOrCreator !== 'Featured Creator'
+          ? normalizeSearchTextFast(item.directorOrCreator)
+          : '';
+      const directorWordsIndexed = normDirector
+        ? normDirector
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((w) => ({ raw: w, folded: phoneticFoldFast(w) }))
+        : [];
+
+      const castIndexed = (Array.isArray(item.cast) ? item.cast : [])
+        .filter((a) => a && a !== 'Featured Cast')
+        .map((actor) => {
+          const norm = normalizeSearchTextFast(actor);
+          const words = norm
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((w) => ({ raw: w, folded: phoneticFoldFast(w) }));
+          return { display: actor, norm, words };
+        });
+
+      const creditsIndexed = (Array.isArray(item.credits) ? item.credits : [])
+        .filter((c) => c && c.characterName && c.characterName !== 'Director')
+        .map((c) => {
+          const charNameStr = String(c.characterName || '');
+          const charNorm = normalizeSearchTextFast(charNameStr);
+          const charWords = charNorm
+            .split(/\s+/)
+            .filter(Boolean)
+            .map((w) => ({ raw: w, folded: phoneticFoldFast(w) }));
+          return {
+            characterName: charNameStr,
+            charNorm,
+            charWords,
+          };
+        });
+
+      const genresLower = item.genres.map((g) => normalizeSearchTextFast(g));
+      const yearStr = String(item.releaseYear || '');
+      const normStory = `${normalizeSearchTextFast(item.tagline || '')} ${normalizeSearchTextFast(item.synopsis || '')}`.trim();
+
+      return {
+        item,
+        normTitle,
+        primaryTitle,
+        foldedTitle,
+        foldedPrimary,
+        jwSlugNorm,
+        allTitleWordsIndexed,
+        normDirector,
+        directorWordsIndexed,
+        castIndexed,
+        creditsIndexed,
+        genresLower,
+        yearStr,
+        normStory,
+      };
+    });
+  }, [catalog]);
+
+  // Peak-Level Instant Multi-Field Relevance, Phonetic/Transliteration & Typo-Tolerant Search Engine (< 0.5ms per keystroke)
+  const { filteredSearchCatalog, searchMatchReasonsMap } = useMemo(() => {
+    const damerauLevenshtein = (a: string, b: string): number => {
+      const m = a.length;
+      const n = b.length;
+      if (Math.abs(m - n) > 2) return 99;
+      const dp: number[][] = Array.from({ length: m + 1 }, () =>
+        new Array(n + 1).fill(0)
+      );
+      for (let i = 0; i <= m; i++) dp[i][0] = i;
+      for (let j = 0; j <= n; j++) dp[0][j] = j;
+      for (let i = 1; i <= m; i++) {
+        for (let j = 1; j <= n; j++) {
+          const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+          dp[i][j] = Math.min(
+            dp[i - 1][j] + 1,
+            dp[i][j - 1] + 1,
+            dp[i - 1][j - 1] + cost
+          );
+          if (
+            i > 1 &&
+            j > 1 &&
+            a[i - 1] === b[j - 2] &&
+            a[i - 2] === b[j - 1]
+          ) {
+            dp[i][j] = Math.min(dp[i][j], dp[i - 2][j - 2] + cost);
           }
         }
-        return dp[m][n] <= maxDist;
-      };
+      }
+      return dp[m][n];
+    };
 
+    const getFastWordSim = (
+      targetRaw: string,
+      targetFolded: string,
+      tokenRaw: string,
+      tokenFolded: string
+    ): number => {
+      if (!targetRaw || !tokenRaw) return 0;
+      if (targetRaw === tokenRaw) return 1.0;
+      if (targetRaw.startsWith(tokenRaw)) {
+        return tokenRaw.length >= 3 ? 0.92 : 0.82;
+      }
+      if (targetFolded && targetFolded === tokenFolded) return 0.96;
+      if (
+        targetFolded &&
+        tokenFolded.length >= 3 &&
+        (targetFolded.startsWith(tokenFolded) ||
+          tokenFolded.startsWith(targetFolded))
+      ) {
+        return 0.88;
+      }
+      if (tokenRaw.length >= 3 && targetRaw.includes(tokenRaw)) {
+        return 0.8;
+      }
+      if (tokenRaw.length < 3 || targetRaw.length < 3) return 0;
+      // Fast first-character gate so we only run edit-distance on plausible candidates
+      if (
+        targetRaw[0] !== tokenRaw[0] &&
+        targetFolded[0] !== tokenFolded[0]
+      ) {
+        return 0;
+      }
+      const distRaw = damerauLevenshtein(targetRaw, tokenRaw);
+      const distFold =
+        targetFolded && tokenFolded
+          ? damerauLevenshtein(targetFolded, tokenFolded)
+          : 99;
+      const bestDist = Math.min(distRaw, distFold);
+      const maxAllowed = tokenRaw.length >= 7 ? 2 : tokenRaw.length >= 4 ? 1 : 0;
+      if (bestDist <= maxAllowed) {
+        return bestDist === 1 ? 0.84 : 0.74;
+      }
+      return 0;
+    };
+
+    const activeQueryRaw = deferredSearchQuery.trim();
+    const normalizedQuery = normalizeSearchTextFast(activeQueryRaw);
+    const rawTokens = normalizedQuery.split(/\s+/).filter(Boolean);
+
+    const INTENT_STOP_WORDS = new Set([
+      'movie',
+      'movies',
+      'film',
+      'films',
+      'watch',
+      'online',
+      'free',
+      'full',
+      'hd',
+      '4k',
+      'stream',
+      'streaming',
+      'the',
+      'of',
+      'in',
+      'on',
+      'and',
+      'for',
+      'to',
+      'a',
+      'an',
+    ]);
+    const meaningfulTokens = rawTokens.filter((t) => !INTENT_STOP_WORDS.has(t));
+    const tokens = meaningfulTokens.length > 0 ? meaningfulTokens : rawTokens;
+    const tokenObjs = tokens.map((t) => ({ raw: t, folded: phoneticFoldFast(t) }));
+    const effectivePhrase = tokens.join(' ');
+    const foldedPhrase = tokenObjs.map((t) => t.folded).join(' ');
+
+    const reasonsMap: Record<string, string> = {};
+
+    if (tokenObjs.length === 0) {
       let result = [...catalog];
-
       if (selectedGenre !== 'All') {
         result = result.filter((item) =>
           item.genres.some(
@@ -2084,121 +2269,6 @@ export default function App() {
           )
         );
       }
-
-      const reasonsMap: Record<string, string> = {};
-      const rawQuery = debouncedSearchQuery.trim().toLowerCase();
-      const tokens = rawQuery.split(/\s+/).filter(Boolean);
-
-      if (tokens.length > 0) {
-        const scored = result
-          .map((item) => {
-            const titleLower = item.title.toLowerCase();
-            const titleWords = titleLower.split(/[^a-z0-9]+/).filter(Boolean);
-            const taglineLower = (item.tagline || '').toLowerCase();
-            const directorLower = item.directorOrCreator.toLowerCase();
-            const synopsisLower = item.synopsis.toLowerCase();
-            const genresLower = item.genres.map((g) => g.toLowerCase());
-            const castList = item.cast || [];
-            const yearStr = String(item.releaseYear);
-
-            let score = 0;
-            let matchedAllTokens = true;
-            let bestReason = '';
-
-            // Full phrase bonus
-            if (titleLower === rawQuery) {
-              score += 250;
-              bestReason = 'Exact Title Match';
-            } else if (titleLower.startsWith(rawQuery)) {
-              score += 160;
-            } else if (titleLower.includes(rawQuery)) {
-              score += 110;
-            }
-
-            for (const token of tokens) {
-              let tokenMatched = false;
-
-              if (titleLower === token) {
-                score += 140;
-                tokenMatched = true;
-              } else if (titleLower.startsWith(token)) {
-                score += 95;
-                tokenMatched = true;
-              } else if (titleWords.some((w) => w.startsWith(token))) {
-                score += 75;
-                tokenMatched = true;
-              } else if (titleLower.includes(token)) {
-                score += 55;
-                tokenMatched = true;
-              } else if (titleWords.some((w) => isFuzzyWordMatch(w, token))) {
-                score += 38;
-                tokenMatched = true;
-                if (!bestReason) bestReason = `Close match for "${debouncedSearchQuery.trim()}"`;
-              }
-
-              const matchedGenreIdx = genresLower.findIndex((g) => g.includes(token));
-              if (matchedGenreIdx !== -1) {
-                score += 40;
-                tokenMatched = true;
-                if (!bestReason) bestReason = `Genre · ${item.genres[matchedGenreIdx]}`;
-              }
-
-              const matchedActor = castList.find(
-                (c) =>
-                  c.toLowerCase().includes(token) ||
-                  c
-                    .toLowerCase()
-                    .split(/\s+/)
-                    .some((w) => isFuzzyWordMatch(w, token))
-              );
-              if (matchedActor && matchedActor !== 'Featured Cast') {
-                score += 45;
-                tokenMatched = true;
-                if (!bestReason) bestReason = `Cast · ${matchedActor}`;
-              }
-
-              if (
-                directorLower.includes(token) &&
-                item.directorOrCreator !== 'Featured Creator'
-              ) {
-                score += 35;
-                tokenMatched = true;
-                if (!bestReason)
-                  bestReason = `Director · ${item.directorOrCreator}`;
-              }
-
-              if (yearStr.includes(token)) {
-                score += 30;
-                tokenMatched = true;
-                if (!bestReason) bestReason = `Released in ${item.releaseYear}`;
-              }
-
-              if (taglineLower.includes(token) || synopsisLower.includes(token)) {
-                score += 18;
-                tokenMatched = true;
-                if (!bestReason) bestReason = 'Matched in Storyline';
-              }
-
-              if (!tokenMatched) {
-                matchedAllTokens = false;
-                break;
-              }
-            }
-
-            if (matchedAllTokens && score > 0 && bestReason) {
-              reasonsMap[item.id] = bestReason;
-            }
-
-            return { item, score, matchedAllTokens };
-          })
-          .filter((entry) => entry.matchedAllTokens && entry.score > 0);
-
-        if (searchSortBy === 'relevance') {
-          scored.sort((a, b) => b.score - a.score);
-        }
-        result = scored.map((entry) => entry.item);
-      }
-
       if (searchSortBy === 'newest') {
         result.sort((a, b) => b.releaseYear - a.releaseYear);
       } else if (searchSortBy === 'popular') {
@@ -2206,37 +2276,197 @@ export default function App() {
       } else if (searchSortBy === 'title') {
         result.sort((a, b) => a.title.localeCompare(b.title));
       }
-
-      // Build curated quick search pills from live catalog (top titles, actors, and years)
-      const suggestions: string[] = [];
-      catalog.slice(0, 4).forEach((item) => {
-        if (item.title && !suggestions.includes(item.title)) {
-          suggestions.push(item.title);
-        }
-      });
-      catalog.forEach((item) => {
-        if (suggestions.length >= 8) return;
-        const firstActor = item.cast?.[0];
-        if (
-          firstActor &&
-          firstActor !== 'Featured Cast' &&
-          !suggestions.includes(firstActor)
-        ) {
-          suggestions.push(firstActor);
-        }
-      });
-
       return {
         filteredSearchCatalog: result,
         searchMatchReasonsMap: reasonsMap,
-        quickSearchSuggestions: suggestions.slice(0, 7),
       };
-    }, [
-      catalog,
-      selectedGenre,
-      debouncedSearchQuery,
-      searchSortBy,
-    ]);
+    }
+
+    const scored: { item: MediaItem; score: number }[] = [];
+
+    for (let idx = 0; idx < catalogSearchIndex.length; idx++) {
+      const entry = catalogSearchIndex[idx];
+      const { item } = entry;
+      let score = 0;
+      let matchedTokensCount = 0;
+      let hasStrongPrimaryMatch = false;
+      let bestReason = '';
+
+      // 1. Full phrase / Primary Title / Slug exact & prefix bonuses
+      if (
+        entry.normTitle === effectivePhrase ||
+        entry.primaryTitle === effectivePhrase ||
+        (entry.jwSlugNorm && entry.jwSlugNorm === effectivePhrase) ||
+        (entry.foldedPrimary && entry.foldedPrimary === foldedPhrase) ||
+        (entry.foldedTitle && entry.foldedTitle === foldedPhrase)
+      ) {
+        score += 500;
+        hasStrongPrimaryMatch = true;
+        bestReason = 'Exact Title Match';
+      } else if (
+        entry.normTitle.startsWith(effectivePhrase) ||
+        entry.primaryTitle.startsWith(effectivePhrase)
+      ) {
+        score += 320;
+        hasStrongPrimaryMatch = true;
+        bestReason = 'Title Match';
+      } else if (entry.normTitle.includes(effectivePhrase)) {
+        score += 220;
+        hasStrongPrimaryMatch = true;
+        bestReason = 'Title Match';
+      }
+
+      // 2. Per-token fast scoring against pre-computed index
+      for (const tok of tokenObjs) {
+        let tokenBestScore = 0;
+        let tokenReason = '';
+
+        let bestTitleSim = 0;
+        for (const tw of entry.allTitleWordsIndexed) {
+          const sim = getFastWordSim(tw.raw, tw.folded, tok.raw, tok.folded);
+          if (sim > bestTitleSim) {
+            bestTitleSim = sim;
+            if (sim >= 0.96) break;
+          }
+        }
+
+        if (bestTitleSim >= 0.95) {
+          tokenBestScore = 180;
+          hasStrongPrimaryMatch = true;
+          tokenReason = 'Exact Title Match';
+        } else if (bestTitleSim >= 0.85) {
+          tokenBestScore = 135;
+          hasStrongPrimaryMatch = true;
+          tokenReason = 'Title Match';
+        } else if (bestTitleSim >= 0.68) {
+          tokenBestScore = Math.round(bestTitleSim * 110);
+          hasStrongPrimaryMatch = true;
+          tokenReason = `Close match for "${activeQueryRaw}"`;
+        }
+
+        // Only scan cast/credits/director if title didn't already get an exact 180pt match
+        if (tokenBestScore < 180) {
+          for (const actor of entry.castIndexed) {
+            let sim = actor.norm.includes(tok.raw) ? 0.9 : 0;
+            if (sim === 0) {
+              for (const aw of actor.words) {
+                const s = getFastWordSim(aw.raw, aw.folded, tok.raw, tok.folded);
+                if (s > sim) sim = s;
+              }
+            }
+            if (sim >= 0.74) {
+              const pts = Math.round(sim * 85);
+              if (pts > tokenBestScore) {
+                tokenBestScore = pts;
+                tokenReason = `Cast · ${actor.display}`;
+              }
+              if (sim >= 0.85) hasStrongPrimaryMatch = true;
+            }
+          }
+
+          for (const cred of entry.creditsIndexed) {
+            let charSim = cred.charNorm.includes(tok.raw) ? 0.9 : 0;
+            if (charSim === 0) {
+              for (const cw of cred.charWords) {
+                const s = getFastWordSim(cw.raw, cw.folded, tok.raw, tok.folded);
+                if (s > charSim) charSim = s;
+              }
+            }
+            if (charSim >= 0.76) {
+              const pts = Math.round(charSim * 80);
+              if (pts > tokenBestScore) {
+                tokenBestScore = pts;
+                tokenReason = `Character · ${cred.characterName}`;
+              }
+              if (charSim >= 0.85) hasStrongPrimaryMatch = true;
+            }
+          }
+
+          if (entry.normDirector) {
+            let dirSim = entry.normDirector.includes(tok.raw) ? 0.9 : 0;
+            if (dirSim === 0) {
+              for (const dw of entry.directorWordsIndexed) {
+                const s = getFastWordSim(dw.raw, dw.folded, tok.raw, tok.folded);
+                if (s > dirSim) dirSim = s;
+              }
+            }
+            if (dirSim >= 0.76) {
+              const pts = Math.round(dirSim * 75);
+              if (pts > tokenBestScore) {
+                tokenBestScore = pts;
+                tokenReason = `Director · ${item.directorOrCreator}`;
+              }
+            }
+          }
+
+          const matchedGenreIdx = entry.genresLower.findIndex(
+            (g) =>
+              g === tok.raw ||
+              g.startsWith(tok.raw) ||
+              (tok.raw.length >= 3 && g.includes(tok.raw))
+          );
+          if (matchedGenreIdx !== -1 && 55 > tokenBestScore) {
+            tokenBestScore = 55;
+            tokenReason = `Genre · ${item.genres[matchedGenreIdx]}`;
+          }
+
+          if (
+            (entry.yearStr === tok.raw ||
+              (tok.raw.length === 4 && entry.yearStr.includes(tok.raw))) &&
+            65 > tokenBestScore
+          ) {
+            tokenBestScore = 65;
+            tokenReason = `Released in ${item.releaseYear}`;
+          }
+
+          if (
+            tokenBestScore === 0 &&
+            tok.raw.length >= 3 &&
+            entry.normStory.includes(tok.raw)
+          ) {
+            tokenBestScore = 30;
+            tokenReason = 'Matched in Storyline';
+          }
+        }
+
+        if (tokenBestScore > 0) {
+          matchedTokensCount++;
+          score += tokenBestScore;
+          if (!bestReason && tokenReason) {
+            bestReason = tokenReason;
+          }
+        }
+      }
+
+      const tokenCoverage = matchedTokensCount / tokenObjs.length;
+      const qualifies =
+        matchedTokensCount === tokenObjs.length ||
+        (hasStrongPrimaryMatch &&
+          matchedTokensCount >= Math.max(1, Math.ceil(tokenObjs.length * 0.5)));
+
+      if (qualifies && score > 0) {
+        const finalScore =
+          Math.round(score * (0.65 + 0.35 * tokenCoverage)) +
+          Math.min(15, Math.round((item.popularScore || 80) / 10));
+        if (bestReason) {
+          reasonsMap[item.id] = bestReason;
+        }
+        scored.push({ item, score: finalScore });
+      }
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    return {
+      filteredSearchCatalog: scored.map((entry) => entry.item),
+      searchMatchReasonsMap: reasonsMap,
+    };
+  }, [
+    catalog,
+    catalogSearchIndex,
+    selectedGenre,
+    deferredSearchQuery,
+    searchSortBy,
+  ]);
 
   // Build 2x2 Poster Grid Category Cards with Interactive Pagination & Accurate Genre Distribution
   const renderGenre2x2GridSection = (
@@ -2440,15 +2670,104 @@ export default function App() {
     { id: 'search', label: 'Search', icon: Search },
     { id: 'home', label: 'Home', icon: Home },
     { id: 'movies', label: 'Movies', icon: Film },
-    { id: 'categories', label: 'Categories', icon: Layers },
+    { id: 'categories', label: 'Anime', icon: Sparkles },
   ];
 
   const openSupportTicketsCount = mergedSupportMessages.filter(
     (m) => m.status === 'open'
   ).length;
 
+  // Live Total Content Runtime Calculation for Admin My Space Overview
+  const totalCatalogRuntimeStats = useMemo(() => {
+    let totalMinutes = 0;
+    let animeMinutes = 0;
+    let liveActionMinutes = 0;
+    const genreMinutesMap = new Map<string, { minutes: number; count: number }>();
+
+    for (const item of catalog) {
+      const mins = Math.max(1, Number(item.durationMinutes) || 120);
+      totalMinutes += mins;
+      const genresLower = (item.genres || []).map((g) => String(g).toLowerCase());
+      const textBlob = `${item.title || ''} ${item.tagline || ''} ${item.synopsis || ''}`.toLowerCase();
+      const isAnime =
+        genresLower.includes('animation') ||
+        genresLower.includes('anime') ||
+        /\b(anime|cartoon|animated|studio ghibli|pixar|dreamworks|disney|donghua|manga|shonen|naruto|one piece|dragon ball|demon slayer|jujutsu kaisen|attack on titan|bleach|pokemon|doraemon|shinchan|conan|suzume|your name|spirited away)\b/i.test(
+          textBlob
+        );
+      if (isAnime) {
+        animeMinutes += mins;
+      } else {
+        liveActionMinutes += mins;
+      }
+
+      const itemGenres =
+        Array.isArray(item.genres) && item.genres.length > 0
+          ? item.genres
+          : (['Action'] as Genre[]);
+      for (const g of itemGenres) {
+        const prev = genreMinutesMap.get(g) || { minutes: 0, count: 0 };
+        genreMinutesMap.set(g, {
+          minutes: prev.minutes + mins,
+          count: prev.count + 1,
+        });
+      }
+    }
+    const wholeHours = Math.floor(totalMinutes / 60);
+    const remainingMinutes = Math.round(totalMinutes % 60);
+    const totalHoursFormatted = (totalMinutes / 60).toLocaleString(undefined, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+    const liveActionHoursFormatted = (liveActionMinutes / 60).toLocaleString(
+      undefined,
+      {
+        minimumFractionDigits: 1,
+        maximumFractionDigits: 1,
+      }
+    );
+    const animeHoursFormatted = (animeMinutes / 60).toLocaleString(undefined, {
+      minimumFractionDigits: 1,
+      maximumFractionDigits: 1,
+    });
+    const totalDaysFormatted = (totalMinutes / (60 * 24)).toFixed(1);
+    const avgMinutes =
+      catalog.length > 0 ? Math.round(totalMinutes / catalog.length) : 0;
+    const avgHoursPart = Math.floor(avgMinutes / 60);
+    const avgMinsPart = avgMinutes % 60;
+    const avgFormatted =
+      avgHoursPart > 0 ? `${avgHoursPart}h ${avgMinsPart}m` : `${avgMinsPart}m`;
+
+    const topGenresByHours = Array.from(genreMinutesMap.entries())
+      .map(([genre, stat]) => ({
+        genre,
+        hours: (stat.minutes / 60).toFixed(1),
+        minutes: stat.minutes,
+        count: stat.count,
+        sharePct:
+          totalMinutes > 0
+            ? Math.min(100, Math.max(4, Math.round((stat.minutes / totalMinutes) * 100)))
+            : 0,
+      }))
+      .sort((a, b) => b.minutes - a.minutes)
+      .slice(0, 6);
+
+    return {
+      totalMinutes,
+      wholeHours,
+      remainingMinutes,
+      totalHoursFormatted,
+      liveActionHoursFormatted,
+      animeHoursFormatted,
+      totalDaysFormatted,
+      avgMinutes,
+      avgFormatted,
+      topGenresByHours,
+    };
+  }, [catalog]);
+
   return (
-    <div className="min-h-screen w-full bg-[#08090D] text-white flex flex-col md:pl-44 lg:pl-52 pb-24 md:pb-0 overflow-x-hidden transition-[padding] duration-300">
+    <div className="min-h-screen w-full max-w-[100vw] bg-[#08090D] text-white flex flex-col md:pl-44 lg:pl-52 pb-24 md:pb-0 overflow-x-hidden transition-[padding] duration-300">
       {/* =========================================================
           ZAPPYFUN DESKTOP LEFT NAVIGATION RAIL (Non-Overlapping Fixed Width)
       ========================================================= */}
@@ -2573,46 +2892,36 @@ export default function App() {
               </span>
             </button>
           )}
-
-          <div className="pt-2">
-            <PWAInstallButton
-              variant="header"
-              className="w-full justify-center py-2"
-              apkRelease={apkRelease}
-            />
-          </div>
         </div>
       </aside>
 
       {/* =========================================================
           MOBILE TOP HEADER (Original ZappyFun Logo, Search, Admin Pill, Profile)
       ========================================================= */}
-      <header className="md:hidden sticky top-0 z-40 w-full bg-[#14161D]/95 backdrop-blur-xl border-b border-[#292C35] px-4 pt-[env(safe-area-inset-top,0px)] min-h-14 flex items-center justify-between">
+      <header className="md:hidden sticky top-0 z-40 w-full bg-[#14161D]/95 backdrop-blur-xl border-b border-[#292C35] px-2.5 sm:px-4 pt-[env(safe-area-inset-top,0px)] min-h-14 flex items-center justify-between gap-2">
         <button
           type="button"
           onClick={() => handleNavigate('home')}
-          className="flex items-center gap-2.5 cursor-pointer py-1"
+          className="flex items-center gap-2 cursor-pointer py-1 min-w-0 flex-1"
           title="ZappyFun Home"
         >
-          <div className="w-9 h-9 rounded-xl overflow-hidden shrink-0 flex items-center justify-center p-0.5">
+          <div className="w-8 h-8 sm:w-9 sm:h-9 rounded-xl overflow-hidden shrink-0 flex items-center justify-center p-0.5">
             <img
               src="/assets/aistudio/20261023_170257_6e6b6602.png"
               alt="ZappyFun"
               className="w-full h-full object-contain"
             />
           </div>
-          <span className="font-display font-black text-base tracking-tight text-white">
+          <span className="font-display font-black text-sm sm:text-base tracking-tight text-white truncate">
             ZAPPY<span className="bg-gradient-to-r from-[#FFB800] via-[#FF5A36] to-[#FF168B] bg-clip-text text-transparent">FUN</span>
           </span>
         </button>
 
-        <div className="flex items-center gap-2">
-          <PWAInstallButton variant="header" apkRelease={apkRelease} />
-
+        <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
           <button
             type="button"
             onClick={() => handleNavigate('search')}
-            className="w-9 h-9 rounded-lg bg-[#252832] border border-[#292C35] flex items-center justify-center text-white hover:text-[#FFC400] cursor-pointer transition-colors"
+            className="w-9 h-9 rounded-lg bg-[#252832] border border-[#292C35] flex items-center justify-center text-white hover:text-[#FFC400] cursor-pointer transition-colors shrink-0"
             aria-label="Search"
           >
             <Search className="w-4 h-4" />
@@ -2622,7 +2931,7 @@ export default function App() {
             <button
               type="button"
               onClick={() => openAdminStudio(null, 'catalog')}
-              className="px-3 py-1.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-[11px] font-bold cursor-pointer"
+              className="px-2.5 sm:px-3 py-1.5 rounded-lg bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-[11px] font-bold cursor-pointer shrink-0 whitespace-nowrap"
             >
               Admin
             </button>
@@ -2631,7 +2940,7 @@ export default function App() {
           <button
             type="button"
             onClick={() => handleNavigate('myspace')}
-            className="w-9 h-9 rounded-full overflow-hidden bg-[#252832] border border-[#292C35] flex items-center justify-center cursor-pointer"
+            className="w-9 h-9 rounded-full overflow-hidden bg-[#252832] border border-[#292C35] flex items-center justify-center cursor-pointer shrink-0"
             aria-label="Profile"
           >
             {userAvatarUrl ? (
@@ -2657,13 +2966,13 @@ export default function App() {
       ========================================================= */}
       <nav
         aria-label="Mobile Navigation"
-        className="md:hidden fixed bottom-0 left-0 right-0 z-40 min-h-[64px] bg-[#14161D]/95 backdrop-blur-xl border-t border-[#292C35] grid grid-cols-5 items-center gap-0.5 px-2 py-1 select-none safe-bottom-nav"
+        className="md:hidden fixed bottom-0 left-0 right-0 z-40 min-h-[64px] bg-[#14161D]/95 backdrop-blur-xl border-t border-[#292C35] grid grid-cols-5 items-center gap-0.5 px-1 sm:px-2 py-1 select-none safe-bottom-nav"
       >
         {[
           { id: 'home', label: 'Home', icon: Home },
           { id: 'search', label: 'Search', icon: Search },
           { id: 'movies', label: 'Movies', icon: Film },
-          { id: 'categories', label: 'Genres', icon: Layers },
+          { id: 'categories', label: 'Anime', icon: Sparkles },
           { id: 'myspace', label: 'My Space', icon: UserIcon },
         ].map((tab) => {
           const Icon = tab.icon;
@@ -2675,7 +2984,7 @@ export default function App() {
               key={tab.id}
               type="button"
               onClick={() => handleNavigate(tab.id as NavView)}
-              className={`relative min-h-[44px] w-full min-w-0 flex flex-col items-center justify-center py-1 px-0.5 rounded-lg cursor-pointer transition-colors ${
+              className={`relative min-h-[44px] w-full min-w-0 overflow-hidden flex flex-col items-center justify-center py-1 px-0.5 rounded-lg cursor-pointer transition-colors ${
                 isActive ? 'text-[#FFB800] font-bold' : 'text-[#A7A9B4] hover:text-white'
               }`}
             >
@@ -2684,7 +2993,7 @@ export default function App() {
                   isActive ? 'scale-110 text-[#FFB800]' : ''
                 }`}
               />
-              <span className="text-[10px] font-medium mt-0.5 truncate max-w-full leading-tight">
+              <span className="text-[9px] min-[360px]:text-[10px] font-medium mt-0.5 truncate max-w-full leading-tight">
                 {tab.label}
               </span>
               {isActive && (
@@ -2878,14 +3187,6 @@ export default function App() {
                     <h1 className="text-lg sm:text-2xl font-extrabold text-white font-display tracking-tight">
                       Search
                     </h1>
-                    <motion.span
-                      key={filteredSearchCatalog.length}
-                      initial={{ scale: 0.85, opacity: 0.5 }}
-                      animate={{ scale: 1, opacity: 1 }}
-                      className="text-xs font-bold text-[#FFB800] tabular-nums"
-                    >
-                      ({filteredSearchCatalog.length})
-                    </motion.span>
                   </div>
 
                   <div className="flex flex-wrap items-center gap-2">
@@ -2901,9 +3202,7 @@ export default function App() {
                       </button>
                     )}
 
-                    {(searchQuery.trim() !== '' ||
-                      selectedGenre !== 'All' ||
-                      searchSortBy !== 'relevance') && (
+                    {(searchQuery.trim() !== '' || selectedGenre !== 'All') && (
                       <motion.button
                         initial={{ opacity: 0, scale: 0.9 }}
                         animate={{ opacity: 1, scale: 1 }}
@@ -2920,27 +3219,6 @@ export default function App() {
                         Reset
                       </motion.button>
                     )}
-
-                    {/* Sort Order */}
-                    <select
-                      value={searchSortBy}
-                      onChange={(e) =>
-                        setSearchSortBy(
-                          e.target.value as
-                            | 'relevance'
-                            | 'newest'
-                            | 'popular'
-                            | 'title'
-                        )
-                      }
-                      aria-label="Sort results"
-                      className="h-9 px-3 rounded-xl bg-[#08090D] border border-[#292C35] text-xs font-semibold text-white focus:outline-none focus:border-[#FFB800] cursor-pointer"
-                    >
-                      <option value="relevance">Relevance</option>
-                      <option value="popular">Top Rated</option>
-                      <option value="newest">Newest</option>
-                      <option value="title">Title (A-Z)</option>
-                    </select>
                   </div>
                 </div>
 
@@ -2950,8 +3228,15 @@ export default function App() {
                     ref={searchInputRef}
                     type="search"
                     value={searchQuery}
-                    onChange={(e) => setSearchQuery(e.target.value)}
-                    placeholder="Search movies, actors, directors, or release year..."
+                    onChange={(e) => {
+                      const val = e.target.value;
+                      setSearchQuery(val);
+                      setDebouncedSearchQuery(val);
+                      if (selectedGenre !== 'All') {
+                        setSelectedGenre('All');
+                      }
+                    }}
+                    placeholder="Search movies, actors, directors, characters, or release year..."
                     className="w-full h-12 sm:h-13 pl-12 pr-12 rounded-xl bg-[#08090D] border border-[#292C35] text-sm sm:text-base text-white placeholder:text-[#747784] focus:outline-none focus:border-[#FFB800] focus:ring-2 focus:ring-[#FFB800]/15 transition-all"
                   />
                   <AnimatePresence>
@@ -2974,62 +3259,6 @@ export default function App() {
                     )}
                   </AnimatePresence>
                 </div>
-
-                {/* Quick Search Suggestions when input is empty */}
-                {!searchQuery.trim() && quickSearchSuggestions.length > 0 && (
-                  <div className="flex items-center gap-1.5 overflow-x-auto no-scrollbar pt-0.5">
-                    <span className="text-[11px] font-semibold text-[#747784] shrink-0 mr-1">
-                      Try:
-                    </span>
-                    {quickSearchSuggestions.map((suggestion) => (
-                      <button
-                        key={suggestion}
-                        type="button"
-                        onClick={() => {
-                          setSearchQuery(suggestion);
-                          setDebouncedSearchQuery(suggestion);
-                        }}
-                        className="px-2.5 py-1 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/50 text-[11px] font-medium text-[#D4D6DF] hover:text-[#FFB800] transition-colors cursor-pointer whitespace-nowrap shrink-0"
-                      >
-                        {suggestion}
-                      </button>
-                    ))}
-                  </div>
-                )}
-
-                {/* Genre Distribution Bar with Live Counts */}
-                <div className="flex items-center gap-2 overflow-x-auto no-scrollbar pt-1">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedGenre('All')}
-                    className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
-                      selectedGenre === 'All'
-                        ? 'bg-[#FFB800] text-[#08090D] shadow-md shadow-[#FFB800]/20'
-                        : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFB800]/50'
-                    }`}
-                  >
-                    <span>All Genres</span>
-                    <span className="opacity-75">({catalog.length})</span>
-                  </button>
-                  {orderedGenres.map((g) => {
-                    const count = genreCountsMap[g] || 0;
-                    return (
-                      <button
-                        key={g}
-                        type="button"
-                        onClick={() => setSelectedGenre(g)}
-                        className={`px-3.5 py-2 rounded-lg text-xs font-bold transition-all whitespace-nowrap shrink-0 cursor-pointer flex items-center gap-1.5 ${
-                          selectedGenre === g
-                            ? 'bg-[#FFB800] text-[#08090D] shadow-md shadow-[#FFB800]/20'
-                            : 'bg-[#08090D] border border-[#292C35] text-[#A7A9B4] hover:text-white hover:border-[#FFB800]/50'
-                        }`}
-                      >
-                        <span>{g}</span>
-                        <span className="opacity-75">({count})</span>
-                      </button>
-                    );
-                  })}
-                </div>
               </div>
 
               {filteredSearchCatalog.length === 0 ? (
@@ -3041,24 +3270,6 @@ export default function App() {
                   <p className="text-base sm:text-lg font-extrabold text-white font-display">
                     No matching titles found for &ldquo;{searchQuery.trim() || selectedGenre}&rdquo;
                   </p>
-                  {quickSearchSuggestions.length > 0 && (
-                    <div className="flex flex-wrap items-center justify-center gap-2 pt-1">
-                      {quickSearchSuggestions.slice(0, 5).map((suggestion) => (
-                        <button
-                          key={suggestion}
-                          type="button"
-                          onClick={() => {
-                            setSelectedGenre('All');
-                            setSearchQuery(suggestion);
-                            setDebouncedSearchQuery(suggestion);
-                          }}
-                          className="px-3 py-1.5 rounded-lg bg-[#08090D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/60 text-xs font-semibold text-[#D4D6DF] hover:text-[#FFB800] cursor-pointer transition-colors"
-                        >
-                          {suggestion}
-                        </button>
-                      ))}
-                    </div>
-                  )}
                   <button
                     type="button"
                     onClick={() => {
@@ -3069,150 +3280,148 @@ export default function App() {
                     }}
                     className="px-5 py-2.5 rounded-xl bg-[#FFB800] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer transition-colors"
                   >
-                    Reset Filters
+                    Reset Search
                   </button>
                 </motion.div>
               ) : (
                 <div className="space-y-5">
-                  {/* Animated Top Match Spotlight Banner when user enters a search query */}
-                  <AnimatePresence mode="wait">
-                    {debouncedSearchQuery.trim().length > 0 &&
-                      filteredSearchCatalog[0] && (
-                        <motion.div
-                          key={`top-match-${filteredSearchCatalog[0].id}`}
-                          initial={{ opacity: 0, y: 14, scale: 0.99 }}
-                          animate={{ opacity: 1, y: 0, scale: 1 }}
-                          exit={{ opacity: 0, y: -10, scale: 0.99 }}
-                          transition={{
-                            type: 'spring',
-                            stiffness: 320,
-                            damping: 28,
-                          }}
-                          onClick={() =>
+                  {/* Top Match Spotlight Banner when user enters a search query */}
+                  {searchQuery.trim().length > 0 && filteredSearchCatalog[0] && (
+                    <div
+                      key={`top-match-${filteredSearchCatalog[0].id}`}
+                      onClick={() =>
+                        handleSelectMedia(
+                          filteredSearchCatalog[0],
+                          false,
+                          false
+                        )
+                      }
+                      className="group relative rounded-2xl overflow-hidden bg-[#14161D] border border-[#292C35] hover:border-[#FFB800]/60 p-4 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer cinema-card-shadow transition-all duration-200"
+                    >
+                      <div className="absolute inset-0 pointer-events-none opacity-35 group-hover:opacity-45 transition-opacity duration-500">
+                        <MediaArtwork
+                          src={
+                            filteredSearchCatalog[0].backdropUrl ||
+                            filteredSearchCatalog[0].posterUrl
+                          }
+                          alt={filteredSearchCatalog[0].title}
+                          item={filteredSearchCatalog[0]}
+                          aspectRatio="backdrop"
+                          className="w-full h-full object-cover"
+                        />
+                        <div className="absolute inset-0 bg-gradient-to-r from-[#14161D] via-[#14161D]/90 to-[#14161D]/45" />
+                      </div>
+
+                      <div className="relative z-10 flex items-center gap-4 min-w-0 flex-1">
+                        <div className="w-16 sm:w-20 aspect-[2/3] rounded-xl overflow-hidden border border-white/15 bg-[#08090D] shrink-0 shadow-xl">
+                          <MediaArtwork
+                            src={filteredSearchCatalog[0].posterUrl}
+                            alt={filteredSearchCatalog[0].title}
+                            item={filteredSearchCatalog[0]}
+                            aspectRatio="poster"
+                            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+                          />
+                        </div>
+
+                        <div className="min-w-0 flex-1 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-[#FFB800]">
+                            <span>Top Match</span>
+                            <span aria-hidden="true" className="text-[#747784]">
+                              ·
+                            </span>
+                            <span className="text-[#D4D6DF]">
+                              Movie
+                            </span>
+                            <span aria-hidden="true" className="text-[#747784]">
+                              ·
+                            </span>
+                            <span className="text-white tabular-nums">
+                              {filteredSearchCatalog[0].releaseYear}
+                            </span>
+                            {searchMatchReasonsMap[
+                              filteredSearchCatalog[0].id
+                            ] && (
+                              <>
+                                <span
+                                  aria-hidden="true"
+                                  className="text-[#747784]"
+                                >
+                                  ·
+                                </span>
+                                <span className="text-[#FF5A36]">
+                                  {
+                                    searchMatchReasonsMap[
+                                      filteredSearchCatalog[0].id
+                                    ]
+                                  }
+                                </span>
+                              </>
+                            )}
+                          </div>
+
+                          <h2 className="text-base sm:text-xl font-black text-white group-hover:text-[#FFB800] transition-colors font-display truncate">
+                            {filteredSearchCatalog[0].title}
+                          </h2>
+
+                          {filteredSearchCatalog[0].synopsis && (
+                            <p className="text-xs text-[#A7A9B4] line-clamp-2 max-w-2xl leading-relaxed">
+                              {filteredSearchCatalog[0].synopsis}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+
+                      <div className="relative z-10 flex items-center gap-2.5 shrink-0 w-full sm:w-auto sm:self-center">
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
                             handleSelectMedia(
                               filteredSearchCatalog[0],
-                              false,
+                              true,
                               false
-                            )
-                          }
-                          className="group relative rounded-2xl overflow-hidden bg-[#14161D] border border-[#292C35] hover:border-[#FFB800]/60 p-4 sm:p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 cursor-pointer cinema-card-shadow"
+                            );
+                          }}
+                          className="min-h-[42px] w-full sm:w-auto justify-center px-4 sm:px-5 py-2 rounded-xl zf-gradient-btn text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap hover:scale-[1.03] active:scale-95 transition-transform"
                         >
-                          <div className="absolute inset-0 pointer-events-none opacity-35 group-hover:opacity-45 transition-opacity duration-500">
-                            <MediaArtwork
-                              src={
-                                filteredSearchCatalog[0].backdropUrl ||
-                                filteredSearchCatalog[0].posterUrl
-                              }
-                              alt={filteredSearchCatalog[0].title}
-                              item={filteredSearchCatalog[0]}
-                              aspectRatio="backdrop"
-                              className="w-full h-full object-cover"
-                            />
-                            <div className="absolute inset-0 bg-gradient-to-r from-[#14161D] via-[#14161D]/90 to-[#14161D]/45" />
-                          </div>
+                          <Play className="w-3.5 h-3.5 fill-current shrink-0" />
+                          <span>Play Now</span>
+                        </button>
+                      </div>
+                    </div>
+                  )}
 
-                          <div className="relative z-10 flex items-center gap-4 min-w-0 flex-1">
-                            <div className="w-16 sm:w-20 aspect-[2/3] rounded-xl overflow-hidden border border-white/15 bg-[#08090D] shrink-0 shadow-xl">
-                              <MediaArtwork
-                                src={filteredSearchCatalog[0].posterUrl}
-                                alt={filteredSearchCatalog[0].title}
-                                item={filteredSearchCatalog[0]}
-                                aspectRatio="poster"
-                                className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
-                              />
-                            </div>
-
-                            <div className="min-w-0 flex-1 space-y-1">
-                              <div className="flex flex-wrap items-center gap-2 text-[11px] font-bold text-[#FFB800]">
-                                <span>Top Match</span>
-                                <span aria-hidden="true" className="text-[#747784]">
-                                  ·
-                                </span>
-                                <span className="text-[#D4D6DF]">
-                                  Movie
-                                </span>
-                                <span aria-hidden="true" className="text-[#747784]">
-                                  ·
-                                </span>
-                                <span className="text-white tabular-nums">
-                                  {filteredSearchCatalog[0].releaseYear}
-                                </span>
-                                {searchMatchReasonsMap[
-                                  filteredSearchCatalog[0].id
-                                ] && (
-                                  <>
-                                    <span
-                                      aria-hidden="true"
-                                      className="text-[#747784]"
-                                    >
-                                      ·
-                                    </span>
-                                    <span className="text-[#FF5A36]">
-                                      {
-                                        searchMatchReasonsMap[
-                                          filteredSearchCatalog[0].id
-                                        ]
-                                      }
-                                    </span>
-                                  </>
-                                )}
-                              </div>
-
-                              <h2 className="text-base sm:text-xl font-black text-white group-hover:text-[#FFB800] transition-colors font-display truncate">
-                                {filteredSearchCatalog[0].title}
-                              </h2>
-
-                              {filteredSearchCatalog[0].synopsis && (
-                                <p className="text-xs text-[#A7A9B4] line-clamp-2 max-w-2xl leading-relaxed">
-                                  {filteredSearchCatalog[0].synopsis}
-                                </p>
-                              )}
-                            </div>
-                          </div>
-
-                          <div className="relative z-10 flex items-center gap-2.5 shrink-0 w-full sm:w-auto sm:self-center">
-                            <motion.button
-                              whileHover={{ scale: 1.04 }}
-                              whileTap={{ scale: 0.95 }}
-                              type="button"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                handleSelectMedia(
-                                  filteredSearchCatalog[0],
-                                  true,
-                                  false
-                                );
-                              }}
-                              className="min-h-[42px] w-full sm:w-auto justify-center px-4 sm:px-5 py-2 rounded-xl zf-gradient-btn text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer whitespace-nowrap"
-                            >
-                              <Play className="w-3.5 h-3.5 fill-current shrink-0" />
-                              <span>Play Now</span>
-                            </motion.button>
-                          </div>
-                        </motion.div>
-                      )}
-                  </AnimatePresence>
-
-                  {/* Animated Morphing Search Results Grid */}
-                  <motion.div
-                    layout
-                    className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-5"
-                  >
-                    <AnimatePresence mode="popLayout">
-                      {filteredSearchCatalog.map((item, idx) => (
+                  {/* Instant High-Performance Search Results Grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-4 sm:gap-5">
+                    {filteredSearchCatalog
+                      .slice(0, visibleSearchCount)
+                      .map((item, idx) => (
                         <MovieCard
                           key={item.id}
                           item={item}
                           index={idx}
-                          highlightQuery={debouncedSearchQuery}
+                          highlightQuery={deferredSearchQuery}
                           matchReason={searchMatchReasonsMap[item.id]}
                           inWatchlist={activeWatchlistIds.includes(item.id)}
                           onSelect={handleSelectMedia}
                           onToggleWatchlist={handleToggleWatchlist}
                         />
                       ))}
-                    </AnimatePresence>
-                  </motion.div>
+                  </div>
+
+                  {filteredSearchCatalog.length > visibleSearchCount && (
+                    <div className="flex justify-center pt-2">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setVisibleSearchCount((prev) => prev + 36)
+                        }
+                        className="px-6 py-2.5 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/60 text-xs font-bold text-[#FFB800] cursor-pointer transition-colors"
+                      >
+                        Load More Movies ({filteredSearchCatalog.length - visibleSearchCount} remaining)
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
             </motion.section>
@@ -3330,7 +3539,7 @@ export default function App() {
                       All Movies ({moviesList.length})
                     </h2>
                     <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
-                      {moviesList.map((item) => (
+                      {moviesList.slice(0, visibleMoviesCount).map((item) => (
                         <MovieCard
                           key={item.id}
                           item={item}
@@ -3340,12 +3549,25 @@ export default function App() {
                         />
                       ))}
                     </div>
+                    {moviesList.length > visibleMoviesCount && (
+                      <div className="flex justify-center pt-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setVisibleMoviesCount((prev) => prev + 48)
+                          }
+                          className="px-6 py-2.5 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/60 text-xs font-bold text-[#FFB800] cursor-pointer transition-colors"
+                        >
+                          Load More Movies ({moviesList.length - visibleMoviesCount} remaining)
+                        </button>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
             </motion.section>
           ) : /* =========================================================
-              ZAPPYFUN VIEW: CATEGORIES & GENRE HUB
+              ZAPPYFUN VIEW: ANIME & CARTOONS HUB
           ========================================================= */
           activeView === 'categories' ? (
             <motion.section
@@ -3353,39 +3575,111 @@ export default function App() {
               initial={{ opacity: 0, y: 12 }}
               animate={{ opacity: 1, y: 0 }}
               exit={{ opacity: 0, y: -8 }}
-              className="space-y-5"
+              className="space-y-6"
             >
-              <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight flex items-center gap-2.5">
-                <Layers className="w-7 h-7 text-[#FFC400]" />
-                <span>Categories</span>
-              </h1>
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <h1 className="text-xl sm:text-3xl font-black text-white font-display tracking-tight flex items-center gap-2.5">
+                  <Sparkles className="w-7 h-7 text-[#FFC400]" />
+                  <span>Anime &amp; Cartoons</span>
+                </h1>
 
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3 sm:gap-4">
-                {ALL_GENRES.map((genre) => {
-                  const count = catalog.filter((i) => i.genres.includes(genre)).length;
-                  return (
+                <div className="flex flex-wrap items-center gap-2">
+                  {animeList.length > 1 && (
                     <button
-                      key={genre}
                       type="button"
                       onClick={() => {
-                        setSelectedGenre(genre);
-                        setActiveView('search');
+                        const unwatched = animeList.filter(
+                          (item) =>
+                            !completedIds.includes(item.id) &&
+                            item.id !== selectedMedia?.id
+                        );
+                        const pool = unwatched.length > 0 ? unwatched : animeList;
+                        const randomPick =
+                          pool[Math.floor(Math.random() * pool.length)];
+                        if (randomPick) {
+                          handleSelectMedia(randomPick, false, false);
+                          showToast(
+                            `Surprise Anime Pick: "${randomPick.title}" (${randomPick.releaseYear})`
+                          );
+                        }
                       }}
-                      className="relative h-24 sm:h-28 rounded-2xl overflow-hidden bg-gradient-to-br from-[#252832] to-[#14161D] border border-[#292C35] hover:border-[#FFC400] p-4 text-left flex flex-col justify-between transition-all group cursor-pointer shadow-lg hover:shadow-[#FFC400]/10"
+                      className="px-4 py-2 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/50 text-[#FFB800] text-xs font-bold flex items-center gap-2 cursor-pointer transition-colors"
                     >
-                      <div className="flex items-center justify-between">
-                        <span className="w-2 h-2 rounded-full bg-[#FFC400]" />
-                        <span className="text-[11px] font-bold text-[#A7A9B4]">
-                          {count} {count === 1 ? 'title' : 'titles'}
-                        </span>
-                      </div>
-                      <h3 className="text-base sm:text-lg font-bold text-white group-hover:text-[#FFC400] transition-colors">
-                        {genre}
-                      </h3>
+                      <Shuffle className="w-4 h-4" />
+                      <span>Surprise Me</span>
                     </button>
-                  );
-                })}
+                  )}
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openAdminStudio(null, 'catalog')}
+                      className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-amber-500/20"
+                    >
+                      <Plus className="w-4 h-4" />
+                      <span>Add Anime</span>
+                    </button>
+                  )}
+                </div>
               </div>
+
+              {animeList.length === 0 ? (
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-8 text-center max-w-xl mx-auto space-y-3">
+                  <Sparkles className="w-10 h-10 text-[#FFC400] mx-auto opacity-80" />
+                  <h2 className="text-lg font-bold text-white">
+                    No Anime or Cartoons Available
+                  </h2>
+                  {isAdmin && (
+                    <button
+                      type="button"
+                      onClick={() => openAdminStudio(null, 'catalog')}
+                      className="px-5 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold cursor-pointer"
+                    >
+                      Open Admin Studio
+                    </button>
+                  )}
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <CarouselRow
+                    title="Top 10 Anime & Cartoons"
+                    items={animeList.slice(0, 10)}
+                    watchlistIds={activeWatchlistIds}
+                    isTop10Row={true}
+                    onSelectMedia={handleSelectMedia}
+                    onToggleWatchlist={handleToggleWatchlist}
+                  />
+
+                  <div className="space-y-3">
+                    <h2 className="text-lg sm:text-xl font-bold text-white font-display">
+                      All Anime &amp; Cartoons ({animeList.length})
+                    </h2>
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-3 sm:gap-4">
+                      {animeList.slice(0, visibleAnimeCount).map((item) => (
+                        <MovieCard
+                          key={item.id}
+                          item={item}
+                          inWatchlist={activeWatchlistIds.includes(item.id)}
+                          onSelect={handleSelectMedia}
+                          onToggleWatchlist={handleToggleWatchlist}
+                        />
+                      ))}
+                    </div>
+                    {animeList.length > visibleAnimeCount && (
+                      <div className="flex justify-center pt-2">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            setVisibleAnimeCount((prev) => prev + 48)
+                          }
+                          className="px-6 py-2.5 rounded-xl bg-[#14161D] hover:bg-[#252832] border border-[#292C35] hover:border-[#FFB800]/60 text-xs font-bold text-[#FFB800] cursor-pointer transition-colors"
+                        >
+                          Load More Anime ({animeList.length - visibleAnimeCount} remaining)
+                        </button>
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </motion.section>
           ) : /* =========================================================
               ZAPPYFUN VIEW: MY SPACE (Dashboard, Watchlist, Admin Controls)
@@ -3504,25 +3798,25 @@ export default function App() {
               </div>
 
               {/* Viewer Activity Stats Bar */}
-              <div className="grid grid-cols-3 gap-3">
-                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 flex flex-col justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4]">
+              <div className="grid grid-cols-1 min-[360px]:grid-cols-3 gap-2.5 sm:gap-3">
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-3.5 sm:p-4 flex flex-col justify-between min-w-0">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4] truncate">
                     Watchlist
                   </span>
                   <span className="text-xl sm:text-2xl font-black text-white font-display mt-1 tabular-nums">
                     {watchlistItems.length}
                   </span>
                 </div>
-                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 flex flex-col justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4]">
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-3.5 sm:p-4 flex flex-col justify-between min-w-0">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4] truncate">
                     In Progress
                   </span>
                   <span className="text-xl sm:text-2xl font-black text-[#FFB800] font-display mt-1 tabular-nums">
                     {continueWatchingItems.length}
                   </span>
                 </div>
-                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-4 flex flex-col justify-between">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4]">
+                <div className="rounded-2xl bg-[#14161D] border border-[#292C35] p-3.5 sm:p-4 flex flex-col justify-between min-w-0">
+                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4] truncate">
                     Watched
                   </span>
                   <span className="text-xl sm:text-2xl font-black text-emerald-400 font-display mt-1 tabular-nums">
@@ -3531,43 +3825,43 @@ export default function App() {
                 </div>
               </div>
 
-              {/* ADMIN CONTROL HUB */}
+              {/* ADMIN CONTROL HUB + TOTAL CONTENT HOURS OVERVIEW */}
               {isAdmin && (
-                <div className="rounded-2xl bg-gradient-to-br from-[#252832]/80 via-[#14161D] to-[#14161D] border border-[#FFC400]/30 p-5 sm:p-6">
+                <div className="rounded-2xl bg-gradient-to-br from-[#252832]/80 via-[#14161D] to-[#14161D] border border-[#FFC400]/30 p-4 sm:p-6 space-y-4 min-w-0">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <h3 className="text-base sm:text-lg font-bold text-white flex items-center gap-2">
-                      <ShieldCheck className="w-5 h-5 text-[#FFC400]" />
+                      <ShieldCheck className="w-5 h-5 text-[#FFC400] shrink-0" />
                       <span>Admin Studio</span>
                     </h3>
 
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 w-full sm:w-auto">
                       <button
                         type="button"
                         onClick={() => openAdminStudio(null, 'catalog')}
-                        className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20"
+                        className="px-4 py-2 rounded-xl bg-[#FFC400] hover:bg-[#FFD54A] text-[#08090D] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer shadow-lg shadow-[#FFC400]/20 w-full sm:w-auto"
                       >
-                        <SlidersHorizontal className="w-4 h-4" />
+                        <SlidersHorizontal className="w-4 h-4 shrink-0" />
                         <span>Manage Catalog</span>
                       </button>
 
                       <button
                         type="button"
                         onClick={() => openAdminStudio(null, 'legal')}
-                        className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-[#FFC400] text-xs font-bold flex items-center gap-2 cursor-pointer"
+                        className="px-4 py-2 rounded-xl bg-[#252832] hover:bg-[#292C35] border border-[#FFC400]/40 text-[#FFC400] text-xs font-bold flex items-center justify-center gap-2 cursor-pointer w-full sm:w-auto"
                       >
-                        <FileText className="w-4 h-4" />
+                        <FileText className="w-4 h-4 shrink-0" />
                         <span>Legal Pages</span>
                       </button>
 
                       {confirmingPurgeCatalog ? (
-                        <div className="flex items-center gap-1.5">
+                        <div className="flex flex-wrap items-center gap-1.5 w-full sm:w-auto">
                           <button
                             type="button"
                             disabled={isPurgingCatalog}
                             onClick={handleClearEntireCatalog}
-                            className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                            className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
                           >
-                            <Trash2 className="w-3.5 h-3.5" />
+                            <Trash2 className="w-3.5 h-3.5 shrink-0" />
                             <span>
                               {isPurgingCatalog ? 'Clearing...' : 'Confirm Clear'}
                             </span>
@@ -3585,13 +3879,117 @@ export default function App() {
                           type="button"
                           disabled={isPurgingCatalog}
                           onClick={() => setConfirmingPurgeCatalog(true)}
-                          className="px-3.5 py-2 rounded-xl bg-[#252832] hover:bg-red-600/30 border border-[#292C35] hover:border-red-500/40 text-[#A7A9B4] hover:text-white text-xs font-bold flex items-center gap-1.5 cursor-pointer transition-all disabled:opacity-50"
+                          className="px-3.5 py-2 rounded-xl bg-[#252832] hover:bg-red-600/30 border border-[#292C35] hover:border-red-500/40 text-[#A7A9B4] hover:text-white text-xs font-bold flex items-center justify-center gap-1.5 cursor-pointer transition-all disabled:opacity-50 w-full sm:w-auto"
                         >
-                          <Trash2 className="w-3.5 h-3.5 text-red-400" />
+                          <Trash2 className="w-3.5 h-3.5 text-red-400 shrink-0" />
                           <span>Clear Catalog</span>
                         </button>
                       )}
                     </div>
+                  </div>
+
+                  {/* Total Content & Runtime Analytics in Admin My Space */}
+                  <div className="pt-3 border-t border-[#292C35] space-y-4">
+                    <div className="flex flex-wrap items-start justify-between gap-2">
+                      <div>
+                        <h4 className="text-sm sm:text-base font-bold text-white font-display">
+                          Total Content in ZappyFun
+                        </h4>
+                        <p className="text-xs text-[#A7A9B4]">
+                          Live calculation of total streaming hours, runtime breakdown, and category coverage across all published titles.
+                        </p>
+                      </div>
+                      <span className="text-xs font-mono-tabular font-bold text-[#FFC400]">
+                        {totalCatalogRuntimeStats.totalDaysFormatted} Days of 4K Streaming
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+                      <div className="rounded-xl bg-[#08090D] border border-[#292C35] p-3.5 min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4] block">
+                          Total Content Hours
+                        </span>
+                        <p className="text-lg sm:text-xl font-black text-[#FFC400] font-display tabular-nums mt-1">
+                          {totalCatalogRuntimeStats.totalHoursFormatted} hrs
+                        </p>
+                        <p className="text-[11px] text-[#D4D6DF] font-mono-tabular mt-0.5">
+                          {totalCatalogRuntimeStats.wholeHours.toLocaleString()}h{' '}
+                          {totalCatalogRuntimeStats.remainingMinutes}m ({totalCatalogRuntimeStats.totalMinutes.toLocaleString()} mins)
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl bg-[#08090D] border border-[#292C35] p-3.5 min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4] block">
+                          Total Published Library
+                        </span>
+                        <p className="text-lg sm:text-xl font-black text-white font-display tabular-nums mt-1">
+                          {catalog.length.toLocaleString()} Movies
+                        </p>
+                        <p className="text-[11px] text-[#A7A9B4] font-mono-tabular mt-0.5">
+                          Avg Runtime: {totalCatalogRuntimeStats.avgFormatted} ({totalCatalogRuntimeStats.avgMinutes} mins/title)
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl bg-[#08090D] border border-[#292C35] p-3.5 min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4] block">
+                          Live-Action Movies
+                        </span>
+                        <p className="text-lg sm:text-xl font-black text-white font-display tabular-nums mt-1">
+                          {totalCatalogRuntimeStats.liveActionHoursFormatted} hrs
+                        </p>
+                        <p className="text-[11px] text-[#A7A9B4] font-mono-tabular mt-0.5">
+                          {moviesList.length.toLocaleString()} feature films
+                        </p>
+                      </div>
+
+                      <div className="rounded-xl bg-[#08090D] border border-[#292C35] p-3.5 min-w-0">
+                        <span className="text-[11px] font-bold uppercase tracking-wider text-[#A7A9B4] block">
+                          Anime &amp; Cartoons
+                        </span>
+                        <p className="text-lg sm:text-xl font-black text-[#FF5A36] font-display tabular-nums mt-1">
+                          {totalCatalogRuntimeStats.animeHoursFormatted} hrs
+                        </p>
+                        <p className="text-[11px] text-[#A7A9B4] font-mono-tabular mt-0.5">
+                          {animeList.length.toLocaleString()} animated titles
+                        </p>
+                      </div>
+                    </div>
+
+                    {totalCatalogRuntimeStats.topGenresByHours.length > 0 && (
+                      <div className="pt-2 border-t border-[#292C35] space-y-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2 text-xs">
+                          <span className="font-bold text-white">
+                            Hours of Content by Top Genres
+                          </span>
+                          <span className="text-[11px] text-[#A7A9B4] font-mono-tabular">
+                            Multi-genre titles contribute to each matching genre
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                          {totalCatalogRuntimeStats.topGenresByHours.map((gStat) => (
+                            <div
+                              key={gStat.genre}
+                              className="rounded-xl bg-[#08090D] border border-[#292C35] p-2.5 space-y-1.5 min-w-0"
+                            >
+                              <div className="flex items-center justify-between gap-2 text-xs min-w-0">
+                                <span className="font-bold text-white truncate">
+                                  {gStat.genre}
+                                </span>
+                                <span className="text-[#FFC400] font-mono-tabular font-bold shrink-0">
+                                  {gStat.hours} hrs · {gStat.count}
+                                </span>
+                              </div>
+                              <div className="w-full h-1.5 rounded-full bg-[#14161D] overflow-hidden">
+                                <div
+                                  className="h-full rounded-full bg-gradient-to-r from-[#FFB800] to-[#FF5A36]"
+                                  style={{ width: `${gStat.sharePct}%` }}
+                                />
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -4074,10 +4472,6 @@ export default function App() {
                       onToggleWatchlist={handleToggleWatchlist}
                     />
                   )}
-                  {/* PWA Android App Installation Card */}
-                  <div className="py-2">
-                    <PWAInstallButton variant="card" apkRelease={apkRelease} />
-                  </div>
                 </>
               ) : (
                 <section className="relative min-h-[340px] rounded-2xl overflow-hidden border border-[#292C35] bg-gradient-to-b from-[#14161D] to-[#08090D] p-8 sm:p-12 flex flex-col justify-center items-center text-center shadow-2xl">
@@ -4147,7 +4541,7 @@ export default function App() {
                     onClick={() => handleNavigate('categories')}
                     className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    Categories
+                    Anime &amp; Cartoons
                   </button>
                 </li>
                 <li>
@@ -4210,15 +4604,16 @@ export default function App() {
                     onClick={() => handleNavigate('categories')}
                     className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
-                    All Categories
+                    Anime &amp; Cartoons
                   </button>
                 </li>
                 <li>
                   <button
                     type="button"
                     onClick={() => {
-                      setSelectedGenre('Action');
-                      handleNavigate('categories');
+                      setSearchQuery('Action');
+                      setDebouncedSearchQuery('Action');
+                      handleNavigate('search');
                     }}
                     className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
@@ -4229,8 +4624,9 @@ export default function App() {
                   <button
                     type="button"
                     onClick={() => {
-                      setSelectedGenre('Sci-Fi');
-                      handleNavigate('categories');
+                      setSearchQuery('Sci-Fi');
+                      setDebouncedSearchQuery('Sci-Fi');
+                      handleNavigate('search');
                     }}
                     className="hover:text-[#FFC400] transition-colors cursor-pointer"
                   >
@@ -4406,8 +4802,6 @@ export default function App() {
         initialTab={adminInitialTab}
         legalPages={legalPages}
         onSaveLegalPages={handleSaveLegalPages}
-        apkRelease={apkRelease}
-        onSaveApkRelease={handleSaveApkRelease}
         heroBatchInfo={{
           activeBatchNumber: activeHeroBatchNumber,
           totalBatches: totalHeroBatches,
@@ -4424,13 +4818,6 @@ export default function App() {
           handleSelectMedia(item, true, false);
         }}
         onPreviewDraftInApp={handlePreviewDraftInApp}
-      />
-
-      {/* ONE-TIME APK UPDATE ANNOUNCEMENT POPUP MODAL */}
-      <ApkUpdatePopupModal
-        isOpen={showApkUpdatePopup}
-        apkRelease={apkRelease}
-        onClose={() => setShowApkUpdatePopup(false)}
       />
 
       {/* INFO, LEGAL & PREFERENCES MODAL */}

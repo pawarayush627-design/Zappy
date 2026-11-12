@@ -35,16 +35,23 @@ function normalizeArtworkUrl(rawUrl: string | undefined | null, aspectRatio: 'po
   return cleaned;
 }
 
-function toFastWebpArtworkUrl(url: string, aspectRatio: 'poster' | 'backdrop'): string {
-  if (!url || !url.includes('images.justwatch.com')) return '';
-  let fast = url;
-  if (aspectRatio === 'backdrop') {
-    fast = fast.replace('/s1920/', '/s1440/');
-  } else {
-    fast = fast.replace('/s718/', '/s592/');
+function toFastWebpArtworkUrl(url: string, aspectRatio: 'poster' | 'backdrop', priority = false): string {
+  if (!url) return '';
+  if (url.includes('images.justwatch.com')) {
+    let fast = url;
+    if (aspectRatio === 'backdrop') {
+      fast = fast.replace('/s1920/', priority ? '/s1440/' : '/s1440/');
+    } else {
+      // Poster cards render at ~180-240px wide; s332/s592 WebP is ~80% smaller than s718 JPG
+      fast = fast.replace('/s718/', priority ? '/s592/' : '/s332/');
+    }
+    fast = fast.replace(/\.(jpg|jpeg|png)$/i, '.webp');
+    return fast !== url ? fast : '';
   }
-  fast = fast.replace(/\.(jpg|jpeg|png)$/i, '.webp');
-  return fast !== url ? fast : '';
+  if (url.includes('image.tmdb.org/t/p/original/')) {
+    return url.replace('/t/p/original/', aspectRatio === 'backdrop' ? '/t/p/w1280/' : '/t/p/w342/');
+  }
+  return '';
 }
 
 export const MediaArtwork: React.FC<MediaArtworkProps> = ({
@@ -62,7 +69,7 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
   // then original URL, then alternate artwork URL before showing the stylized fallback card.
   const candidateUrls = useMemo(() => {
     const primary = normalizeArtworkUrl(src, aspectRatio);
-    const primaryFastWebp = toFastWebpArtworkUrl(primary, aspectRatio);
+    const primaryFastWebp = toFastWebpArtworkUrl(primary, aspectRatio, isBackdropOrPriority);
     const secondary = normalizeArtworkUrl(
       aspectRatio === 'backdrop' ? item.posterUrl : item.backdropUrl,
       aspectRatio
@@ -71,7 +78,7 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
       aspectRatio === 'backdrop' ? item.backdropUrl : item.posterUrl,
       aspectRatio
     );
-    const tertiaryFastWebp = toFastWebpArtworkUrl(tertiary, aspectRatio);
+    const tertiaryFastWebp = toFastWebpArtworkUrl(tertiary, aspectRatio, isBackdropOrPriority);
     const unique: string[] = [];
     for (const url of [primaryFastWebp, primary, tertiaryFastWebp, tertiary, secondary]) {
       if (url && !unique.includes(url)) {
@@ -79,7 +86,7 @@ export const MediaArtwork: React.FC<MediaArtworkProps> = ({
       }
     }
     return unique;
-  }, [src, item.posterUrl, item.backdropUrl, aspectRatio]);
+  }, [src, item.posterUrl, item.backdropUrl, aspectRatio, isBackdropOrPriority]);
 
   const [candidateIndex, setCandidateIndex] = useState<number>(0);
   const [allFailed, setAllFailed] = useState<boolean>(false);

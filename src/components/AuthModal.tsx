@@ -261,8 +261,8 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       // Store in Firestore as well for cross-platform persistence if available
       void storeOtpChallengeInFirestore(cleanTarget, clientOtp);
 
-      // Send the OTP via Gmail SMTP endpoint (Netlify Function or Express Server)
-      const sendRes = await safeApiFetchJson<{
+      // Send the OTP via Gmail SMTP endpoint (Express /api/auth/send-otp with direct Netlify Function fallback)
+      let sendRes = await safeApiFetchJson<{
         ok?: boolean;
         error?: string;
         challengeToken?: string;
@@ -271,6 +271,21 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ email: cleanTarget, otp: clientOtp }),
       });
+
+      if (!sendRes.ok || sendRes.data?.ok === false) {
+        const netlifyDirectRes = await safeApiFetchJson<{
+          ok?: boolean;
+          error?: string;
+          challengeToken?: string;
+        }>('/.netlify/functions/send-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email: cleanTarget, otp: clientOtp }),
+        });
+        if (netlifyDirectRes.ok && netlifyDirectRes.data?.ok !== false) {
+          sendRes = netlifyDirectRes;
+        }
+      }
 
       if (sendRes.data?.challengeToken && activeChallengeRef.current) {
         activeChallengeRef.current.challengeToken = sendRes.data.challengeToken;
@@ -291,18 +306,29 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setOtp('');
       setOtpDigits(['', '', '', '', '', '']);
 
-      setInfoMessage(`Verification code sent to ${cleanTarget}. Please check your email inbox.`);
+      if (sendRes.ok && sendRes.data?.ok !== false) {
+        setInfoMessage(
+          `6-digit verification code sent to ${cleanTarget}. Please check your email inbox (and Spam folder).`
+        );
+      } else {
+        setErrorMessage(
+          sendRes.data?.error ||
+            `Could not deliver verification email to ${cleanTarget}. Please click "Resend Code" to try again.`
+        );
+      }
 
       setTimeout(() => {
         otpInputRefs.current[0]?.focus();
       }, 100);
     } catch {
-      // Even if network fails, ensure OTP verification screen is always shown
       setStep('OTP_VERIFICATION');
       setResendCooldown(60);
       setOtpExpirySeconds(600);
       setOtp('');
       setOtpDigits(['', '', '', '', '', '']);
+      setErrorMessage(
+        `Could not connect to mail server for ${cleanTarget}. Please click "Resend Code" to try again.`
+      );
       setTimeout(() => {
         otpInputRefs.current[0]?.focus();
       }, 100);
@@ -451,9 +477,13 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           'Incorrect password. Try again or click "Forgot Password?" below.'
         );
       } else if (errObj.code === 'auth/user-not-found') {
-        setErrorMessage(
-          'No account found with this email. Click Back to check your email.'
-        );
+        if (typeof window !== 'undefined') {
+          try {
+            window.localStorage.removeItem(`zappy_known_email_${cleanEmail}`);
+          } catch {}
+        }
+        await handleRequestOtp(cleanEmail);
+        return;
       } else if (errObj.code === 'auth/too-many-requests') {
         setErrorMessage(
           'Too many attempts. Please wait a moment before trying again.'
@@ -956,7 +986,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           : 'https://zappyfun.netlify.app';
       const resetUrl = `${origin}/#resetEmail=${encodeURIComponent(cleanTarget)}&resetCode=${resetOtp}`;
 
-      const resetSendRes = await safeApiFetchJson<{
+      let resetSendRes = await safeApiFetchJson<{
         ok?: boolean;
         error?: string;
         challengeToken?: string;
@@ -970,6 +1000,26 @@ export const AuthModal: React.FC<AuthModalProps> = ({
           resetUrl,
         }),
       });
+
+      if (!resetSendRes.ok || resetSendRes.data?.ok === false) {
+        const netlifyDirectRes = await safeApiFetchJson<{
+          ok?: boolean;
+          error?: string;
+          challengeToken?: string;
+        }>('/.netlify/functions/send-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: cleanTarget,
+            otp: resetOtp,
+            purpose: 'reset',
+            resetUrl,
+          }),
+        });
+        if (netlifyDirectRes.ok && netlifyDirectRes.data?.ok !== false) {
+          resetSendRes = netlifyDirectRes;
+        }
+      }
 
       if (resetSendRes.data?.challengeToken && activeChallengeRef.current) {
         activeChallengeRef.current.challengeToken =
@@ -991,9 +1041,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       setOtpExpirySeconds(600);
       setOtp('');
       setOtpDigits(['', '', '', '', '', '']);
-      setInfoMessage(
-        `Password reset code sent to ${cleanTarget}. Please check your email inbox.`
-      );
+      if (resetSendRes.ok && resetSendRes.data?.ok !== false) {
+        setInfoMessage(
+          `6-digit password reset code sent to ${cleanTarget}. Please check your email inbox (and Spam folder).`
+        );
+      } else {
+        setErrorMessage(
+          resetSendRes.data?.error ||
+            `Could not deliver reset email to ${cleanTarget}. Please click "Resend Reset Code" to try again.`
+        );
+      }
       setTimeout(() => {
         otpInputRefs.current[0]?.focus();
       }, 100);
@@ -1088,14 +1145,36 @@ export const AuthModal: React.FC<AuthModalProps> = ({
         }
       }
 
-      const verifyRes = await safeApiFetchJson<{
+      let verifyRes = await safeApiFetchJson<{
         valid?: boolean;
         reason?: string;
       }>('/api/auth/verify-otp', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ email: activeEmail, otp: cleanOtp }),
+        body: JSON.stringify({
+          email: activeEmail,
+          otp: cleanOtp,
+          challengeToken: currentChallenge?.challengeToken,
+        }),
       });
+
+      if (!verifyRes.ok || !verifyRes.data?.valid) {
+        const netlifyVerifyRes = await safeApiFetchJson<{
+          valid?: boolean;
+          reason?: string;
+        }>('/.netlify/functions/verify-otp', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            email: activeEmail,
+            otp: cleanOtp,
+            challengeToken: currentChallenge?.challengeToken,
+          }),
+        });
+        if (netlifyVerifyRes.ok && netlifyVerifyRes.data?.valid) {
+          verifyRes = netlifyVerifyRes;
+        }
+      }
 
       if (verifyRes.ok && verifyRes.data?.valid) {
         setPassword('');
@@ -1231,8 +1310,16 @@ export const AuthModal: React.FC<AuthModalProps> = ({
       }
     } catch (err: unknown) {
       console.warn('Google Sign-In notice:', err);
-      const friendlyMsg = getFriendlyAuthErrorMessage(err);
-      setErrorMessage(friendlyMsg);
+      const code = String((err as { code?: string })?.code || '');
+      if (
+        code === 'auth/popup-closed-by-user' ||
+        code === 'auth/cancelled-popup-request'
+      ) {
+        setErrorMessage('Google sign-in was cancelled.');
+      } else {
+        const friendlyMsg = getFriendlyAuthErrorMessage(err);
+        setErrorMessage(friendlyMsg);
+      }
     } finally {
       setIsGoogleLoading(false);
     }
@@ -1502,7 +1589,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   }}
                   className="text-xs text-[#FF5A36] hover:underline cursor-pointer"
                 >
-                  Forgot Password? (Send OTP)
+                  Forgot Password?
                 </button>
               </div>
               <div className="relative">
@@ -1549,18 +1636,6 @@ export const AuthModal: React.FC<AuthModalProps> = ({
               )}
             </button>
 
-            <button
-              type="button"
-              disabled={isLoading}
-              onClick={() => {
-                void handleRequestOtp(email);
-              }}
-              className="w-full py-2.5 px-4 rounded-xl bg-[#0D0B12] hover:bg-[#1F1B2B] border border-[#231E30] text-[#B8B4C2] hover:text-white font-semibold text-xs flex items-center justify-center gap-2 transition-colors cursor-pointer disabled:opacity-50"
-            >
-              <ShieldCheck className="w-3.5 h-3.5 text-[#FFB800]" />
-              <span>Send 6-Digit Email OTP Instead</span>
-            </button>
-
             <div className="text-center pt-1 text-xs text-[#B8B4C2]">
               <button
                 type="button"
@@ -1591,7 +1666,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-1 mb-1.5">
                 <label className="text-xs font-bold text-[#B8B4C2] uppercase tracking-wider">
                   Enter 6-Digit Code
                 </label>
@@ -1599,7 +1674,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   Expires in: <strong className="text-white">{formatCountdown(otpExpirySeconds)}</strong>
                 </span>
               </div>
-              <div className="flex items-center justify-center gap-2 sm:gap-2.5 max-w-[340px] mx-auto py-2">
+              <div className="grid grid-cols-6 gap-1.5 sm:gap-2.5 w-full max-w-[336px] mx-auto py-2">
                 {[0, 1, 2, 3, 4, 5].map((idx) => {
                   const isFilled = Boolean(otpDigits[idx]);
                   return (
@@ -1620,7 +1695,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       onFocus={(e) => e.target.select()}
                       autoFocus={idx === 0}
                       aria-label={`Verification code digit ${idx + 1}`}
-                      className={`w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-black font-mono bg-[#0D0B12] rounded-xl text-white transition-all outline-none border-2 ${
+                      className={`w-full min-w-0 h-11 sm:h-14 text-center text-lg sm:text-2xl font-black font-mono bg-[#0D0B12] rounded-xl text-white transition-all outline-none border-2 ${
                         isFilled
                           ? 'border-[#FF5A36] bg-[#16111D] shadow-[0_0_12px_rgba(255,90,54,0.25)]'
                           : 'border-[#231E30] focus:border-[#FFB800] focus:bg-[#16111D]'
@@ -1957,7 +2032,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
             </div>
 
             <div>
-              <div className="flex items-center justify-between mb-1.5">
+              <div className="flex flex-wrap items-center justify-between gap-1 mb-1.5">
                 <label className="text-xs font-bold text-[#B8B4C2] uppercase tracking-wider">
                   Enter 6-Digit Reset Code
                 </label>
@@ -1968,7 +2043,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                   </strong>
                 </span>
               </div>
-              <div className="flex items-center justify-center gap-2 sm:gap-2.5 max-w-[340px] mx-auto py-2">
+              <div className="grid grid-cols-6 gap-1.5 sm:gap-2.5 w-full max-w-[336px] mx-auto py-2">
                 {[0, 1, 2, 3, 4, 5].map((idx) => {
                   const isFilled = Boolean(otpDigits[idx]);
                   return (
@@ -1989,7 +2064,7 @@ export const AuthModal: React.FC<AuthModalProps> = ({
                       onFocus={(e) => e.target.select()}
                       autoFocus={idx === 0}
                       aria-label={`Reset code digit ${idx + 1}`}
-                      className={`w-10 h-12 sm:w-12 sm:h-14 text-center text-xl sm:text-2xl font-black font-mono bg-[#0D0B12] rounded-xl text-white transition-all outline-none border-2 ${
+                      className={`w-full min-w-0 h-11 sm:h-14 text-center text-lg sm:text-2xl font-black font-mono bg-[#0D0B12] rounded-xl text-white transition-all outline-none border-2 ${
                         isFilled
                           ? 'border-[#FF5A36] bg-[#16111D] shadow-[0_0_12px_rgba(255,90,54,0.25)]'
                           : 'border-[#231E30] focus:border-[#FFB800] focus:bg-[#16111D]'

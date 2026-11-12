@@ -1,9 +1,0 @@
-/api/auth/send-otp                     /.netlify/functions/send-otp                     200
-/api/auth/verify-otp                   /.netlify/functions/verify-otp                   200
-/api/auth/check-email                  /.netlify/functions/check-email                  200
-/api/auth/validate-registration-token  /.netlify/functions/validate-registration-token  200
-/api/auth/consume-registration-token   /.netlify/functions/validate-registration-token  200
-/api/auth/record-user                  /.netlify/functions/check-email                  200
-/api/justwatch/extract                 /.netlify/functions/justwatch-extract            200
-/*                                     /index.html                                     200
-

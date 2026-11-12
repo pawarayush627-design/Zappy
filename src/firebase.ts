@@ -83,7 +83,8 @@ export function getEffectiveUserEmail(email?: string | null): string {
   if (!email) return '';
   const clean = email.trim().toLowerCase();
   if (clean.startsWith('zf.') && clean.endsWith('@zappyfun.app')) {
-    const hex = clean.slice(3, -13);
+    const body = clean.slice(3, -13);
+    const hex = body.split('.')[0];
     if (hex.length >= 4 && hex.length % 2 === 0 && /^[0-9a-f]+$/.test(hex)) {
       let decoded = '';
       for (let i = 0; i < hex.length; i += 2) {
@@ -202,9 +203,15 @@ export function getCredentialBridge(_email: string): string | null {
   return null;
 }
 
-function buildShadowAliasEmail(email: string): string {
+function buildShadowAliasEmail(email: string, suffix?: string): string {
   const hex = encodeEmailToDocId(email.trim().toLowerCase());
-  return `zf.${hex}@zappyfun.app`;
+  return suffix ? `zf.${hex}.${suffix}@zappyfun.app` : `zf.${hex}@zappyfun.app`;
+}
+
+async function deriveShadowAuthKey(email: string): Promise<string> {
+  const clean = email.trim().toLowerCase();
+  const digest = await sha256Hex(`zf_shadow_auth_v1:${clean}`);
+  return `${digest.slice(0, 32)}A1!`;
 }
 
 // Email & Password Authentication
@@ -240,9 +247,23 @@ export async function signInWithEmail(email: string, password: string) {
   } catch (primaryErr: unknown) {
     if (hasVerifiedResetOverride) {
       const aliasEmail = buildShadowAliasEmail(clean);
-      const aliasCred = await signInWithEmailAndPassword(auth, aliasEmail, password);
-      storeCredentialBridge(clean, password);
-      return aliasCred;
+      const shadowKey = await deriveShadowAuthKey(clean);
+      try {
+        const aliasCred = await signInWithEmailAndPassword(auth, aliasEmail, shadowKey);
+        storeCredentialBridge(clean, password);
+        return aliasCred;
+      } catch {
+        try {
+          const legacyCred = await signInWithEmailAndPassword(auth, aliasEmail, password);
+          storeCredentialBridge(clean, password);
+          return legacyCred;
+        } catch {
+          const v2AliasEmail = buildShadowAliasEmail(clean, 'v2');
+          const v2Cred = await signInWithEmailAndPassword(auth, v2AliasEmail, shadowKey);
+          storeCredentialBridge(clean, password);
+          return v2Cred;
+        }
+      }
     }
     throw primaryErr;
   }
@@ -317,9 +338,10 @@ export async function resetUserPasswordWithVerifiedOtp(
     }
   }
 
-  // 4. Fallback for accounts created before bridge existed:
-  // Use deterministic Firebase Auth alias & store verified reset hash so old password is invalidated
+  // 4. Fallback for accounts where previous password is unknown on client:
+  // Use deterministic Firebase Auth shadow alias & store verified reset hash so old password is invalidated
   const aliasEmail = buildShadowAliasEmail(clean);
+  const shadowKey = await deriveShadowAuthKey(clean);
   const resetHash = await sha256Hex(`${clean}:${newPassword}:zf_reset_v1`);
   if (typeof window !== 'undefined') {
     try {
@@ -329,14 +351,22 @@ export async function resetUserPasswordWithVerifiedOtp(
 
   let aliasCred: UserCredential;
   try {
-    aliasCred = await createUserWithEmailAndPassword(auth, aliasEmail, newPassword);
+    aliasCred = await signInWithEmailAndPassword(auth, aliasEmail, shadowKey);
   } catch {
-    const prevAliasPwd = getCredentialBridge(aliasEmail) || prevPassword;
-    if (prevAliasPwd) {
-      aliasCred = await signInWithEmailAndPassword(auth, aliasEmail, prevAliasPwd);
-      await updatePassword(aliasCred.user, newPassword);
-    } else {
-      aliasCred = await signInWithEmailAndPassword(auth, aliasEmail, newPassword);
+    try {
+      aliasCred = await createUserWithEmailAndPassword(auth, aliasEmail, shadowKey);
+    } catch {
+      try {
+        aliasCred = await signInWithEmailAndPassword(auth, aliasEmail, newPassword);
+        await updatePassword(aliasCred.user, shadowKey).catch(() => {});
+      } catch {
+        const v2AliasEmail = buildShadowAliasEmail(clean, 'v2');
+        try {
+          aliasCred = await signInWithEmailAndPassword(auth, v2AliasEmail, shadowKey);
+        } catch {
+          aliasCred = await createUserWithEmailAndPassword(auth, v2AliasEmail, shadowKey);
+        }
+      }
     }
   }
 
@@ -639,24 +669,41 @@ export async function signInWithGithubPopup(): Promise<UserCredential> {
 
 /**
  * Smart GitHub Sign-In handler:
- * - Uses signInWithRedirect for mobile devices and standard top-level web apps (e.g., Netlify).
- * - Gracefully falls back to signInWithPopup when running inside cross-origin sandboxed iframes.
+ * - Always attempts signInWithPopup first so an account authorization popup window opens directly
+ *   without navigating away from the application.
+ * - Only falls back to signInWithRedirect if popups are explicitly blocked by the browser.
  */
 export async function signInWithGithub(): Promise<UserCredential | void> {
-  const isInIframe =
-    typeof window !== 'undefined' &&
-    window.self !== window.top;
-
-  if (isInIframe) {
-    try {
-      return await signInWithPopup(auth, githubProvider);
-    } catch (popupErr: unknown) {
-      console.warn('GitHub popup attempted in iframe context, attempting redirect:', popupErr);
-      return await signInWithRedirect(auth, githubProvider);
+  try {
+    return await signInWithPopup(auth, githubProvider);
+  } catch (popupErr: unknown) {
+    const errorObj = popupErr as { code?: string; message?: string };
+    if (
+      errorObj?.code === 'auth/popup-closed-by-user' ||
+      errorObj?.code === 'auth/cancelled-popup-request'
+    ) {
+      throw popupErr;
     }
-  }
 
-  return await signInWithRedirect(auth, githubProvider);
+    if (
+      errorObj?.code === 'auth/popup-blocked' ||
+      errorObj?.code === 'auth/operation-not-supported-in-this-environment'
+    ) {
+      console.warn('GitHub popup blocked or unsupported. Attempting redirect fallback...');
+      await signInWithRedirect(auth, githubProvider);
+      return await new Promise<UserCredential>((_, reject) => {
+        setTimeout(() => {
+          reject(
+            new Error(
+              'GitHub sign-in redirect did not complete. Please allow popups in your browser settings.'
+            )
+          );
+        }, 4000);
+      });
+    }
+
+    throw popupErr;
+  }
 }
 
 /**

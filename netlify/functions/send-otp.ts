@@ -90,15 +90,9 @@ export const handler = async (event: NetlifyEvent): Promise<NetlifyResponse> => 
     const resetUrl =
       typeof payload.resetUrl === 'string' ? payload.resetUrl.trim() : '';
 
-    const transporter = nodemailer.createTransport({
-      host: (process.env.SMTP_HOST || 'smtp.gmail.com').trim(),
-      port: Number(process.env.SMTP_PORT) || 465,
-      secure: process.env.SMTP_SECURE !== 'false',
-      auth: {
-        user: smtpUser,
-        pass: smtpPass,
-      },
-    });
+    const host = (process.env.SMTP_HOST || 'smtp.gmail.com').trim();
+    const primaryPort = Number(process.env.SMTP_PORT) || 465;
+    const primarySecure = process.env.SMTP_SECURE !== 'false' && primaryPort === 465;
 
     const resetLinkLine =
       isReset && resetUrl
@@ -125,12 +119,43 @@ If you did not request this verification code, you can safely ignore this email.
       ? `Your ZappyFun password reset code: ${otp}`
       : `Your ZappyFun verification code: ${otp}`;
 
-    await transporter.sendMail({
+    const mailOptions = {
       from: `ZappyFun <${smtpUser}>`,
       to: email,
       subject,
       text: textTemplate,
-    });
+    };
+
+    try {
+      const transporter = nodemailer.createTransport({
+        host,
+        port: primaryPort,
+        secure: primarySecure,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+        auth: {
+          user: smtpUser,
+          pass: smtpPass,
+        },
+      });
+      await transporter.sendMail(mailOptions);
+    } catch {
+      const fallbackPort = primaryPort === 465 ? 587 : 465;
+      const fallbackTransporter = nodemailer.createTransport({
+        host,
+        port: fallbackPort,
+        secure: fallbackPort === 465,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+        auth: {
+          user: smtpUser,
+          pass: smtpPass,
+        },
+      });
+      await fallbackTransporter.sendMail(mailOptions);
+    }
 
     return {
       statusCode: 200,

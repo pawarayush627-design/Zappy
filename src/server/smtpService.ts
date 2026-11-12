@@ -325,31 +325,20 @@ export async function sendOtpEmail(
     };
   }
 
-  try {
-    const transporter = nodemailer.createTransport({
-      host: config.host,
-      port: config.port,
-      secure: config.secure,
-      auth: {
-        user: config.user,
-        pass: config.pass,
-      },
-    });
+  const resetLinkLine =
+    isReset && options?.resetUrl
+      ? `\nYou can also reset your password directly using this link:\n${options.resetUrl}\n`
+      : '';
 
-    const resetLinkLine =
-      isReset && options?.resetUrl
-        ? `\nYou can also reset your password directly using this link:\n${options.resetUrl}\n`
-        : '';
-
-    const textTemplate = isReset
-      ? `Your ZappyFun password reset code is: ${otp}
+  const textTemplate = isReset
+    ? `Your ZappyFun password reset code is: ${otp}
 ${resetLinkLine}
 This code will expire in 10 minutes.
 
 If you did not request a password reset, you can safely ignore this email.
 
 — The ZappyFun Team`
-      : `Your ZappyFun verification code is: ${otp}
+    : `Your ZappyFun verification code is: ${otp}
 
 This code will expire in 10 minutes.
 
@@ -357,29 +346,74 @@ If you did not request this verification code, you can safely ignore this email.
 
 — The ZappyFun Team`;
 
-    const subject = isReset
-      ? `Your ZappyFun password reset code: ${otp}`
-      : `Your ZappyFun verification code: ${otp}`;
+  const subject = isReset
+    ? `Your ZappyFun password reset code: ${otp}`
+    : `Your ZappyFun verification code: ${otp}`;
 
-    await transporter.sendMail({
-      from: `ZappyFun <${config.user}>`,
-      to: cleanEmail,
-      subject,
-      text: textTemplate,
+  const mailOptions = {
+    from: `ZappyFun <${config.user}>`,
+    to: cleanEmail,
+    subject,
+    text: textTemplate,
+  };
+
+  try {
+    const primaryTransporter = nodemailer.createTransport({
+      host: config.host,
+      port: config.port,
+      secure: config.secure,
+      connectionTimeout: 10000,
+      greetingTimeout: 10000,
+      socketTimeout: 15000,
+      auth: {
+        user: config.user,
+        pass: config.pass,
+      },
     });
+
+    await primaryTransporter.sendMail(mailOptions);
 
     console.log(
       `[SMTP SUCCESS] Sent 6-digit ${isReset ? 'password reset' : 'verification'} code to ${maskEmailForLog(cleanEmail)}`
     );
     return { success: true, simulated: false };
-  } catch (err: unknown) {
-    const errorMsg = err instanceof Error ? err.message : String(err);
-    console.error(`[SMTP ERROR] Failed to send email to ${maskEmailForLog(cleanEmail)}`);
-    return {
-      success: false,
-      simulated: false,
-      error: errorMsg,
-    };
+  } catch (primaryErr: unknown) {
+    try {
+      const fallbackPort = config.port === 465 ? 587 : 465;
+      const fallbackSecure = fallbackPort === 465;
+      const fallbackTransporter = nodemailer.createTransport({
+        host: config.host,
+        port: fallbackPort,
+        secure: fallbackSecure,
+        connectionTimeout: 10000,
+        greetingTimeout: 10000,
+        socketTimeout: 15000,
+        auth: {
+          user: config.user,
+          pass: config.pass,
+        },
+      });
+
+      await fallbackTransporter.sendMail(mailOptions);
+
+      console.log(
+        `[SMTP SUCCESS (Fallback Port ${fallbackPort})] Sent 6-digit ${isReset ? 'password reset' : 'verification'} code to ${maskEmailForLog(cleanEmail)}`
+      );
+      return { success: true, simulated: false };
+    } catch (err: unknown) {
+      const errorMsg =
+        err instanceof Error
+          ? err.message
+          : primaryErr instanceof Error
+          ? primaryErr.message
+          : String(err);
+      console.error(`[SMTP ERROR] Failed to send email to ${maskEmailForLog(cleanEmail)}: ${errorMsg}`);
+      return {
+        success: false,
+        simulated: false,
+        error: errorMsg,
+      };
+    }
   }
 }
 

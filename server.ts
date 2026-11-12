@@ -62,7 +62,7 @@ function persistLegalPagesToSourceFile(nextConfig: LegalPagesConfig): boolean {
 }
 
 const rateLimitWindowMs = 60_000;
-const maxRequestsPerMinute = 600;
+const maxRequestsPerMinute = 2500;
 const MAX_RATE_LIMIT_ENTRIES = 5000;
 const ipRequestCounts = new Map<string, { count: number; resetAt: number }>();
 const otpRequestCounts = new Map<string, { count: number; resetAt: number }>();
@@ -101,7 +101,7 @@ function checkRateLimit(ip: string): { allowed: boolean; retryAfterSec: number }
 function checkOtpRateLimit(ip: string, email: string): { allowed: boolean; retryAfterSec: number } {
   const now = Date.now();
   const windowMs = 10 * 60_000;
-  const maxAttempts = 6;
+  const maxAttempts = 30;
   const key = `${ip}:${email}`;
   const entry = otpRequestCounts.get(key);
   if (!entry || now > entry.resetAt) {
@@ -760,6 +760,8 @@ async function startServer() {
     next();
   });
 
+  const justWatchExtractionCache = new Map<string, { expiresAt: number; payload: Record<string, unknown> }>();
+
   /**
    * POST /api/justwatch/extract
    * Extracts complete Movie metadata, posters, backdrops, cast & director photos,
@@ -777,6 +779,13 @@ async function startServer() {
       };
 
       const rawInput = (justWatchUrl || '').trim();
+      const cacheKey = `${rawInput.toLowerCase()}|${(manualTitle || '').trim().toLowerCase()}`;
+      const cachedHit = justWatchExtractionCache.get(cacheKey);
+      if (cachedHit && cachedHit.expiresAt > Date.now()) {
+        res.json(cachedHit.payload);
+        return;
+      }
+
       const parsed = rawInput
         ? parseJustWatchUrl(rawInput)
         : {
@@ -840,7 +849,7 @@ async function startServer() {
             ]
       );
 
-      res.json({
+      const responsePayload = {
         source: jwData ? 'justwatch_graphql' : 'slug_fallback',
         title: resolvedTitle,
         releaseYear: resolvedYear,
@@ -866,7 +875,18 @@ async function startServer() {
         cast: resolvedCast,
         credits: creditsWithPhotos,
         justWatchUrl: jwData?.justWatchUrl || rawInput,
+      };
+
+      if (justWatchExtractionCache.size >= 2500) {
+        const oldest = justWatchExtractionCache.keys().next().value;
+        if (oldest) justWatchExtractionCache.delete(oldest);
+      }
+      justWatchExtractionCache.set(cacheKey, {
+        expiresAt: Date.now() + 30 * 60_000,
+        payload: responsePayload,
       });
+
+      res.json(responsePayload);
     } catch {
       res.status(500).json({
         error: 'Failed to extract metadata from JustWatch URL.',
@@ -915,265 +935,6 @@ async function startServer() {
       status: 'updated',
       persistedToCode,
       legalPages: serverLegalPages,
-    });
-  });
-
-  const apkReleaseJsonPath = path.join(__dirname, 'public', 'apk-release.json');
-  let serverApkRelease = {
-    releaseId: '',
-    version: '1.0.0',
-    whatsImproved: '',
-    apkUrl: '/zappyfun.apk',
-    fileName: 'zappyfun.apk',
-    fileSizeFormatted: '80 MB',
-    updatedAtMs: 0,
-  };
-
-  try {
-    if (fs.existsSync(apkReleaseJsonPath)) {
-      const parsed = JSON.parse(fs.readFileSync(apkReleaseJsonPath, 'utf8'));
-      if (parsed && typeof parsed === 'object') {
-        serverApkRelease = { ...serverApkRelease, ...parsed };
-      }
-    }
-  } catch {
-    // Ignore read error
-  }
-
-  /**
-   * GET /api/apk-release
-   * Returns the latest APK version, release notes, and download URL.
-   */
-  app.get('/api/apk-release', (_req, res) => {
-    const apkFileCandidates = [
-      path.join(__dirname, 'public', 'zappyfun.apk'),
-      path.join(__dirname, 'zappyfun.apk'),
-      path.join(__dirname, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk'),
-    ];
-    let hasLocalBinary = false;
-    let localSizeBytes = 0;
-    for (const c of apkFileCandidates) {
-      if (fs.existsSync(c) && fs.statSync(c).size > 50_000) {
-        hasLocalBinary = true;
-        localSizeBytes = fs.statSync(c).size;
-        break;
-      }
-    }
-
-    res.json({
-      apkRelease: serverApkRelease,
-      hasLocalBinary,
-      localSizeBytes,
-    });
-  });
-
-  /**
-   * PUT /api/apk-release
-   * Saves updated APK version, release notes ("What's Improved"), and APK URL (Protected by Admin Auth).
-   */
-  app.put('/api/apk-release', async (req, res) => {
-    const authCheck = await verifyAdminRequest(req);
-    if (!authCheck.authorized) {
-      res.status(authCheck.statusCode).json({
-        error: authCheck.error || 'Forbidden: Admin access required.',
-      });
-      return;
-    }
-
-    const incoming = req.body?.apkRelease || req.body;
-    if (!incoming || typeof incoming !== 'object') {
-      res.status(400).json({ error: 'Invalid apkRelease payload.' });
-      return;
-    }
-
-    const cleanVersion = String(incoming.version || serverApkRelease.version || '1.0.0').trim().slice(0, 40);
-    const nextReleaseId =
-      String(incoming.releaseId || '').trim().slice(0, 80) || `rel_${cleanVersion}_${Date.now()}`;
-    const rawApkUrl = String(incoming.apkUrl || serverApkRelease.apkUrl || '/zappyfun.apk').trim();
-    const safeApkUrl =
-      rawApkUrl === '/zappyfun.apk' || /^https:\/\/[^\s]+$/i.test(rawApkUrl)
-        ? rawApkUrl
-        : '/zappyfun.apk';
-
-    serverApkRelease = {
-      releaseId: nextReleaseId,
-      version: cleanVersion,
-      whatsImproved: String(incoming.whatsImproved ?? serverApkRelease.whatsImproved ?? '').trim().slice(0, 2000),
-      apkUrl: safeApkUrl,
-      fileName:
-        String(incoming.fileName || '').trim().replace(/[^a-zA-Z0-9._-]/g, '').slice(0, 80) ||
-        `zappyfun-v${cleanVersion.replace(/^v/i, '')}.apk`,
-      fileSizeFormatted:
-        String(incoming.fileSizeFormatted || serverApkRelease.fileSizeFormatted || '80 MB').trim().slice(0, 30),
-      updatedAtMs: Date.now(),
-    };
-
-    try {
-      const publicDir = path.join(__dirname, 'public');
-      if (!fs.existsSync(publicDir)) {
-        fs.mkdirSync(publicDir, { recursive: true });
-      }
-      fs.writeFileSync(apkReleaseJsonPath, JSON.stringify(serverApkRelease, null, 2), 'utf8');
-    } catch (e) {
-      console.warn('Could not persist apk-release.json:', e);
-    }
-
-    res.json({
-      status: 'updated',
-      apkRelease: serverApkRelease,
-    });
-  });
-
-  /**
-   * POST /api/admin/upload-apk
-   * Streams an uploaded .apk binary file directly to public/zappyfun.apk (Protected by Admin Auth + Size & Magic Byte Validation)
-   */
-  app.post('/api/admin/upload-apk', async (req, res) => {
-    const authCheck = await verifyAdminRequest(req);
-    if (!authCheck.authorized) {
-      res.status(authCheck.statusCode).json({
-        ok: false,
-        error: authCheck.error || 'Forbidden: Admin access required.',
-      });
-      return;
-    }
-
-    try {
-      const publicDir = path.join(__dirname, 'public');
-      if (!fs.existsSync(publicDir)) {
-        fs.mkdirSync(publicDir, { recursive: true });
-      }
-      const tempDestPath = path.join(publicDir, 'zappyfun.apk.uploading');
-      const finalDestPath = path.join(publicDir, 'zappyfun.apk');
-      const writeStream = fs.createWriteStream(tempDestPath);
-      const MAX_APK_BYTES = 150 * 1024 * 1024; // 150 MB limit
-      let bytesWritten = 0;
-      let headerChecked = false;
-      let aborted = false;
-
-      req.on('data', (chunk: Buffer) => {
-        if (aborted) return;
-        if (!headerChecked && chunk.length >= 4) {
-          headerChecked = true;
-          // APK is a ZIP archive starting with PK\x03\x04 (0x50 0x4b 0x03 0x04)
-          if (
-            chunk[0] !== 0x50 ||
-            chunk[1] !== 0x4b ||
-            chunk[2] !== 0x03 ||
-            chunk[3] !== 0x04
-          ) {
-            aborted = true;
-            writeStream.destroy();
-            try {
-              if (fs.existsSync(tempDestPath)) fs.unlinkSync(tempDestPath);
-            } catch {}
-            res.status(400).json({
-              ok: false,
-              error: 'Invalid APK file signature. Uploaded file must be a valid Android APK archive.',
-            });
-            return;
-          }
-        }
-
-        bytesWritten += chunk.length;
-        if (bytesWritten > MAX_APK_BYTES) {
-          aborted = true;
-          writeStream.destroy();
-          try {
-            if (fs.existsSync(tempDestPath)) fs.unlinkSync(tempDestPath);
-          } catch {}
-          res.status(413).json({
-            ok: false,
-            error: 'Uploaded APK exceeds maximum allowed size (150 MB).',
-          });
-          return;
-        }
-        writeStream.write(chunk);
-      });
-
-      req.on('end', () => {
-        if (aborted) return;
-        writeStream.end();
-      });
-
-      writeStream.on('finish', () => {
-        if (aborted) return;
-        try {
-          fs.renameSync(tempDestPath, finalDestPath);
-        } catch {
-          // Ignore rename error if already moved
-        }
-        const sizeMb = (bytesWritten / (1024 * 1024)).toFixed(1) + ' MB';
-        serverApkRelease = {
-          ...serverApkRelease,
-          apkUrl: '/zappyfun.apk',
-          fileSizeFormatted: sizeMb,
-          updatedAtMs: Date.now(),
-        };
-        try {
-          fs.writeFileSync(apkReleaseJsonPath, JSON.stringify(serverApkRelease, null, 2), 'utf8');
-        } catch {}
-
-        res.json({
-          ok: true,
-          apkUrl: '/zappyfun.apk',
-          sizeBytes: bytesWritten,
-          fileSizeFormatted: sizeMb,
-        });
-      });
-
-      writeStream.on('error', () => {
-        if (aborted) return;
-        aborted = true;
-        try {
-          if (fs.existsSync(tempDestPath)) fs.unlinkSync(tempDestPath);
-        } catch {}
-        res.status(500).json({
-          ok: false,
-          error: 'Failed to write APK file to disk.',
-        });
-      });
-    } catch {
-      res.status(500).json({
-        ok: false,
-        error: 'APK upload failed.',
-      });
-    }
-  });
-
-  /**
-   * GET /zappyfun.apk
-   * Serves the compiled/uploaded Android APK package binary if available,
-   * or redirects to a verified HTTPS external APK URL.
-   */
-  app.get('/zappyfun.apk', (_req, res) => {
-    const candidates = [
-      path.join(__dirname, 'public', 'zappyfun.apk'),
-      path.join(__dirname, 'zappyfun.apk'),
-      path.join(__dirname, 'android', 'app', 'build', 'outputs', 'apk', 'debug', 'app-debug.apk'),
-      path.join(__dirname, 'android', 'app', 'build', 'outputs', 'apk', 'release', 'app-release.apk'),
-    ];
-
-    const dlFileName = (serverApkRelease.fileName || 'zappyfun.apk').replace(/[^a-zA-Z0-9._-]/g, '');
-
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate) && fs.statSync(candidate).size > 50_000) {
-        res.setHeader('Content-Type', 'application/vnd.android.package-archive');
-        res.setHeader('Content-Disposition', `attachment; filename="${dlFileName || 'zappyfun.apk'}"`);
-        res.sendFile(candidate);
-        return;
-      }
-    }
-
-    if (serverApkRelease.apkUrl && /^https:\/\/[^\s]+$/i.test(serverApkRelease.apkUrl)) {
-      res.redirect(302, serverApkRelease.apkUrl);
-      return;
-    }
-
-    res.status(404).json({
-      error: 'APK_NOT_FOUND',
-      message:
-        'No APK binary has been uploaded yet. Upload your APK inside Admin Studio -> APK & Updates.',
     });
   });
 
